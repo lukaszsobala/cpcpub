@@ -37,9 +37,10 @@
 #endif
 
 // Where `--submit` sends a result when it is given no URL of its own. Empty in
-// this tree -- there is no public hub yet -- so a build can be pointed at one
-// with `make HUB_URL=https://hub.example` and its users then need no address
-// at all. See the uploading section below.
+// a hand-built tree, so building one does not quietly point it at a board you
+// did not choose; the release workflow bakes in the public hub with
+// `make HUB_URL=https://cpcpub.qd.je:30210`, and a downloaded binary
+// then needs no address at all. See the uploading section below.
 #ifndef CPCPUB_HUB_URL
 #define CPCPUB_HUB_URL ""
 #endif

@@ -79,6 +79,11 @@ env:
   # One source of truth for what is being built, so a run cannot publish to a
   # tag it did not check out.
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  # The hub a released binary uploads to when `--submit` is given no address.
+  # The port is not optional over IPv4: the host has no public v4 of its own and
+  # reaches the internet through two forwarded ports. Over IPv6 the bare name
+  # serves 443, but a default has to work for everyone, so the port is baked in.
+  HUB_URL: https://cpcpub.qd.je:30210
 
 jobs:
   build:
@@ -372,14 +377,16 @@ jobs:
       # CC comes from $GITHUB_ENV for a cross build and is unset for a native
       # one, where the Makefile's own default is right. VERSION is the tag being
       # released, so `cpcpub --version` on a downloaded binary names the release
-      # it came from; a hand-built tree keeps the Makefile's "dev".
+      # it came from; a hand-built tree keeps the Makefile's "dev". HUB_URL is
+      # what makes a downloaded binary's `--submit` work with no argument; a
+      # hand-built tree bakes in nothing and still needs the address.
       - name: Build
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment-target }}
         run: |
           set -eux
           make -C bench ${{ matrix.make-target || 'all' }} \
-              VERSION="$TAG" ${{ matrix.vars }}
+              VERSION="$TAG" HUB_URL="$HUB_URL" ${{ matrix.vars }}
           # No file(1) in Git Bash, and nothing here depends on its output.
           command -v file >/dev/null && file "$BIN" || ls -l "$BIN"
 

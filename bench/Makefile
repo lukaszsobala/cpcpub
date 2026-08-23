@@ -118,8 +118,10 @@ ifneq (,$(TARGET_WIN))
 	LIBS         += -lws2_32
 endif
 
-# Where `cpcpub --submit` uploads when given no URL. There is no public hub
-# yet; `make HUB_URL=https://hub.example` bakes one in when there is.
+# Where `cpcpub --submit` uploads when given no URL. Empty by default, so a
+# tree built by hand asks for the address rather than quietly publishing to
+# someone else's board; `make HUB_URL=https://cpcpub.qd.je:30210` bakes
+# one in, which is what the release workflow does.
 #
 # Deliberately not in CFLAGS: those are reported verbatim as build.flags in
 # every result, and the hub a build was pointed at is a deployment detail, not
