@@ -1,4 +1,4 @@
-# cross-platform-benchmark
+# cpcpub
 
 `cpcpub` — a small, portable CPU benchmark in C, and a place to compare what it measures. Made by heavily human-directed Claude.
 
