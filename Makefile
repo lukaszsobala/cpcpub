@@ -3,6 +3,7 @@
 #   make            build the benchmark          -> bench/cpcpub
 #   make check      build it, then run the contract and hub tests
 #   make testdata   regenerate testdata/full-run.json on this machine
+#   make gui        the GTK front end for the benchmark (Linux)
 #   make serve      run the hub on http://127.0.0.1:8080
 #   make submit     build, measure, and upload the result to a hub
 #
@@ -21,7 +22,7 @@ PYTHON ?= python3
 BENCH   = $(shell [ -x bench/cpcpub.exe ] && echo bench/cpcpub.exe \
                                           || echo bench/cpcpub)
 
-.PHONY: all bench check contract test testdata serve submit clean \
+.PHONY: all bench check contract test testdata gui serve submit clean \
         native riscv-v rva23 loongarch sg2000 sg2000-xthead
 
 all: bench
@@ -53,6 +54,11 @@ testdata: bench
 	@./$(BENCH) --full --time 0.05 --reps 1 --warmup 0.02 --json \
 	    > testdata/full-run.json
 	@echo "wrote testdata/full-run.json"
+
+# A GTK 4 window over the same flags, for a machine with a desktop on it. It
+# runs the binary this tree builds, so build first. See gui/README.md.
+gui: bench
+	@$(PYTHON) gui/cpcpub-gui.py
 
 serve:
 	@$(PYTHON) web/server.py
