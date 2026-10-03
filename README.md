@@ -49,6 +49,14 @@ bench/cpcpub --help
 
 One binary carries four compilations of the kernels — auto-vectorization off/on rossed with FMA contraction off/on — and `--variants` runs each one the host ISA can tell apart, then compares them. The default is the scalar, unfused build that cross-ISA comparisons need.
 
+On a Linux desktop, [gui/](gui/) is the same flags in a window — the variants
+to run, per-core or not, where to put the result, the hub fields, and a live
+estimate of how long the settings will take:
+
+```sh
+make gui            # or gui/cpcpub-gui.py
+```
+
 [bench/README.md](bench/README.md) covers building for each target, what every metric means, and what each platform can and cannot report. Read it before reading a result — several of the metrics say something other than what their name suggests. `--json` output is specified in
 [schema/cpu-bench-1.md](schema/cpu-bench-1.md).
 
