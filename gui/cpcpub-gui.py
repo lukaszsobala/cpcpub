@@ -243,12 +243,15 @@ def find_binary():
     on Windows cpcpub-gui.exe in a folder of its own inside the one holding
     cpcpub.exe.
     """
+    # Resolved, so a link to this program finds what is beside the program
+    # rather than beside the link -- and a merged /usr/sbin, which some PATHs
+    # list first, still finds /usr/bin/cpcpub under its usual name.
     if FROZEN:
-        here = os.path.dirname(sys.executable)
+        here = os.path.dirname(os.path.realpath(sys.executable))
         cands = [os.path.join(here, "cpcpub.exe"),
                  os.path.join(os.path.dirname(here), "cpcpub.exe")]
     else:
-        here = os.path.dirname(os.path.abspath(__file__))
+        here = os.path.dirname(os.path.realpath(__file__))
         cands = [os.path.join(os.path.dirname(here), "bench", "cpcpub" + EXE),
                  os.path.join(here, "cpcpub" + EXE)]
     for cand in cands:
