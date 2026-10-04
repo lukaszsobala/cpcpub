@@ -45,6 +45,23 @@
 #define CPCPUB_HUB_URL ""
 #endif
 
+// How to get curl, for the message an https upload gives when there is none.
+// The Android binary is the one Termux runs.
+#if defined(_WIN32)
+#define CURL_HINT "Windows 10 1803 and later ship curl.exe in System32; on an " \
+                  "older Windows, install it with: winget install cURL.cURL\n"
+#elif defined(__ANDROID__)
+#define CURL_HINT "In Termux, install it with: pkg install curl\n"
+#elif defined(__APPLE__)
+#define CURL_HINT "macOS ships curl as /usr/bin/curl; put /usr/bin back on PATH.\n"
+#else
+#define CURL_HINT "Install it with the system's package manager:\n" \
+                  "  sudo apt install curl       Debian, Ubuntu\n" \
+                  "  sudo dnf install curl       Fedora\n" \
+                  "  sudo zypper install curl    openSUSE\n" \
+                  "  sudo pacman -S curl         Arch\n"
+#endif
+
 // What `--version` reports. "dev" unless the build stamped one in -- see
 // VERSION in bench/Makefile -- so an unlabelled binary says so rather than
 // claiming to be a release it is not.
@@ -2932,6 +2949,15 @@ int main(int argc, char **argv) {
         if (disp_sweep) {
             fprintf(stderr, "--disp-sweep produces a diagnostic curve, not a "
                             "result a hub can compare; drop --submit\n");
+            return 2;
+        }
+        // curl is a soft dependency of the packages, so it may well be
+        // missing; say how to get it before measuring, not after.
+        if (!strncmp(g_hub, "https://", 8) && !http_have_curl()) {
+            fprintf(stderr, "uploading to %s needs curl, and there is none on "
+                            "PATH.\n%s"
+                            "Or leave out --submit to measure without "
+                            "uploading.\n", g_hub, CURL_HINT);
             return 2;
         }
     }

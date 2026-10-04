@@ -97,7 +97,9 @@ process list. `--variants --submit` uploads one run per variant, since results
 only compare between matching builds — each run's label gets the variant name
 appended, which is what tells the four rows apart. `--label` and `--notes` are
 trimmed to what the hub keeps (200 and 2000 bytes) and say so when they are.
-https needs `curl` on `PATH` — there is no TLS in the binary itself. See
+https needs `curl` on `PATH` — there is no TLS in the binary itself. The
+packages only recommend curl, so `--submit` to an https hub checks for it
+before measuring and, when it is missing, says how to install it. See
 [web/README.md](../web/README.md).
 
 ## What it measures
