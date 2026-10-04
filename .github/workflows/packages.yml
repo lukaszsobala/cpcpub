@@ -1,0 +1,262 @@
+# Package a release's binaries for Linux, Termux and Windows, and test every
+# package by installing it the way a user would.
+#
+# Two ways in. release.yml calls this with the tag it is releasing, after its
+# build jobs have left the binaries as artifacts of the same run, and attaches
+# what comes out. Pushed on its own -- a change to the packaging, the window or
+# this file -- it packages the binaries of the latest published release
+# instead, so the packaging can be worked on without cutting a release, and it
+# uploads nothing but run artifacts.
+#
+# The rule everything here follows is the one release.yml exists for: a hub
+# verifies a result by the digest of the binary that measured it, so every
+# package carries the release binary byte for byte. Nothing is rebuilt,
+# stripped or signed on the way in, and every test job checks the installed
+# file's digest against the release asset's -- as well as the digest the
+# benchmark reports for itself.
+#
+# Secrets: none. The only credential is the per-run GITHUB_TOKEN, read-only
+# here, which `gh` uses to download the latest release's assets.
+
+name: packages
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "the release being built; its binaries are this run's build-* artifacts"
+        required: true
+        type: string
+  push:
+    paths:
+      - "packaging/**"
+      - "gui/**"
+      - ".github/workflows/packages.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  # Pinned to a version and a digest, like the llvm-mingw in release.yml: it
+  # is what puts the release binaries into the Linux packages.
+  NFPM_VERSION: "2.47.0"
+  NFPM_SHA256: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
+
+jobs:
+  # What is being packaged, and from where: the calling release's tag and the
+  # binaries its build jobs left, or the latest release's tag and its assets.
+  prepare:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.what.outputs.version }}
+      ref: ${{ steps.what.outputs.ref }}
+    steps:
+      - id: what
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          if [ -n "$TAG" ]; then
+            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+            echo "ref=$TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          echo "packaging $GITHUB_SHA with the binaries of $latest"
+          gh release download "$latest" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'cpcpub-*' --pattern SHA256SUMS --dir rel
+          # The assets are only as good as the checksums published beside them.
+          (cd rel && sha256sum -c --ignore-missing SHA256SUMS && rm SHA256SUMS)
+          echo "version=${latest#v}" >> "$GITHUB_OUTPUT"
+          echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      # Pushed or dispatched rather than called, there is no tag.
+      - if: ${{ !inputs.tag }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-latest-release
+          path: rel/
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: build-*
+          path: rel
+          merge-multiple: true
+      - name: Install nfpm
+        run: |
+          set -eux
+          tgz="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl -fsSL -o "$tgz" \
+            "https://github.com/goreleaser/nfpm/releases/download/v$NFPM_VERSION/$tgz"
+          echo "$NFPM_SHA256  $tgz" | sha256sum -c -
+          tar -xzf "$tgz" nfpm
+          sudo install -m 755 nfpm /usr/local/bin/nfpm
+          nfpm --version
+      # Dated by the commit being packaged, so the same commit packages to the
+      # same bytes whenever it is run.
+      - name: Build the packages
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -eux
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+            python3 packaging/linux/build.py rel "$VERSION" dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages-linux
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Installed in containers of the distributions they are for, on both
+  # architectures there are runners for. The arm64 runner also runs Termux's
+  # own image, natively.
+  linux-test:
+    needs: [prepare, linux]
+    name: linux-test (${{ matrix.runs-on }})
+    runs-on: ${{ matrix.runs-on }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        runs-on: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: build-*
+          path: rel
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages-linux
+          path: pkgs
+      - run: sh packaging/linux/test.sh pkgs rel
+
+  # The window for Windows: Python, PyGObject and GTK 4 from MSYS2, frozen with
+  # PyInstaller. Built once, on x64, and installed on both machines -- see
+  # packaging/windows/cpcpub.wxs.
+  windows-gui:
+    needs: prepare
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-python-gobject
+            mingw-w64-ucrt-x86_64-python-pyinstaller
+      - run: sh packaging/windows/build-gui.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-gui
+          path: dist/cpcpub-gui/
+          if-no-files-found: error
+          retention-days: 7
+
+  # The MSIs are assembled on Linux, by wixl, from the same staged release
+  # binaries as the Linux packages. 26.04 for msitools 0.106: 24.04's 0.103
+  # cannot write the PATH entry.
+  windows-msi:
+    needs: [prepare, windows-gui]
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: build-*
+          path: rel
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-gui
+          path: gui
+      - name: Build the installers
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wixl msitools
+          python3 packaging/windows/build-msi.py rel gui "$VERSION" dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages-windows
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Each installer on the machine it is for, and the other one refused there.
+  windows-test:
+    needs: [prepare, windows-msi]
+    name: windows-test (${{ matrix.machine }})
+    runs-on: ${{ matrix.runs-on }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: windows-2025
+            machine: x64
+            other: arm64
+          - runs-on: windows-11-arm
+            machine: arm64
+            other: x64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: build-*
+          path: rel
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages-windows
+          path: pkgs
+      - shell: pwsh
+        env:
+          MACHINE: ${{ matrix.machine }}
+          OTHER: ${{ matrix.other }}
+        run: |
+          $msi = (Get-ChildItem "pkgs/*-windows-$env:MACHINE.msi").FullName
+          $other = (Get-ChildItem "pkgs/*-windows-$env:OTHER.msi").FullName
+          ./packaging/windows/test-msi.ps1 -Msi $msi -Other $other `
+              -Release (Resolve-Path rel).Path -Machine $env:MACHINE

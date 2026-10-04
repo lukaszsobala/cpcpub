@@ -50,6 +50,15 @@
 # job prints the floor it ended up with. The portable rv64gc row must stay on
 # 24.04 for the opposite reason, spelled out at the arch check below.
 #
+# The packages -- .deb, .rpm and Arch packages, a Termux .deb, and the Windows
+# MSIs -- are made by packages.yml, called below once every binary has passed
+# its checks, from those same binaries and without changing a byte of them; see
+# the top of that file. Each is installed and tested on the system it is for
+# before anything is published, so a release that would ship a broken package
+# does not ship at all. packages.yml checks out the tag, as these jobs do, so a
+# dispatch for a tag older than the packaging fails there rather than packaging
+# an old release with today's files.
+#
 # Secrets: none are used and none exist to leak. The only credential in play is
 # the automatic, per-run GITHUB_TOKEN, given to `gh` through the environment --
 # never on a command line, never echoed, never written to a file. Permissions
@@ -618,15 +627,29 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
+  packages:
     needs: build
+    permissions:
+      contents: read
+    uses: ./.github/workflows/packages.yml
+    with:
+      tag: ${{ github.event.inputs.tag || github.ref_name }}
+
+  publish:
+    needs: [build, packages]
     runs-on: ubuntu-24.04
     permissions:
       contents: write        # the only write in this workflow: attach assets
     steps:
       - uses: actions/download-artifact@v8
         with:
+          pattern: build-*
           path: staged
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          path: staged/packages
           merge-multiple: true
 
       # Digests are taken here, over the exact bytes about to be uploaded --
@@ -693,6 +716,10 @@ jobs:
           assert published == listed, (published, listed)
           print(f"{len(listed)} binaries agree between SHA256SUMS and the manifest")
           PY
+          # The packages join the checksum file only now, once the binaries in
+          # it have been checked against the manifest: they are downloads to
+          # check like any other, but not builds a hub can verify.
+          (cd packages && sha256sum -- *) | tee -a SHA256SUMS
 
       # `gh` reads the token from the environment, so it never reaches a process
       # list or a log line. --clobber so re-running the workflow for a tag
@@ -707,7 +734,7 @@ jobs:
             || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
                  --title "$TAG" --generate-notes
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            cpcpub-* SHA256SUMS verified-builds.json
+            cpcpub-* packages/* SHA256SUMS verified-builds.json
 
       - name: Say how to trust these
         run: |
