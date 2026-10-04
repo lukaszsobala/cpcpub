@@ -174,7 +174,7 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-gtk4
             mingw-w64-ucrt-x86_64-python-gobject
-            mingw-w64-ucrt-x86_64-python-pyinstaller
+            mingw-w64-ucrt-x86_64-pyinstaller
       - run: sh packaging/windows/build-gui.sh
       - uses: actions/upload-artifact@v7
         with:

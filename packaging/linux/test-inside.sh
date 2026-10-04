@@ -17,26 +17,30 @@ esac
 
 say() { printf '\n== %s\n' "$*"; }
 
+# Mirrors fail now and then -- a timeout, a package "corrupted during transfer"
+# -- and a test that fails over that has said nothing about the package.
+retry() { "$@" || { sleep 15; "$@"; } || { sleep 60; "$@"; }; }
+
 say "install"
 if command -v apt-get >/dev/null; then
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq /pkgs/cpcpub_*_$deb.deb /pkgs/cpcpub-gui_*_all.deb \
+    retry apt-get update -qq
+    retry apt-get install -y -qq /pkgs/cpcpub_*_$deb.deb /pkgs/cpcpub-gui_*_all.deb \
         xvfb desktop-file-utils appstream >/dev/null
     remove="apt-get remove -y -qq cpcpub cpcpub-gui"
 elif command -v dnf >/dev/null; then
-    dnf install -y -q /pkgs/cpcpub-*.$rpm.rpm /pkgs/cpcpub-gui-*.noarch.rpm \
+    retry dnf install -y -q /pkgs/cpcpub-*.$rpm.rpm /pkgs/cpcpub-gui-*.noarch.rpm \
         xorg-x11-server-Xvfb
     remove="dnf remove -y -q cpcpub cpcpub-gui"
 elif command -v zypper >/dev/null; then
     # A font as well: this image has none, and Pango crashes outright with
     # nothing to lay text out in. A desktop install never lacks one.
-    zypper --non-interactive -q install --allow-unsigned-rpm \
+    retry zypper --non-interactive -q install --allow-unsigned-rpm \
         /pkgs/cpcpub-*.$rpm.rpm /pkgs/cpcpub-gui-*.noarch.rpm \
         xorg-x11-server-Xvfb dejavu-fonts
     remove="zypper --non-interactive -q remove cpcpub cpcpub-gui"
 elif command -v pacman >/dev/null; then
-    pacman -Syu --noconfirm --needed xorg-server-xvfb >/dev/null
+    retry pacman -Syu --noconfirm --needed xorg-server-xvfb >/dev/null
     pacman -U --noconfirm /pkgs/cpcpub-*-$pac.pkg.tar.zst \
         /pkgs/cpcpub-gui-*-any.pkg.tar.zst
     remove="pacman -R --noconfirm cpcpub-gui cpcpub"
