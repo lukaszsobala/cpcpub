@@ -67,9 +67,12 @@
                the digest of the file that measured it. -->
           <Component Id="Benchmark" Guid="*" Win64="yes">
             <File Id="cpcpub.exe" Name="cpcpub.exe" Source="$(var.Bin)" KeyPath="yes"/>
-            <!-- On PATH, so `cpcpub` works from a new terminal; removed from
-                 it again on uninstall. -->
-            <Environment Id="PathEntry" Name="PATH" Value="[INSTALLDIR]"
+            <!-- On PATH, so `cpcpub` works from a new terminal, and off it
+                 again on uninstall. The "-" in the name is that second half:
+                 WiX writes it for Permanent="no", wixl ignores the attribute
+                 and leaves the entry behind, and Windows Installer reads the
+                 flags before a name in any order. -->
+            <Environment Id="PathEntry" Name="-PATH" Value="[INSTALLDIR]"
                          Part="last" Action="set" System="yes" Permanent="no"/>
           </Component>
 <?if $(var.BinV3) != "" ?>
