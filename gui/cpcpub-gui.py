@@ -7,15 +7,18 @@ chosen output directory, and renders the numbers. Everything the benchmark
 does -- including the upload -- is still done by the benchmark itself; this
 process only assembles argv and reads the two streams back.
 
-Needs PyGObject and GTK 4 (python3-gi / gtk4 on Debian and Ubuntu, python3-gobject
-/ gtk4 on Fedora and Arch). No other dependency, and none for the benchmark.
+Needs PyGObject and GTK 4.10 or newer (python3-gi / gir1.2-gtk-4.0 on Debian
+and Ubuntu, python3-gobject / gtk4 on Fedora and Arch). No other dependency, and
+none for the benchmark. The Windows installer carries its own copy of both.
 """
 
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -28,6 +31,29 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, GObject, Gtk, Pango  # noqa: E402 # pyright: ignore
 
 APP_ID = "je.qd.cpcpub.Gui"
+
+# A frozen copy is the Windows build: PyInstaller's executable, with GTK and
+# the icon unpacked beside it in sys._MEIPASS.
+FROZEN = getattr(sys, "frozen", False)
+EXE = ".exe" if os.name == "nt" else ""
+
+# A console program started from a windowed one gets a console window of its
+# own on Windows unless told otherwise, and the benchmark has nothing to show
+# in one: its output comes here. Zero, and so no flag, everywhere else.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+# Set by the packaging tests to a file path: the window then makes one short
+# run by itself, writes what happened to that file as JSON, and quits. It is
+# how a machine with no one at it checks that an installed copy can find the
+# benchmark, start it, read both of its streams and show a result.
+SMOKE = os.environ.get("CPCPUB_GUI_SMOKE", "")
+
+# The other builds a package installs beside the plain one, by the suffix
+# their file names carry: the same benchmark for a newer instruction set.
+BUILDS = {
+    "-v3": "x86-64-v3 (AVX2 and FMA)",
+    "-rva23": "the RISC-V RVA23 profile",
+}
 
 # The four variants the binary carries, in the order --list-variants prints
 # them. Used as the fallback when the binary cannot be asked -- the real list,
@@ -210,17 +236,41 @@ def human_duration(seconds):
 
 
 def find_binary():
-    """The benchmark, looked for beside this file first and then on PATH."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    root = os.path.dirname(here)
-    for cand in (
-        os.path.join(root, "bench", "cpcpub"),
-        os.path.join(root, "bench", "cpcpub.exe"),
-        os.path.join(here, "cpcpub"),
-    ):
-        if os.access(cand, os.X_OK):
+    """The benchmark: the one this tree builds, else the one installed beside
+    this program, else whatever PATH has.
+
+    Installed, this program is /usr/bin/cpcpub-gui beside /usr/bin/cpcpub, or
+    on Windows cpcpub-gui.exe in a folder of its own inside the one holding
+    cpcpub.exe.
+    """
+    if FROZEN:
+        here = os.path.dirname(sys.executable)
+        cands = [os.path.join(here, "cpcpub.exe"),
+                 os.path.join(os.path.dirname(here), "cpcpub.exe")]
+    else:
+        here = os.path.dirname(os.path.abspath(__file__))
+        cands = [os.path.join(os.path.dirname(here), "bench", "cpcpub" + EXE),
+                 os.path.join(here, "cpcpub" + EXE)]
+    for cand in cands:
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
             return cand
-    return GLib.find_program_in_path("cpcpub") or ""
+    return shutil.which("cpcpub") or ""
+
+
+def other_builds(binary):
+    """The builds installed beside the plain `binary`, as (file name, target)."""
+    folder, name = os.path.split(binary)
+    if name != "cpcpub" + EXE:
+        return []
+    return [("cpcpub" + suffix + EXE, target) for suffix, target in BUILDS.items()
+            if os.path.isfile(os.path.join(folder, "cpcpub" + suffix + EXE))]
+
+
+def quote_command(argv):
+    """argv as the shell this platform has would want it typed."""
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return " ".join(shlex.quote(a) for a in argv)
 
 
 def list_variants(binary):
@@ -230,6 +280,7 @@ def list_variants(binary):
     try:
         done = subprocess.run(
             [binary, "--list-variants"], capture_output=True, timeout=10, check=False,
+            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return FALLBACK_VARIANTS
@@ -740,8 +791,11 @@ class Window(Gtk.ApplicationWindow):
         self.binary = Gtk.Entry(hexpand=True, placeholder_text="path to cpcpub")
         self.binary.set_text(find_binary())
         self.binary.connect(
-            "changed", lambda *_: (self.reload_variants(), self.update_command())
+            "changed",
+            lambda *_: (self.reload_variants(), self.update_command(),
+                        self.update_binary_tip()),
         )
+        self.update_binary_tip()
         binrow.append(self.binary)
         pick = Gtk.Button(label="Browse…")
         pick.connect("clicked", self.on_pick_binary)
@@ -972,6 +1026,19 @@ class Window(Gtk.ApplicationWindow):
 
     # -- form behaviour ----------------------------------------------------
 
+    def update_binary_tip(self):
+        tip = "The benchmark this window runs."
+        others = other_builds(self.binary.get_text().strip())
+        if others:
+            # A package installs the newer-ISA builds beside the plain one, and
+            # the plain one is what the window starts with: it is the build
+            # every result compares against, and it runs everywhere.
+            tip += "\nBeside it:" + "".join(
+                f"\n  {name}, built for {target}" for name, target in others
+            ) + ("\nFaster where the processor has those instructions, and "
+                 "refuses to start where it does not. Browse to pick one.")
+        self.binary.set_tooltip_text(tip)
+
     def reload_variants(self):
         child = self.variant_list.get_first_child()
         while child is not None:
@@ -1071,8 +1138,8 @@ class Window(Gtk.ApplicationWindow):
         self.update_estimate()
         # The binary's path is in the form already; what is worth a line is
         # what the rest of the form turned into.
-        self.command.set_text(" ".join(shlex.quote(a) for a in argv[1:]))
-        self.command_line = " ".join(shlex.quote(a) for a in argv)
+        self.command.set_text(quote_command(argv[1:]))
+        self.command_line = quote_command(argv)
         self.token_in_env = "CPCPUB_TOKEN" in env
 
     def on_copy_command(self, _button):
@@ -1194,16 +1261,15 @@ class Window(Gtk.ApplicationWindow):
             self.log("no hub URL given: relying on the address baked into this build\n")
 
         argv, env = self.build_argv()
-        launcher = Gio.SubprocessLauncher.new(
-            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
-        )
-        for key, value in env.items():
-            launcher.setenv(key, value, True)
         try:
-            self.proc = launcher.spawnv(argv)
-        except GLib.Error as exc:
+            self.proc = subprocess.Popen(
+                argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, env={**os.environ, **env},
+                creationflags=NO_WINDOW,
+            )
+        except OSError as exc:
             self.proc = None
-            self.fail(f"Could not start the benchmark: {exc.message}")
+            self.fail(f"Could not start the benchmark: {exc.strerror or exc}")
             return
 
         self.set_text(self.log_view, "")
@@ -1226,9 +1292,14 @@ class Window(Gtk.ApplicationWindow):
         self.tick_id = GLib.timeout_add_seconds(1, self.on_tick)
         self.on_tick()
 
-        self.read_lines(self.proc.get_stderr_pipe(), self.on_stderr_line)
-        self.read_lines(self.proc.get_stdout_pipe(), self.on_stdout_line)
-        self.proc.wait_async(None, self.on_finished)
+        # A thread per stream and one to reap, each handing what it got to the
+        # main loop: a pipe nobody reads fills, and the benchmark then stops
+        # dead in the middle of a write.
+        for pipe, handler in ((self.proc.stderr, self.on_stderr_line),
+                              (self.proc.stdout, self.on_stdout_line)):
+            threading.Thread(target=self.read_lines, args=(pipe, handler),
+                             daemon=True).start()
+        threading.Thread(target=self.reap, args=(self.proc,), daemon=True).start()
 
     def on_tick(self):
         elapsed = time.monotonic() - self.started
@@ -1243,22 +1314,28 @@ class Window(Gtk.ApplicationWindow):
         return GLib.SOURCE_CONTINUE
 
     def read_lines(self, pipe, handler):
-        stream = Gio.DataInputStream.new(pipe)
-        stream.set_newline_type(Gio.DataStreamNewlineType.ANY)
+        """On a thread of its own: read one stream to the end, line by line."""
+        with pipe:
+            for raw in iter(pipe.readline, b""):
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                GLib.idle_add(self.on_main, handler, line)
+        GLib.idle_add(self.on_main, self.on_stream_closed)
 
-        def pump(src, res):
-            try:
-                line, _length = src.read_line_finish_utf8(res)
-            except GLib.Error:
-                line = None
-            if line is None:
-                self.pending_streams -= 1
-                self.maybe_finish()
-                return
-            handler(line)
-            src.read_line_async(GLib.PRIORITY_DEFAULT, None, pump)
+    def reap(self, proc):
+        """On a thread of its own: wait for the process to exit."""
+        status = proc.wait()
+        # Negative is a signal on POSIX: not an exit, and not a status.
+        GLib.idle_add(self.on_main, self.on_finished, status if status >= 0 else -1)
 
-        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, pump)
+    @staticmethod
+    def on_main(func, *args):
+        """Run a reader thread's news on the main loop, once."""
+        func(*args)
+        return GLib.SOURCE_REMOVE
+
+    def on_stream_closed(self):
+        self.pending_streams -= 1
+        self.maybe_finish()
 
     def on_stderr_line(self, line):
         self.log(line + "\n")
@@ -1266,12 +1343,8 @@ class Window(Gtk.ApplicationWindow):
     def on_stdout_line(self, line):
         self.stdout_buf.append(line)
 
-    def on_finished(self, proc, res):
-        try:
-            proc.wait_finish(res)
-            self.exit_status = proc.get_exit_status() if proc.get_if_exited() else -1
-        except GLib.Error:
-            self.exit_status = -1
+    def on_finished(self, status):
+        self.exit_status = status
         self.pending_streams -= 1
         self.maybe_finish()
 
@@ -1329,6 +1402,8 @@ class Window(Gtk.ApplicationWindow):
         # failed, or the delete token an upload prints once and never again.
         if self.exit_status != 0 or not docs or self.submitting:
             self.show_output(self.log_view)
+        if SMOKE:
+            self.smoke_report(docs=len(docs or []), saved=saved)
 
     def save(self, raw):
         # Local time, and the run itself carries no clock -- this name is for
@@ -1348,16 +1423,76 @@ class Window(Gtk.ApplicationWindow):
     def on_stop(self, _button):
         if self.proc is not None:
             self.log("\nstopped\n")
-            self.proc.force_exit()
+            self.proc.kill()
+
+    # -- the packaging tests' run ------------------------------------------
+
+    def smoke_run(self):
+        """The shortest run the form can describe, started as if by hand."""
+        self.mode_full.set_active(False)        # leaves the multi-threaded run
+        self.threads.set_text("1")
+        self.cpus.set_text("0")
+        self.seconds.set_value(0.05)
+        self.reps.set_value(1)
+        self.warmup.set_value(0.0)
+        self.outdir.set_text(os.path.dirname(os.path.abspath(SMOKE)))
+        self.on_run(None)
+        if self.proc is None:                   # it did not start; fail() said why
+            self.smoke_report(docs=0, saved=None)
+        else:
+            # Generous: a run this short takes a second or two, but the first
+            # start of a freshly installed program can be slow on Windows.
+            GLib.timeout_add_seconds(120, self.smoke_report, 0, None)
+        return GLib.SOURCE_REMOVE
+
+    def smoke_report(self, docs, saved):
+        buf = self.log_view.get_buffer()
+        report = {
+            "binary": self.binary.get_text().strip(),
+            "variants": self.selected_variants() or [n for n, _ in self.variant_checks],
+            "gtk": f"{Gtk.get_major_version()}.{Gtk.get_minor_version()}."
+                   f"{Gtk.get_micro_version()}",
+            "exit": self.exit_status,
+            "docs": docs,
+            "saved": saved,
+            "status": self.status.get_text(),
+            "log": buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False),
+        }
+        with open(SMOKE, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2)
+        if self.proc is not None:
+            self.proc.kill()
+        app = self.get_application()
+        if app is not None:
+            app.quit()
+        return GLib.SOURCE_REMOVE
 
 
 class App(Gtk.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
 
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        # Installed on Linux the icon is in the theme under this name, put there
+        # by the package. The Windows build carries it in a folder of its own.
+        Gtk.Window.set_default_icon_name(APP_ID)
+
     def do_activate(self):
-        Window(self).present()
+        win = Window(self)
+        if FROZEN:
+            Gtk.IconTheme.get_for_display(win.get_display()).add_search_path(
+                os.path.join(getattr(sys, "_MEIPASS", ""), "icons")
+            )
+        if SMOKE:
+            win.connect("map", lambda *_: GLib.timeout_add(500, win.smoke_run))
+        win.present()
 
 
 if __name__ == "__main__":
+    # A windowed Windows build has no console, so nothing to print a traceback
+    # to; under the packaging tests it goes beside their report instead.
+    if SMOKE and sys.stderr is None:
+        # Open for the life of the process, which is what a with-block is not.
+        sys.stderr = open(SMOKE + ".log", "w", encoding="utf-8", buffering=1)  # noqa: SIM115
     sys.exit(App().run(sys.argv))
