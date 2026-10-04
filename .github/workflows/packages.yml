@@ -169,13 +169,24 @@ jobs:
       - run: sh packaging/linux/test.sh pkgs rel
 
   # The window for Windows: Python, PyGObject and GTK 4 from MSYS2, frozen with
-  # PyInstaller. Built once, on x64, and installed on both machines -- see
-  # packaging/windows/cpcpub.iss.
+  # PyInstaller, natively on each machine.
   windows-gui:
     needs: prepare
-    runs-on: windows-2025
+    name: windows-gui (${{ matrix.machine }})
+    runs-on: ${{ matrix.runs-on }}
     permissions:
       contents: read
+    strategy:
+      matrix:
+        include:
+          - runs-on: windows-2025
+            machine: x64
+            msystem: UCRT64
+            prefix: mingw-w64-ucrt-x86_64
+          - runs-on: windows-11-arm
+            machine: arm64
+            msystem: CLANGARM64
+            prefix: mingw-w64-clang-aarch64
     defaults:
       run:
         shell: msys2 {0}
@@ -186,16 +197,16 @@ jobs:
           persist-credentials: false
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
+          msystem: ${{ matrix.msystem }}
           update: true
           install: >-
-            mingw-w64-ucrt-x86_64-gtk4
-            mingw-w64-ucrt-x86_64-python-gobject
-            mingw-w64-ucrt-x86_64-pyinstaller
+            ${{ matrix.prefix }}-gtk4
+            ${{ matrix.prefix }}-python-gobject
+            ${{ matrix.prefix }}-pyinstaller
       - run: sh packaging/windows/build-gui.sh
       - uses: actions/upload-artifact@v7
         with:
-          name: windows-gui
+          name: windows-gui-${{ matrix.machine }}
           path: dist/cpcpub-gui/
           if-no-files-found: error
           retention-days: 7
@@ -219,8 +230,12 @@ jobs:
           merge-multiple: true
       - uses: actions/download-artifact@v8
         with:
-          name: windows-gui
-          path: gui
+          name: windows-gui-x64
+          path: gui-x64
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-gui-arm64
+          path: gui-arm64
       - name: Build the installer
         shell: pwsh
         env:
@@ -232,7 +247,8 @@ jobs:
               choco install innosetup --yes --no-progress
               if ($LASTEXITCODE -ne 0) { throw "choco exited $LASTEXITCODE" }
           }
-          ./packaging/windows/build-installer.ps1 -Release rel -Gui gui -Version $env:VERSION -Out dist
+          ./packaging/windows/build-installer.ps1 -Release rel -GuiX64 gui-x64 -GuiArm64 gui-arm64 `
+              -Version $env:VERSION -Out dist
       - uses: actions/upload-artifact@v7
         with:
           name: packages-windows
