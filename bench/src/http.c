@@ -695,3 +695,14 @@ int http_post_json(const char *url, const char *token, const char *body,
 #endif
     return rc;
 }
+
+int http_have_curl(void) {
+    // Through the shell, as the upload itself goes, so the answer is about
+    // the same curl on the same PATH.
+#ifdef _WIN32
+    return system("curl --version >NUL 2>&1") == 0;
+#else
+    const int rc = system("curl --version >/dev/null 2>&1");
+    return rc != -1 && WIFEXITED(rc) && WEXITSTATUS(rc) == 0;
+#endif
+}

@@ -31,4 +31,9 @@ int http_post_json(const char *url, const char *token,
 
 void http_free(http_reply_t *r);
 
+// Whether curl, which an https:// upload goes through, can be run here. Asked
+// before measuring, so a missing curl costs a second rather than the run it
+// was meant to upload.
+int http_have_curl(void);
+
 #endif  // CPCPUB_HTTP_H
