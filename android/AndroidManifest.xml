@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  cpcpub for Android: a window over the release's static Android binary, which
+  rides in the APK as lib/arm64-v8a/libcpcpub.so. The version, the SDK levels
+  and the signing come from build.sh.
+
+  extractNativeLibs: the package manager copies the "library" out to the app's
+  native library directory at install time, where Android lets an app execute
+  a file, and copies it unchanged, so the digest the benchmark reports for
+  itself is still the release asset's.
+
+  usesCleartextTraffic: a hub may be a plain http:// server on a LAN, as the
+  benchmark itself allows; the public hub is https.
+
+  configChanges: turning the phone must not restart the activity, which would
+  drop a run that is still measuring.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="je.qd.cpcpub">
+
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <application
+        android:label="cpcpub"
+        android:icon="@mipmap/ic_launcher"
+        android:extractNativeLibs="true"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
