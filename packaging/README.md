@@ -12,6 +12,7 @@ beside them:
 | Arch Linux | `cpcpub-VERSION-1-ARCH.pkg.tar.zst`, `cpcpub-gui-VERSION-1-any.pkg.tar.zst` | the same |
 | Termux | `cpcpub-termux_VERSION-1_aarch64.deb` | the static Android binary, under Termux's prefix |
 | Windows | `cpcpub-VERSION-windows-x64.msi`, `-arm64.msi` | `cpcpub.exe` on PATH (and `cpcpub-v3.exe` on x64), the window in the Start menu |
+| Android | `cpcpub-VERSION-android-arm64.apk` | an app around the static Android binary; see [android/](../android/README.md) |
 
 The Linux packages exist for every architecture the release has a Linux
 binary for: x86-64, AArch64, RISC-V, LoongArch, ppc64le and s390x (no Arch
@@ -39,7 +40,10 @@ That decides the tools:
   else to them.
 - **wixl for Windows.** It builds the MSI on Linux, from the same staged
   files.
-- **Nothing is signed.** Signing a Windows binary rewrites it.
+- **The SDK's own tools for Android, not Gradle.** The Gradle plugin strips
+  native libraries.
+- **Nothing inside is signed.** Signing a Windows binary rewrites it. The APK
+  is signed as a whole, which leaves the binary inside it alone.
 
 Every package is then installed and checked. The installed file's digest has
 to match the release asset's, and so does the digest the benchmark reports
@@ -72,6 +76,31 @@ is published only if all of them pass:
   - a clean uninstall;
   - that the other machine's MSI refuses to install.
 
+- **Android:** the APK is checked rather than installed. There is no
+  emulator on the arm64 runners, and an x86 emulator's Arm translation cannot
+  run a static binary. The checks are its signature, its manifest and the
+  embedded binary's digest. The same binary runs in Termux's image above.
+  [android/README.md](../android/README.md) says what was tried on an
+  emulator by hand.
+
+## The Android signing key
+
+Android installs an update only if it is signed with the same key as the
+version installed. The release workflow therefore signs with a key kept in four
+repository secrets. Until they exist, every build gets a throwaway key, and the
+run carries a warning that says so. Make the key once and keep a copy
+somewhere safe: losing it means users must uninstall to update.
+
+```sh
+keytool -genkeypair -keystore cpcpub-release.p12 -storetype PKCS12 \
+    -alias cpcpub -keyalg RSA -keysize 4096 -validity 36500 \
+    -dname "CN=Łukasz Sobala"
+base64 -w0 cpcpub-release.p12 | gh secret set ANDROID_KEYSTORE
+gh secret set ANDROID_KEYSTORE_PASSWORD     # prompts; the one keytool asked for
+gh secret set ANDROID_KEY_ALIAS --body cpcpub
+gh secret set ANDROID_KEY_PASSWORD          # the same password, for a PKCS12 store
+```
+
 ## Building them yourself
 
 From a directory holding a release's assets:
@@ -90,6 +119,9 @@ or newer runs:
 ```sh
 python3 packaging/windows/build-msi.py rel dist/cpcpub-gui v0.3.6 out
 ```
+
+The APK: `android/build.sh rel v0.3.6 out`, with `ANDROID_HOME` set; see
+[android/README.md](../android/README.md#building).
 
 `SOURCE_DATE_EPOCH` dates everything inside the Linux packages, so the same
 commit packages to the same bytes. The workflow sets it to the commit's time.

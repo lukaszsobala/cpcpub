@@ -50,8 +50,8 @@
 # job prints the floor it ended up with. The portable rv64gc row must stay on
 # 24.04 for the opposite reason, spelled out at the arch check below.
 #
-# The packages -- .deb, .rpm and Arch packages, a Termux .deb, and the Windows
-# MSIs -- are made by packages.yml, called below once every binary has passed
+# The packages -- .deb, .rpm and Arch packages, a Termux .deb, the Windows MSIs
+# and the Android APK -- are made by packages.yml, called below once every binary has passed
 # its checks, from those same binaries and without changing a byte of them; see
 # the top of that file. Each is installed and tested on the system it is for
 # before anything is published, so a release that would ship a broken package
@@ -59,13 +59,14 @@
 # dispatch for a tag older than the packaging fails there rather than packaging
 # an old release with today's files.
 #
-# Secrets: none are used and none exist to leak. The only credential in play is
-# the automatic, per-run GITHUB_TOKEN, given to `gh` through the environment --
-# never on a command line, never echoed, never written to a file. Permissions
-# are empty by default and read-only on the build jobs; exactly one job may
-# write, and only to attach assets. The build jobs check out with
-# persist-credentials disabled, so the token is not left in .git/config while a
-# Makefile and a compiler run.
+# Secrets: this file uses none itself. It passes the Android signing key on to
+# packages.yml, which uses it in one step and says how. The only other
+# credential in play is the automatic, per-run GITHUB_TOKEN, given to `gh`
+# through the environment -- never on a command line, never echoed, never
+# written to a file. Permissions are empty by default and read-only on the
+# build jobs; exactly one job may write, and only to attach assets. The build
+# jobs check out with persist-credentials disabled, so the token is not left in
+# .git/config while a Makefile and a compiler run.
 
 name: release
 
@@ -634,6 +635,13 @@ jobs:
     uses: ./.github/workflows/packages.yml
     with:
       tag: ${{ github.event.inputs.tag || github.ref_name }}
+    # The Android signing key, and nothing else: packages.yml names the four
+    # secrets it takes and hands them to the one step that signs.
+    secrets:
+      ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
   publish:
     needs: [build, packages]
