@@ -24,6 +24,6 @@ PY
 pyinstaller --version
 pyinstaller --noconfirm --clean --distpath dist --workpath build/pyinstaller \
     packaging/windows/cpcpub-gui.spec
-# The window's whole footprint, for the log: the MSI carries all of it.
+# The window's whole footprint, for the log: the installer carries all of it.
 du -sh dist/cpcpub-gui
 find dist/cpcpub-gui -type f | wc -l

@@ -170,7 +170,7 @@ jobs:
 
   # The window for Windows: Python, PyGObject and GTK 4 from MSYS2, frozen with
   # PyInstaller. Built once, on x64, and installed on both machines -- see
-  # packaging/windows/cpcpub.wxs.
+  # packaging/windows/cpcpub.iss.
   windows-gui:
     needs: prepare
     runs-on: windows-2025
@@ -200,12 +200,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # The MSIs are assembled on Linux, by wixl, from the same staged release
-  # binaries as the Linux packages. 26.04 for msitools 0.106: 24.04's 0.103
-  # cannot write the PATH entry.
-  windows-msi:
+  # One setup program for both machines, compiled by Inno Setup from the
+  # release binaries and the window's folder.
+  windows-installer:
     needs: [prepare, windows-gui]
-    runs-on: ubuntu-26.04
+    runs-on: windows-2025
     permissions:
       contents: read
     steps:
@@ -222,14 +221,18 @@ jobs:
         with:
           name: windows-gui
           path: gui
-      - name: Build the installers
+      - name: Build the installer
+        shell: pwsh
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends wixl msitools
-          python3 packaging/windows/build-msi.py rel gui "$VERSION" dist
+          # The runner images carry Inno Setup; install it only if this one
+          # does not.
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+              choco install innosetup --yes --no-progress
+              if ($LASTEXITCODE -ne 0) { throw "choco exited $LASTEXITCODE" }
+          }
+          ./packaging/windows/build-installer.ps1 -Release rel -Gui gui -Version $env:VERSION -Out dist
       - uses: actions/upload-artifact@v7
         with:
           name: packages-windows
@@ -237,9 +240,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Each installer on the machine it is for, and the other one refused there.
+  # The same setup on each machine, which has to install that machine's own
+  # benchmark build.
   windows-test:
-    needs: [prepare, windows-msi]
+    needs: [prepare, windows-installer]
     name: windows-test (${{ matrix.machine }})
     runs-on: ${{ matrix.runs-on }}
     permissions:
@@ -250,10 +254,8 @@ jobs:
         include:
           - runs-on: windows-2025
             machine: x64
-            other: arm64
           - runs-on: windows-11-arm
             machine: arm64
-            other: x64
     steps:
       - uses: actions/checkout@v7
         with:
@@ -271,11 +273,9 @@ jobs:
       - shell: pwsh
         env:
           MACHINE: ${{ matrix.machine }}
-          OTHER: ${{ matrix.other }}
         run: |
-          $msi = (Get-ChildItem "pkgs/*-windows-$env:MACHINE.msi").FullName
-          $other = (Get-ChildItem "pkgs/*-windows-$env:OTHER.msi").FullName
-          ./packaging/windows/test-msi.ps1 -Msi $msi -Other $other `
+          $setup = (Get-ChildItem "pkgs/*-windows-setup.exe").FullName
+          ./packaging/windows/test-installer.ps1 -Setup $setup `
               -Release (Resolve-Path rel).Path -Machine $env:MACHINE
 
   # The Android app: the release's static Android binary inside an APK, built

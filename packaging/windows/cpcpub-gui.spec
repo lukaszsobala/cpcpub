@@ -5,7 +5,7 @@
 #
 # One folder, not one file: a one-file build unpacks the whole of GTK into a
 # temporary directory on every start, which is slow, and is also the shape
-# antivirus heuristics distrust most. The MSI installs the folder as it is.
+# antivirus heuristics distrust most. Setup installs the folder as it is.
 # ruff: noqa: F821 -- Analysis, PYZ, EXE, COLLECT and SPECPATH are PyInstaller's.
 
 import os
