@@ -186,7 +186,10 @@ def explain_variant(name, distinct=True):
     else:
         text = "The compiler may fuse multiplies with adds into one instruction."
     if not distinct:
-        text += "\nOn this CPU it is the same code as the baseline."
+        # Decided by the -march the binary was built for, not by the CPU: the
+        # plain x86-64 build has no FMA variant even on a CPU with FMA.
+        text += ("\nIn this build it is the same code as the baseline: the "
+                 "instruction set it was built for lacks what it would use.")
     return text
 
 # What a run costs, in the benchmark's own units. One pass of the suite is:
