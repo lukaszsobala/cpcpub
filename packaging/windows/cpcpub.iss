@@ -1,10 +1,12 @@
 ﻿; The Windows installer: the benchmark, on PATH, and the window, in the Start
-; menu, in one setup program for both x64 and Arm64 machines. Compiled by
+; menu, in one setup program for both x64 and Arm64 machines, each of which
+; gets its own native benchmark and window. Compiled by
 ; build-installer.ps1 with Inno Setup 6.3 or newer, which passes:
 ;
 ;   Version   the release, plain numbers and dots
 ;   Rel       a folder holding the release's Windows binaries
-;   Gui       the PyInstaller folder of the window (build-gui.sh)
+;   GuiX64    the PyInstaller folders of the window (build-gui.sh), one
+;   GuiArm64  frozen on each machine
 ;   Top       the top of the source tree, for the icon and the license
 ;
 ; The file starts with a byte-order mark so that the compiler reads it as
@@ -15,7 +17,7 @@
 ; that measured it.
 
 #ifndef Version
-  #error Compile with /DVersion=, /DRel=, /DGui= and /DTop=; see build-installer.ps1.
+  #error Compile with /DVersion=, /DRel=, /DGuiX64=, /DGuiArm64= and /DTop=; see build-installer.ps1.
 #endif
 ; 6.3 for x64os, IsX64OS and IsArm64: before them, Inno Setup could not tell
 ; an x64 machine from an Arm64 one running x64 code under emulation.
@@ -86,7 +88,11 @@ Source: "{#Rel}\cpcpub-windows-arm64.exe"; DestDir: "{app}"; DestName: "cpcpub.e
 Source: "{#Top}\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "{#Top}\bench\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Top}\packaging\icons\cpcpub.ico"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#Gui}\*"; DestDir: "{app}\gui"; Components: gui; Flags: ignoreversion recursesubdirs createallsubdirs
+; The window too is native to each machine. It measures nothing itself, but
+; under emulation GTK starts slowly and draws slowly, and an x64 window would
+; need Windows 11's x64 emulation, which Arm machines on Windows 10 lack.
+Source: "{#GuiX64}\*"; DestDir: "{app}\gui"; Components: gui; Check: IsX64OS; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#GuiArm64}\*"; DestDir: "{app}\gui"; Components: gui; Check: IsArm64; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\cpcpub"; Filename: "{app}\gui\cpcpub-gui.exe"; WorkingDir: "{app}\gui"; Comment: "Measure the processor's cores and compare the results"; Components: gui

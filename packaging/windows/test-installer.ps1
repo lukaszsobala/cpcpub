@@ -81,6 +81,12 @@ if ($doc.build.binary_sha256 -ne (Digest $exe)) { throw "the run says $($doc.bui
 Write-Host "binary_sha256 matches the installed file"
 
 Say "the window runs the benchmark"
+# This machine's own window, not one Windows would run under emulation.
+$guiExe = Join-Path $dir "gui\cpcpub-gui.exe"
+$bytes = [IO.File]::ReadAllBytes($guiExe)
+$pe = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
+$want = if ($Machine -eq "x64") { 0x8664 } else { 0xAA64 }
+if ($pe -ne $want) { throw ("the window is for machine 0x{0:X4}, not 0x{1:X4}" -f $pe, $want) }
 $smoke = Join-Path $work "smoke"
 New-Item -ItemType Directory -Force $smoke | Out-Null
 $report = Join-Path $smoke "report.json"
