@@ -25,10 +25,9 @@ if (-not $iscc) {
         Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 if (-not $iscc) { throw "no ISCC.exe: install Inno Setup 6.3 or newer" }
-$inno = [version](Get-Item $iscc).VersionInfo.ProductVersion.Split(" ")[0]
-# 6.3 for x64os, IsX64OS and IsArm64: the arm64-aware architecture checks.
-if ($inno -lt [version]"6.3") { throw "Inno Setup $inno is too old; 6.3 or newer tells x64 and Arm64 apart" }
-Write-Host "Inno Setup $inno at $iscc"
+# The version is checked by cpcpub.iss itself, which the preprocessor can
+# do reliably; ISCC.exe's version resource does not always carry it.
+Write-Host "ISCC at $iscc, file version $((Get-Item $iscc).VersionInfo.FileVersion)"
 
 $Release = (Resolve-Path $Release).Path
 $Gui = (Resolve-Path $Gui).Path

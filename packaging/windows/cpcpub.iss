@@ -17,6 +17,11 @@
 #ifndef Version
   #error Compile with /DVersion=, /DRel=, /DGui= and /DTop=; see build-installer.ps1.
 #endif
+; 6.3 for x64os, IsX64OS and IsArm64: before them, Inno Setup could not tell
+; an x64 machine from an Arm64 one running x64 code under emulation.
+#if VER < EncodeVer(6, 3, 0)
+  #error Inno Setup 6.3 or newer is needed to tell x64 and Arm64 machines apart.
+#endif
 
 [Setup]
 ; Fixed for good: Setup recognises an earlier install by it, and installs a
