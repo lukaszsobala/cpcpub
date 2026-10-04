@@ -4,7 +4,7 @@ An app for the release's static Android binary. Like the desktop window, it
 measures nothing itself. It builds the command line, runs the benchmark, and
 reads back what it prints. You choose:
 
-- the run: both, multi-threaded only, or per-core only;
+- the run: multi-threaded, per-core, or Both, which ticks the two;
 - the variants: the baseline, or all four compared;
 - the hub fields;
 - the timing settings.

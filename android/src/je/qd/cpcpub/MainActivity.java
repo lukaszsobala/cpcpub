@@ -66,7 +66,10 @@ public final class MainActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
 
-    private RadioGroup modes;
+    private CheckBox both;
+    private CheckBox multi;
+    private CheckBox perCore;
+    private boolean syncingModes;  // set while the code, not the user, ticks them
     private RadioGroup variants;
     private CheckBox upload;
     private LinearLayout uploadFields;
@@ -126,9 +129,15 @@ public final class MainActivity extends Activity {
         }
 
         page.addView(heading("Run"));
-        modes = radios(page, new String[] {
-            "Both: all threads at once, then each core on its own",
-            "Multi-threaded only", "Per-core only"}, prefs.getInt("mode", 0));
+        // As in the desktop window: Both sums up the two under it, and a run
+        // needs at least one of them.
+        int mode = prefs.getInt("mode", 0);
+        both = check(page, "Both", 0);
+        multi = check(page, "Multi-threaded: every thread at once", dp(28));
+        perCore = check(page, "Per-core: each core on its own, one after another", dp(28));
+        multi.setChecked(mode != 2);
+        perCore.setChecked(mode != 1);
+        both.setChecked(mode == 0);
         page.addView(note("Both is the one to upload: neither half means much "
             + "without the other."));
 
@@ -247,7 +256,13 @@ public final class MainActivity extends Activity {
         for (EditText e : new EditText[] {threads, cpus, seconds, reps, warmup}) {
             e.addTextChangedListener(new SimpleWatcher(this::updateCommand));
         }
-        modes.setOnCheckedChangeListener((g, id) -> updateCommand());
+        both.setOnCheckedChangeListener((b, on) -> {
+            if (syncingModes) return;
+            // Unticked, it goes back to the multi-threaded run alone.
+            setModes(true, on);
+        });
+        multi.setOnCheckedChangeListener((b, on) -> onModeChecked(perCore));
+        perCore.setOnCheckedChangeListener((b, on) -> onModeChecked(multi));
         variants.setOnCheckedChangeListener((g, id) -> updateCommand());
         updateCommand();
     }
@@ -283,7 +298,7 @@ public final class MainActivity extends Activity {
         argv.add(binary());
         int v = choice(variants);
         if (v == 1) argv.add("--variants=all");
-        int m = choice(modes);
+        int m = mode();
         if (m == 0) argv.add("--full");
         else if (m == 2) argv.add("--per-core");
         String t = threads.getText().toString().trim();
@@ -318,7 +333,7 @@ public final class MainActivity extends Activity {
         int n = countCpus(cpus.getText().toString());
         if (n <= 0) n = (int) parse(threads.getText().toString().trim(), 0);
         if (n <= 0) n = Runtime.getRuntime().availableProcessors();
-        int m = choice(modes);
+        int m = mode();
         int passes = m == 0 ? 1 + n : m == 2 ? n : 1;
         // Every variant runs the whole thing again.
         int times = choice(variants) == 0 ? 1 : 4;
@@ -360,7 +375,7 @@ public final class MainActivity extends Activity {
             return;
         }
         prefs.edit()
-            .putInt("mode", choice(modes)).putInt("variants", choice(variants))
+            .putInt("mode", mode()).putInt("variants", choice(variants))
             .putBoolean("upload", upload.isChecked())
             .putString("hub", hub.getText().toString())
             .putString("token", token.getText().toString())
@@ -699,6 +714,42 @@ public final class MainActivity extends Activity {
         t.setText(s);
         t.setAlpha(0.7f);
         return t;
+    }
+
+    /** 0 for both, 1 for the multi-threaded run alone, 2 for per-core alone. */
+    private int mode() {
+        return multi.isChecked() && perCore.isChecked() ? 0 : perCore.isChecked() ? 2 : 1;
+    }
+
+    private void setModes(boolean m, boolean p) {
+        syncingModes = true;
+        multi.setChecked(m);
+        perCore.setChecked(p);
+        both.setChecked(m && p);
+        syncingModes = false;
+        updateCommand();
+    }
+
+    /** One of the two changed; other is the one that did not. */
+    private void onModeChecked(CheckBox other) {
+        if (syncingModes) return;
+        // Unticking the last ticked one moves the tick to the other rather than
+        // refusing: a tap should always change something.
+        if (!multi.isChecked() && !perCore.isChecked()) {
+            setModes(other == multi, other == perCore);
+            return;
+        }
+        setModes(multi.isChecked(), perCore.isChecked());
+    }
+
+    private CheckBox check(LinearLayout parent, String label, int indent) {
+        CheckBox c = new CheckBox(this);
+        c.setText(label);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.setMarginStart(indent);
+        parent.addView(c, lp);
+        return c;
     }
 
     private RadioGroup radios(LinearLayout parent, String[] labels, int checked) {
