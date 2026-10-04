@@ -233,7 +233,7 @@ def count_cpus(cpu_list):
 
 def human_duration(seconds):
     if seconds < 90:
-        return f"about {round(seconds)} s ({seconds / 60.0:.1f} min)"
+        return f"about {round(seconds)} s"
     if seconds < 3600:
         return f"{seconds / 60.0:.1f} min"
     return f"{seconds / 3600.0:.1f} h ({seconds / 60.0:.0f} min)"
@@ -748,6 +748,9 @@ class Window(Gtk.ApplicationWindow):
         self.pending_streams = 0
         self.exit_status = -1
         self.submitting = False
+        self.upload_hub = ""
+        self.uploads = []    # the hub's replies, one per uploaded document
+        self.stopped = False
         self.command_line = ""
         self.token_in_env = False
 
@@ -853,7 +856,8 @@ class Window(Gtk.ApplicationWindow):
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.all_variants = Gtk.CheckButton(label="All")
         self.all_variants.set_tooltip_text(
-            "Run every variant, one after another, and compare them.\n"
+            "Run every variant that differs from the baseline in this build, one "
+            "after another, and compare them.\n"
             "Ticks itself when every variant is ticked; untick it to go back to "
             "the baseline alone."
         )
@@ -923,7 +927,8 @@ class Window(Gtk.ApplicationWindow):
         self.submit_grid.set_visible(False)
         field("", self.submit_grid)
 
-        self.hub = Gtk.Entry(hexpand=True, placeholder_text="https://cpcpub.qd.je:30210")
+        # The placeholder names the binary's own default; see reload_variants.
+        self.hub = Gtk.Entry(hexpand=True)
         self.hub.set_text(os.environ.get("CPCPUB_HUB", ""))
         self.token = Gtk.PasswordEntry(hexpand=True, show_peek_icon=True)
         self.token.set_text(os.environ.get("CPCPUB_TOKEN", ""))
@@ -1047,6 +1052,10 @@ class Window(Gtk.ApplicationWindow):
         self.status = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
         self.status.set_text("Ready.")
         status.append(self.status)
+        # After an upload: the result's page on the hub.
+        self.hub_link = Gtk.LinkButton(label="See how it compares", uri="about:blank")
+        self.hub_link.set_visible(False)
+        status.append(self.hub_link)
         box.append(status)
         return box
 
@@ -1097,15 +1106,21 @@ class Window(Gtk.ApplicationWindow):
             # binary's answer, not ours; a target with no vector unit carries
             # four names that are one piece of code.
             check.set_tooltip_text(explain_variant(name, distinct))
-            if not distinct:
-                check.add_css_class("dim-label")
             self.variant_list.append(check)
-            self.variant_checks.append((name, check))
+            if distinct:
+                self.variant_checks.append((name, check))
+            else:
+                # Running it would only measure the baseline again, under
+                # another name and for as long again.
+                check.set_sensitive(False)
         # A new binary keeps "all" if that is what was asked for; anything
         # narrower starts again from the baseline, which it always carries.
         self.variant_group.set_checks(
             [check for _, check in self.variant_checks], self.all_variants.get_active(),
         )
+        hub = default_hub(self.binary.get_text().strip())
+        self.hub.set_placeholder_text(f"{hub} (this build's default)" if hub
+                                      else "required: this build has no default hub")
 
     def fit_form(self):
         """Give the form the height it now wants, up to most of the window.
@@ -1121,7 +1136,7 @@ class Window(Gtk.ApplicationWindow):
     def on_submit_toggled(self, *_):
         self.submit_grid.set_visible(self.do_submit.get_active())
         self.fit_form()
-        self.run_btn.set_label("Run and submit" if self.do_submit.get_active() else "Run")
+        self.run_btn.set_label("Run and upload" if self.do_submit.get_active() else "Run")
         self.update_command()
 
     def selected_variants(self):
@@ -1133,7 +1148,9 @@ class Window(Gtk.ApplicationWindow):
         argv = [binary or "cpcpub"]
 
         if self.all_variants.get_active():
-            argv.append("--variants=all")
+            # Every distinct one: the ones that are the baseline's code again
+            # are greyed out in the form, and would only repeat it.
+            argv.append("--variants")
         else:
             chosen = self.selected_variants()
             if len(chosen) == 1:
@@ -1304,13 +1321,16 @@ class Window(Gtk.ApplicationWindow):
             # A released build has a default hub baked in; a tree you built
             # yourself has none, and would fail after measuring rather than now.
             self.log("no hub URL given: relying on the address baked into this build\n")
+        hub = ""
         if self.do_submit.get_active():
+            # Where the upload will go: the field, the environment, then the
+            # binary's own default, the order the binary itself takes them in.
+            hub = (self.hub.get_text().strip() or os.environ.get("CPCPUB_HUB", "")
+                   or default_hub(binary))
             # The benchmark hands an https upload to curl, which the packages
             # only recommend. A newer benchmark refuses before measuring when
             # it is missing; this says so for any of them, and in a window
             # rather than at the end of a log.
-            hub = (self.hub.get_text().strip() or os.environ.get("CPCPUB_HUB", "")
-                   or default_hub(binary))
             if hub.startswith("https://") and not shutil.which("curl"):
                 detail = (f"{hub} is an https address, and the benchmark uploads "
                           f"over https through curl, which is not installed.\n\n"
@@ -1338,6 +1358,10 @@ class Window(Gtk.ApplicationWindow):
         self.set_text(self.json_view, "")
         self.results.set_placeholder("Running…")
         self.submitting = self.do_submit.get_active()
+        self.upload_hub = hub
+        self.uploads = []
+        self.stopped = False
+        self.hub_link.set_visible(False)
         self.stdout_buf = []
         self.exit_status = -1
         self.pending_streams = 3  # two pipes at EOF, plus the reaped process
@@ -1400,6 +1424,15 @@ class Window(Gtk.ApplicationWindow):
 
     def on_stderr_line(self, line):
         self.log(line + "\n")
+        # The hub's reply to an upload, printed by the benchmark as it came:
+        # the run's id, its page on the hub, and the delete token.
+        if line.startswith("uploaded: "):
+            try:
+                reply = json.loads(line[len("uploaded: "):])
+            except ValueError:
+                return
+            if isinstance(reply, dict):
+                self.uploads.append(reply)
 
     def on_stdout_line(self, line):
         self.stdout_buf.append(line)
@@ -1445,26 +1478,53 @@ class Window(Gtk.ApplicationWindow):
             self.results.set_placeholder("No result -- the log says why.")
             saved = None
 
-        if self.exit_status == 0 and docs:
-            note = f"Done in {elapsed} s"
-            if saved:
-                note += f" -- saved to {saved}"
-            self.status.set_text(note)
+        where = f", saved to {saved}" if saved else ""
+        uploaded = bool(self.submitting and self.uploads)
+        if self.stopped:
+            self.status.set_text(f"Stopped after {elapsed} s.")
+        elif self.exit_status == 0 and docs:
+            done = "measured and uploaded" if uploaded else "Done"
+            self.status.set_text(f"{done.capitalize()} in {elapsed} s{where}.")
+        elif docs and self.submitting:
+            # The measurement is fine and kept; the upload is what failed, and
+            # the benchmark said why on stderr.
+            # The failure first: a long path is cut off at the end of the line.
+            self.status.set_text(
+                f"The upload failed -- the log says why. Measured in {elapsed} s{where}."
+            )
         elif self.exit_status == 0:
             self.status.set_text(f"Finished in {elapsed} s, but produced no result.")
         else:
-            # A non-zero exit after a full run means the upload did not land;
-            # the reason is already on stderr, so point at the log rather than
-            # guessing at it here.
             self.status.set_text(
-                f"Exit status {self.exit_status} after {elapsed} s -- see the log."
+                f"The benchmark stopped with an error after {elapsed} s -- the log says why."
             )
-        # The log is hidden by default, but not when it holds the reason a run
-        # failed, or the delete token an upload prints once and never again.
-        if self.exit_status != 0 or not docs or self.submitting:
+        if uploaded:
+            self.show_upload()
+        # The table stays in view when the run went well; the log comes up
+        # when it holds the reason something did not.
+        if not self.stopped and (self.exit_status != 0 or not docs):
             self.show_output(self.log_view)
         if SMOKE:
             self.smoke_report(docs=len(docs or []), saved=saved)
+
+    def show_upload(self):
+        """A link to the uploaded result on the hub, where it is compared with
+        everyone else's. A --variants run uploads one run per variant; the
+        first is the baseline's."""
+        first = self.uploads[0]
+        page = str(first.get("url") or "")
+        if page.startswith("/"):
+            page = self.upload_hub.rstrip("/") + page
+        if page.startswith(("http://", "https://")):
+            self.hub_link.set_uri(page)
+            self.hub_link.set_visible(True)
+        tip = f"Opens {page}." if page else ""
+        tokens = [str(r["delete_token"]) for r in self.uploads if r.get("delete_token")]
+        if tokens:
+            # Shown once by the hub and never again; the log keeps it too.
+            tip += ("\n\nTo withdraw the upload later you need its delete token, "
+                    "which is in Output > Log: " + ", ".join(tokens))
+        self.hub_link.set_tooltip_text(tip.strip())
 
     def save(self, raw):
         # Local time, and the run itself carries no clock -- this name is for
@@ -1484,6 +1544,7 @@ class Window(Gtk.ApplicationWindow):
     def on_stop(self, _button):
         if self.proc is not None:
             self.log("\nstopped\n")
+            self.stopped = True
             self.proc.kill()
 
     # -- the packaging tests' run ------------------------------------------
