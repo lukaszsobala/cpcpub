@@ -89,6 +89,8 @@ public final class MainActivity extends Activity {
     private TextView estimate;
     private TextView command;
     private TextView status;
+    private Button compareButton;
+    private ScrollView scroll;
     private LinearLayout results;
     private Button logButton;
     private Button saveButton;
@@ -99,6 +101,7 @@ public final class MainActivity extends Activity {
     private long started;
     private double estimated;
     private boolean leftDuringRun;
+    private boolean stopped;
     private boolean uploading;
     private String lastRaw;
     private String lastName;
@@ -110,7 +113,7 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         prefs = getSharedPreferences("form", MODE_PRIVATE);
 
-        ScrollView scroll = new ScrollView(this);
+        scroll = new ScrollView(this);
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
@@ -224,6 +227,13 @@ public final class MainActivity extends Activity {
         status.setText("Keep the screen on this app while it measures: Android moves an "
             + "app in the background to fewer, slower cores.");
         page.addView(status);
+        // After an upload: the run's page on the hub, where it is compared.
+        compareButton = new Button(this, null, android.R.attr.borderlessButtonStyle);
+        compareButton.setText("See how it compares");
+        compareButton.setAllCaps(false);
+        compareButton.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        compareButton.setVisibility(View.GONE);
+        page.addView(compareButton);
 
         results = column();
         page.addView(results, spaced());
@@ -399,6 +409,8 @@ public final class MainActivity extends Activity {
         saveButton.setEnabled(false);
         shareButton.setEnabled(false);
         leftDuringRun = false;
+        stopped = false;
+        compareButton.setVisibility(View.GONE);
         started = System.nanoTime();
         estimated = Math.max(1.0, estimateSeconds());
         runButton.setEnabled(false);
@@ -458,6 +470,7 @@ public final class MainActivity extends Activity {
     private void stop() {
         if (proc != null) {
             appendLog("\nstopped\n");
+            stopped = true;
             proc.destroyForcibly();
         }
     }
@@ -486,8 +499,13 @@ public final class MainActivity extends Activity {
             }
         }
         if (docs.isEmpty()) {
+            if (stopped) {
+                status.setText("Stopped after " + elapsed + " s.");
+                return;
+            }
             status.setText(exit == 0 ? "Finished, but produced no result."
-                : "Exit status " + exit + " after " + elapsed + " s -- see the log.");
+                : "The benchmark stopped with an error after " + elapsed
+                    + " s -- the log says why.");
             log.setVisibility(View.VISIBLE);
             return;
         }
@@ -500,6 +518,9 @@ public final class MainActivity extends Activity {
         shareButton.setEnabled(true);
         status.setText("Done in " + elapsed + " s" + (saved != null ? "; kept as " + saved : ""));
         if (exit != 0 || leftDuringRun) log.setVisibility(View.VISIBLE);
+        // The score is below the form; bring it up rather than leave it to be
+        // scrolled to.
+        scroll.post(() -> scroll.smoothScrollTo(0, Math.max(0, status.getTop() - dp(8))));
         if (exit == 0 && upload.isChecked()) submit(raw, choice(variants) != 0);
     }
 
@@ -536,11 +557,9 @@ public final class MainActivity extends Activity {
         uploading = true;
         runButton.setEnabled(false);
         status.setText("Uploading ...");
-        // The reply carries the delete token an anonymous upload needs to
-        // withdraw itself, and it is shown nowhere but the log.
-        log.setVisibility(View.VISIBLE);
         new Thread(() -> {
             int landed = 0;
+            String page = null;
             for (String doc : docs) {
                 String variant = null;
                 if (variantRun) {
@@ -553,17 +572,54 @@ public final class MainActivity extends Activity {
                 boolean[] ok = new boolean[1];
                 String said = Hub.submit(hubUrl, tok, lab, not, variant, doc, ok);
                 if (ok[0]) landed++;
+                if (ok[0] && page == null) page = runPage(hubUrl, said);
                 main.post(() -> appendLog(said));
             }
             int n = landed;
+            String first = page;
             main.post(() -> {
                 uploading = false;
                 runButton.setEnabled(true);
-                status.setText(n == docs.size() ? "Uploaded. Copy the delete token from "
-                    + "the log if you may want to withdraw it."
-                    : "The upload did not land -- see the log.");
+                if (n == docs.size()) {
+                    // The delete token is shown once, by the hub, and kept in
+                    // the log; the table stays in view.
+                    status.setText("Uploaded. To withdraw it later you need the delete "
+                        + "token, which is in the log.");
+                } else {
+                    status.setText("The upload failed -- the log says why. The result "
+                        + "is kept on the phone.");
+                    log.setVisibility(View.VISIBLE);
+                }
+                if (first != null) {
+                    compareButton.setOnClickListener(v -> openPage(first));
+                    compareButton.setVisibility(View.VISIBLE);
+                }
             });
         }).start();
+    }
+
+    /** The uploaded run's page on the hub, from the reply in `said`, or null. */
+    private static String runPage(String hub, String said) {
+        for (String line : said.split("\n")) {
+            if (!line.startsWith("uploaded: ")) continue;
+            try {
+                String url = new JSONObject(line.substring("uploaded: ".length()))
+                    .optString("url", "");
+                if (url.startsWith("/")) url = hub.replaceAll("/+$", "") + url;
+                return url.startsWith("http://") || url.startsWith("https://") ? url : null;
+            } catch (JSONException e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private void openPage(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (android.content.ActivityNotFoundException e) {
+            status.setText("No browser to open " + url);
+        }
     }
 
     // -- the results -----------------------------------------------------
