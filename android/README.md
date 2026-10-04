@@ -48,8 +48,9 @@ makes the same request `submit_document()` in
 - redirects are not followed;
 - each document is uploaded exactly as the benchmark printed it.
 
-The hub's reply, delete token included, goes to the log, which opens by itself
-after an upload. The default hub is whichever one the release baked into the
+After an upload, "See how it compares" opens the run's page on the hub. The
+hub's reply, delete token included, goes to the log, which opens by itself
+only when an upload fails. The default hub is whichever one the release baked into the
 binary: `build.sh` reads it out of the binary's help text.
 
 ## Measuring on a phone
