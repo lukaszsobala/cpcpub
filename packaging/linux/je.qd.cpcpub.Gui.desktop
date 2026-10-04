@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=cpcpub
+GenericName=CPU Benchmark
+Comment=Measure the processor's cores and compare the results
+Exec=cpcpub-gui
+Icon=je.qd.cpcpub.Gui
+Terminal=false
+Categories=System;Monitor;
+Keywords=benchmark;cpu;processor;performance;cores;
+StartupNotify=true

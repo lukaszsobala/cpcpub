@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- What software centres show for the window. @VERSION@ and @DATE@ are
+     filled in by build.py from the release being packaged. -->
+<component type="desktop-application">
+  <id>je.qd.cpcpub.Gui</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>cpcpub</name>
+  <summary>Measure the processor's cores and compare the results</summary>
+  <description>
+    <p>
+      A small CPU benchmark and a window to run it from. It measures integer and
+      floating-point latency and throughput, integer multiply, memory bandwidth
+      and random-access latency, and indirect-call throughput and
+      branch-predictor capacity -- with every thread at once, and each core on
+      its own.
+    </p>
+    <p>
+      The window builds the benchmark's command line, shows it before it runs,
+      and lays the results out in a table with every column explained. A
+      result can be uploaded to a results hub to compare with other machines.
+    </p>
+  </description>
+  <launchable type="desktop-id">je.qd.cpcpub.Gui.desktop</launchable>
+  <icon type="stock">je.qd.cpcpub.Gui</icon>
+  <url type="homepage">https://github.com/lukaszsobala/cpcpub</url>
+  <url type="bugtracker">https://github.com/lukaszsobala/cpcpub/issues</url>
+  <developer id="io.github.lukaszsobala">
+    <name>Łukasz Sobala</name>
+  </developer>
+  <categories>
+    <category>System</category>
+    <category>Monitor</category>
+  </categories>
+  <keywords>
+    <keyword>benchmark</keyword>
+    <keyword>CPU</keyword>
+    <keyword>processor</keyword>
+  </keywords>
+  <provides>
+    <binary>cpcpub-gui</binary>
+    <binary>cpcpub</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>
