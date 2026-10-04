@@ -50,14 +50,14 @@
 # job prints the floor it ended up with. The portable rv64gc row must stay on
 # 24.04 for the opposite reason, spelled out at the arch check below.
 #
-# The packages -- .deb, .rpm and Arch packages, a Termux .deb, the Windows MSIs
-# and the Android APK -- are made by packages.yml, called below once every binary has passed
-# its checks, from those same binaries and without changing a byte of them; see
-# the top of that file. Each is installed and tested on the system it is for
-# before anything is published, so a release that would ship a broken package
-# does not ship at all. packages.yml checks out the tag, as these jobs do, so a
-# dispatch for a tag older than the packaging fails there rather than packaging
-# an old release with today's files.
+# The packages -- .deb, .rpm and Arch packages, a Termux .deb, the Windows
+# setup and the Android APK -- are made by packages.yml, called below once every
+# binary has passed its checks, from those same binaries and without changing a
+# byte of them; see the top of that file. Each is installed and tested on the
+# system it is for before anything is published, so a release that would ship
+# a broken package does not ship at all. packages.yml checks out the tag, as
+# these jobs do, so a dispatch for a tag older than the packaging fails there
+# rather than packaging an old release with today's files.
 #
 # Secrets: this file uses none itself. It passes the Android signing key on to
 # packages.yml, which uses it in one step and says how. The only other
