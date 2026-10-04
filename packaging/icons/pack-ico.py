@@ -1,9 +1,10 @@
 """Pack PNG files into one .ico, each stored as PNG: pack-ico.py OUT PNG..."""
 
+import pathlib
 import struct
 import sys
 
-out, pngs = sys.argv[1], [open(p, "rb").read() for p in sys.argv[2:]]
+out, pngs = sys.argv[1], [pathlib.Path(p).read_bytes() for p in sys.argv[2:]]
 offset = 6 + 16 * len(pngs)
 head, body = [struct.pack("<HHH", 0, 1, len(pngs))], []
 for png in pngs:
@@ -13,5 +14,4 @@ for png in pngs:
                             len(png), offset))
     body.append(png)
     offset += len(png)
-with open(out, "wb") as fh:
-    fh.write(b"".join(head + body))
+pathlib.Path(out).write_bytes(b"".join(head + body))
