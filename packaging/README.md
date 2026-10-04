@@ -54,9 +54,9 @@ for itself.
 `packages.yml` installs every package on the system it is for, and the release
 is published only if all of them pass:
 
-- **Linux:** [linux/test.sh](linux/test.sh) runs Debian 13, Ubuntu 24.04,
-  Fedora, openSUSE Tumbleweed and Arch in containers, on both x86-64 and arm64
-  runners. In each it:
+- **Linux:** [linux/test.sh](linux/test.sh) runs Debian 13, Ubuntu 24.04
+  and Fedora in containers on both x86-64 and arm64 runners, and openSUSE
+  Tumbleweed and Arch on x86-64 only (test.sh says why). In each it:
   - installs both packages;
   - checks the digests;
   - runs the benchmark;
@@ -66,7 +66,7 @@ is published only if all of them pass:
   - uninstalls.
 
   Debian 12 must *refuse* the package (see below). The Termux package is
-  installed in Termux's own image.
+  installed in Termux's own image, natively on the arm64 runner.
 - **Windows:** [windows/test-msi.ps1](windows/test-msi.ps1) installs each MSI
   on an x64 and an Arm64 runner, and checks:
   - the digests;
@@ -75,7 +75,6 @@ is published only if all of them pass:
   - the window's own run;
   - a clean uninstall;
   - that the other machine's MSI refuses to install.
-
 - **Android:** the APK is checked rather than installed. There is no
   emulator on the arm64 runners, and an x86 emulator's Arm translation cannot
   run a static binary. The checks are its signature, its manifest and the
