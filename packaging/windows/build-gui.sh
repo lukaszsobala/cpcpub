@@ -4,7 +4,7 @@
 # an MSYS2 UCRT64 shell with these installed:
 #
 #   mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-python-gobject
-#   mingw-w64-ucrt-x86_64-python-pyinstaller
+#   mingw-w64-ucrt-x86_64-pyinstaller
 #
 # MSYS2 rather than python.org's Python with a hand-built GTK: MSYS2 builds
 # GTK 4 and PyGObject against each other and against one C runtime (the UCRT,
