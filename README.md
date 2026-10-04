@@ -25,6 +25,18 @@ curl -fLs $base/SHA256SUMS | sha256sum -c --ignore-missing
 chmod +x cpcpub-linux-x86_64
 ```
 
+Or install a package from the same release. Each one carries those same binaries byte for byte, so its results verify just the same:
+
+| | |
+| --- | --- |
+| Debian, Ubuntu | `cpcpub_*.deb`, and `cpcpub-gui_*_all.deb` for the window |
+| Fedora, openSUSE | `cpcpub-*.rpm`, `cpcpub-gui-*.noarch.rpm` |
+| Arch Linux | `cpcpub-*.pkg.tar.zst`, `cpcpub-gui-*-any.pkg.tar.zst` |
+| Windows | `cpcpub-*-windows-x64.msi` or `-arm64.msi`: the benchmark on PATH, the window in the Start menu |
+| Android | `cpcpub-*-android-arm64.apk`, an app; or `cpcpub-termux_*.deb` for Termux |
+
+[packaging/README.md](packaging/README.md) has the details, including why the Linux packages need glibc 2.38 or newer.
+
 The `-v3` and `-rva23` builds need a newer ISA than the plain ones and will not start on older hardware; the unsuffixed build runs everywhere. On macOS a binary fetched by a browser is quarantined and needs `xattr -d com.apple.quarantine cpcpub-macos-arm64` before it will run — `curl` does not set that attribute.
 
 Or build it. Needs only `libc`, `libm` and `pthreads`; C2x with GCC 13+ or Clang:
@@ -49,9 +61,11 @@ bench/cpcpub --help
 
 One binary carries four compilations of the kernels — auto-vectorization off/on rossed with FMA contraction off/on — and `--variants` runs each one the host ISA can tell apart, then compares them. The default is the scalar, unfused build that cross-ISA comparisons need.
 
-On a Linux desktop, [gui/](gui/) is the same flags in a window — the variants
-to run, per-core or not, where to put the result, the hub fields, and a live
-estimate of how long the settings will take:
+On a desktop, [gui/](gui/) is the same flags in a window — the variants to
+run, per-core or not, where to put the result, the hub fields, and a live
+estimate of how long the settings will take. It comes with the `cpcpub-gui`
+package on Linux and in the MSI on Windows; on Android the app is
+[android/](android/README.md). From the tree:
 
 ```sh
 make gui            # or gui/cpcpub-gui.py

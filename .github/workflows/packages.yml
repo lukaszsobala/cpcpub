@@ -1,5 +1,5 @@
-# Package a release's binaries for Linux, Termux and Windows, and test every
-# package by installing it the way a user would.
+# Package a release's binaries for Linux, Termux, Windows and Android, and test
+# every package by installing it the way a user would.
 #
 # Two ways in. release.yml calls this with the tag it is releasing, after its
 # build jobs have left the binaries as artifacts of the same run, and attaches
@@ -15,8 +15,15 @@
 # file's digest against the release asset's -- as well as the digest the
 # benchmark reports for itself.
 #
-# Secrets: none. The only credential is the per-run GITHUB_TOKEN, read-only
-# here, which `gh` uses to download the latest release's assets.
+# Secrets: the Android signing key, and only in the job that signs the APK --
+# ANDROID_KEYSTORE (the keystore, base64), ANDROID_KEYSTORE_PASSWORD,
+# ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD; see packaging/README.md for making
+# them. The keystore is written to the runner's temporary directory for the one
+# step that needs it and deleted at its end; the passwords reach apksigner
+# through the environment, never a command line. Without the secrets the APK is
+# signed with a throwaway key and the run says so. Otherwise the only
+# credential is the per-run GITHUB_TOKEN, read-only here, which `gh` uses to
+# download the latest release's assets.
 
 name: packages
 
@@ -27,10 +34,20 @@ on:
         description: "the release being built; its binaries are this run's build-* artifacts"
         required: true
         type: string
+    secrets:
+      ANDROID_KEYSTORE:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
   push:
     paths:
       - "packaging/**"
       - "gui/**"
+      - "android/**"
       - ".github/workflows/packages.yml"
   workflow_dispatch:
 
@@ -260,3 +277,64 @@ jobs:
           $other = (Get-ChildItem "pkgs/*-windows-$env:OTHER.msi").FullName
           ./packaging/windows/test-msi.ps1 -Msi $msi -Other $other `
               -Release (Resolve-Path rel).Path -Machine $env:MACHINE
+
+  # The Android app: the release's static Android binary inside an APK, built
+  # with the SDK's own tools (see android/build.sh) and signed. There is no
+  # install test to run here -- an x86 emulator's Arm translation cannot run a
+  # static binary, and the arm64 runners have no emulator -- so the checks are
+  # what can be read off the APK: its signature, its manifest, and the
+  # embedded binary's digest. The binary itself was run under qemu by the
+  # release build, and natively in Termux's image by linux-test.
+  android:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: build-*
+          path: rel
+          merge-multiple: true
+      # Named rather than whatever the image has that day, so a release's APK
+      # does not change with the runner image.
+      - name: Install the SDK pieces
+        run: |
+          set -eux
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+              "platforms;android-35" "build-tools;35.0.0" > /dev/null
+          javac -version
+      - name: Build and sign the APK
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_TOOLS_VERSION: "35.0.0"
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -eu
+          export BUILD_TOOLS="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
+          if [ -n "$KEYSTORE_B64" ]; then
+            ks="$RUNNER_TEMP/release.keystore"
+            trap 'rm -f "$ks"' EXIT
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$ks"
+            export ANDROID_KEYSTORE="$ks"
+          else
+            echo "::warning title=Throwaway APK key::No ANDROID_KEYSTORE secret, so" \
+                 "the APK is signed with a throwaway key and will not install over" \
+                 "any other build. See packaging/README.md."
+          fi
+          android/build.sh rel "$VERSION" dist
+          "$BUILD_TOOLS/aapt2" dump badging dist/*.apk \
+            | grep -E "^(package|sdkVersion|targetSdkVersion|native-code|application-label):"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages-android
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
