@@ -14,6 +14,7 @@ none for the benchmark. The Windows installer carries its own copy of both.
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -277,6 +278,44 @@ def quote_command(argv):
     if os.name == "nt":
         return subprocess.list2cmdline(argv)
     return " ".join(shlex.quote(a) for a in argv)
+
+
+def default_hub(binary):
+    """The hub a build uploads to when told none: the address its help text
+    gives as the default, which a release bakes in and a tree you built has
+    not."""
+    try:
+        done = subprocess.run(
+            [binary, "--help"], capture_output=True, timeout=10, check=False,
+            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    # The usage text goes to stderr.
+    found = re.search(r" \(default: (https?://[^)\s]+)\)",
+                      (done.stdout + done.stderr).decode("utf-8", "replace"))
+    return found.group(1) if found else ""
+
+
+def curl_hint():
+    """How to install curl here, for when an upload needs it and it is missing."""
+    if os.name == "nt":
+        return ("Windows 10 1803 and later ship curl.exe in System32; on an older "
+                "Windows, install it with: winget install cURL.cURL")
+    try:
+        with open("/etc/os-release", encoding="utf-8") as release:
+            fields = dict(line.rstrip("\n").split("=", 1) for line in release if "=" in line)
+    except OSError:
+        fields = {}
+    family = " ".join(fields.get(k, "").strip('"') for k in ("ID", "ID_LIKE")).split()
+    for ids, command in ((("debian", "ubuntu"), "sudo apt install curl"),
+                         (("fedora", "rhel", "centos"), "sudo dnf install curl"),
+                         (("suse", "opensuse"), "sudo zypper install curl"),
+                         (("arch",), "sudo pacman -S curl")):
+        # Prefixes, for IDs such as opensuse-tumbleweed.
+        if any(f.startswith(i) for f in family for i in ids):
+            return f"Install it with: {command}"
+    return "Install it with the system's package manager."
 
 
 def list_variants(binary):
@@ -1265,6 +1304,22 @@ class Window(Gtk.ApplicationWindow):
             # A released build has a default hub baked in; a tree you built
             # yourself has none, and would fail after measuring rather than now.
             self.log("no hub URL given: relying on the address baked into this build\n")
+        if self.do_submit.get_active():
+            # The benchmark hands an https upload to curl, which the packages
+            # only recommend. A newer benchmark refuses before measuring when
+            # it is missing; this says so for any of them, and in a window
+            # rather than at the end of a log.
+            hub = (self.hub.get_text().strip() or os.environ.get("CPCPUB_HUB", "")
+                   or default_hub(binary))
+            if hub.startswith("https://") and not shutil.which("curl"):
+                detail = (f"{hub} is an https address, and the benchmark uploads "
+                          f"over https through curl, which is not installed.\n\n"
+                          f"{curl_hint()}\n\nOr untick \u201cUpload the result to a "
+                          f"hub\u201d to measure without uploading.")
+                self.fail("Uploading needs curl, which is not installed.")
+                self.log(detail + "\n")
+                Gtk.AlertDialog(message="Uploading needs curl", detail=detail).show(self)
+                return
 
         argv, env = self.build_argv()
         try:
