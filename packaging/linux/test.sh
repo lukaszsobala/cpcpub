@@ -18,8 +18,11 @@ case $(uname -m) in
     x86_64)  deb=amd64
              default="debian:trixie ubuntu:24.04 fedora:latest opensuse/tumbleweed archlinux:latest" ;;
     # Arch Linux publishes no arm64 image; Arch Linux ARM is a separate project.
+    # Nor openSUSE here: its aarch64 Tumbleweed is a port with mirrors of its
+    # own, which served the same corrupt package three runs in a row. The
+    # x86-64 run covers openSUSE's dependencies and Fedora covers aarch64 rpm.
     aarch64) deb=arm64
-             default="debian:trixie ubuntu:24.04 fedora:latest opensuse/tumbleweed" ;;
+             default="debian:trixie ubuntu:24.04 fedora:latest" ;;
     *) echo "no test written for $(uname -m)" >&2; exit 1 ;;
 esac
 images=${*:-$default}
