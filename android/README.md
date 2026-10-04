@@ -83,4 +83,4 @@ keystore in the environment the APK is signed with a throwaway key; see
   to x86 cannot run a static Arm binary, not even `--version`.
 - **Termux's arm64 image ran the real binary natively** (the `linux-test`
   CI job). That is the same file the APK carries.
-- **Not yet done:** a run of the APK on an actual phone.
+- **A phone ran the APK from CI** with the real binary, and it ran fine.
