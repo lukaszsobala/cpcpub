@@ -142,6 +142,12 @@ commit packages to the same bytes. The workflow sets it to the commit's time.
   Debian 12, Ubuntu 22.04 and RHEL 9 refuse them. This floor also rules out
   Alpine: gcompat has no `__isoc23_*` either. Building the benchmark so that
   it avoids those symbols would bring all three back.
+- **curl is recommended, not required.** The benchmark has no TLS of its
+  own and hands an upload to an https hub to curl. apt and dnf install
+  recommended packages by default, and a minimal system can leave curl out
+  and still measure. Uploading without curl stops before the run and says
+  how to install it, in the window and on the command line. Arch needs
+  nothing, since pacman itself depends on curl.
 - **GUI dependencies differ between the rpm distributions.** The rpm names
   GTK's introspection data so that both Fedora (`gtk4` plus
   `gobject-introspection`, for cairo's typelib) and openSUSE (the separate
