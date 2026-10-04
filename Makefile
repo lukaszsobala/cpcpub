@@ -3,7 +3,7 @@
 #   make            build the benchmark          -> bench/cpcpub
 #   make check      build it, then run the contract and hub tests
 #   make testdata   regenerate testdata/full-run.json on this machine
-#   make gui        the GTK front end for the benchmark (Linux)
+#   make gui        the GTK front end for the benchmark
 #   make serve      run the hub on http://127.0.0.1:8080
 #   make submit     build, measure, and upload the result to a hub
 #

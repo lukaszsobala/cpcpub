@@ -9,7 +9,11 @@ command before it runs one.
 gui/cpcpub-gui.py            # or `make gui` from the top of the tree
 ```
 
-Linux only for now. It needs GTK 4 and PyGObject, which a desktop install
+The release packages install it as `cpcpub-gui`, with a menu entry: the
+`cpcpub-gui` .deb, .rpm and Arch package on Linux, and the MSI on Windows, which
+carries its own GTK. See [packaging/](../packaging/README.md).
+
+From the tree it needs GTK 4.10 or newer and PyGObject, which a desktop install
 almost certainly already has:
 
 | | |
@@ -18,9 +22,11 @@ almost certainly already has:
 | Fedora | `dnf install python3-gobject gtk4` |
 | Arch | `pacman -S python-gobject gtk4` |
 
-The benchmark itself still needs nothing installed. The window looks for
-`bench/cpcpub` beside this directory, then `cpcpub` on `PATH`; point it
-somewhere else with **Browse…**.
+The benchmark itself still needs nothing installed. The window looks for the
+`bench/cpcpub` this tree builds, then the `cpcpub` installed beside itself, then
+`cpcpub` on `PATH`; point it somewhere else with **Browse…**. Where a package
+put a newer-ISA build beside the plain one -- `cpcpub-v3`, `cpcpub-rva23` -- the
+field's tooltip says so, and Browse picks it.
 
 ## What the controls do
 
