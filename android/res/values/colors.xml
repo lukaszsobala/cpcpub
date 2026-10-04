@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The adaptive icon's background: the hub's page colour. -->
+    <color name="ic_launcher_background">#FBFBFA</color>
+</resources>
