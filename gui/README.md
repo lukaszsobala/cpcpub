@@ -10,7 +10,7 @@ gui/cpcpub-gui.py            # or `make gui` from the top of the tree
 ```
 
 The release packages install it as `cpcpub-gui`, with a menu entry: the
-`cpcpub-gui` .deb, .rpm and Arch package on Linux, and the MSI on Windows, which
+`cpcpub-gui` .deb, .rpm and Arch package on Linux, and the setup on Windows, which
 carries its own GTK. See [packaging/](../packaging/README.md).
 
 From the tree it needs GTK 4.10 or newer and PyGObject, which a desktop install
