@@ -89,3 +89,10 @@ An account is optional and adds three things: your name on the runs you upload, 
 A run carries the SHA-256 of the binary that produced it, so a run made with a published release build is labelled with that release.
 
 [rel]: https://github.com/lukaszsobala/cross-platform-benchmark/releases/latest
+
+## License
+
+cpcpub is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See [LICENSE](LICENSE).
