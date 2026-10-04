@@ -218,7 +218,7 @@ def nfpm(conf, packager, target, workdir):
 
 def main():
     if len(sys.argv) != 4:
-        sys.exit(__doc__.split("\n\n")[1])
+        sys.exit((__doc__ or "").split("\n\n")[1])
     rel, version, out = (pathlib.Path(sys.argv[1]), sys.argv[2],
                          pathlib.Path(sys.argv[3]))
     version = version.removeprefix("v")
