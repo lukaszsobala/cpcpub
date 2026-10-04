@@ -140,9 +140,15 @@ def core_config(arch, binaries, version):
         {"src": str(src), "dst": f"/usr/bin/{name}", "file_info": {"mode": 0o755}}
         for name, src in binaries.items()
     ] + docs("cpcpub", TOP / "bench" / "README.md")
+    # curl only for --submit to an https hub, which hands the upload to it
+    # (the binary has no TLS), so recommended rather than required: apt and
+    # dnf install it by default and let a minimal system leave it out, and the
+    # benchmark checks for it before measuring and says how to get it. Arch
+    # needs nothing: nfpm writes no optdepends, and pacman itself depends on
+    # curl, so every Arch system has it.
     conf["overrides"] = {
-        "deb": {"depends": [f"libc6 (>= {floor})"]},
-        "rpm": {"depends": [f"glibc >= {floor}"]},
+        "deb": {"depends": [f"libc6 (>= {floor})"], "recommends": ["curl"]},
+        "rpm": {"depends": [f"glibc >= {floor}"], "recommends": ["curl"]},
         "archlinux": {"depends": [f"glibc>={floor}"]},
     }
     return conf, floor
@@ -189,12 +195,13 @@ def gui_config(version, metainfo):
 
 def termux_config(binary, version):
     """Termux keeps its own prefix and calls the architecture aarch64. The
-    binary is the static Android one, so there is nothing to depend on -- and
-    Termux has curl, so an https --submit works there as it does on Linux."""
+    binary is the static Android one, so there is nothing to depend on but
+    curl, recommended for an https --submit as on Linux."""
     conf = common("cpcpub", "arm64", version, DESCRIPTION)
     # nfpm would write Debian's arm64; Termux's dpkg refuses anything but its
     # own name for the architecture.
     conf["deb"] = {"arch": "aarch64"}
+    conf["recommends"] = ["curl"]
     conf["contents"] = [
         {"src": str(binary), "dst": f"{TERMUX_PREFIX}/bin/cpcpub",
          "file_info": {"mode": 0o755}},
