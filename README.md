@@ -32,7 +32,7 @@ Or install a package from the same release. Each one carries those same binaries
 | Debian, Ubuntu | `cpcpub_*.deb`, and `cpcpub-gui_*_all.deb` for the window |
 | Fedora, openSUSE | `cpcpub-*.rpm`, `cpcpub-gui-*.noarch.rpm` |
 | Arch Linux | `cpcpub-*.pkg.tar.zst`, `cpcpub-gui-*-any.pkg.tar.zst` |
-| Windows | `cpcpub-*-windows-x64.msi` or `-arm64.msi`: the benchmark on PATH, the window in the Start menu |
+| Windows | `cpcpub-*-windows-setup.exe`, for x64 and Arm64 alike: the benchmark on PATH, the window in the Start menu |
 | Android | `cpcpub-*-android-arm64.apk`, an app; or `cpcpub-termux_*.deb` for Termux |
 
 [packaging/README.md](packaging/README.md) has the details, including why the Linux packages need glibc 2.38 or newer.
@@ -64,7 +64,7 @@ One binary carries four compilations of the kernels — auto-vectorization off/o
 On a desktop, [gui/](gui/) is the same flags in a window — the variants to
 run, per-core or not, where to put the result, the hub fields, and a live
 estimate of how long the settings will take. It comes with the `cpcpub-gui`
-package on Linux and in the MSI on Windows; on Android the app is
+package on Linux and in the setup on Windows; on Android the app is
 [android/](android/README.md). From the tree:
 
 ```sh

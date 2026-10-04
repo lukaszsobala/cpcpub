@@ -11,7 +11,7 @@ beside them:
 | Fedora, openSUSE | `cpcpub-VERSION-1.ARCH.rpm`, `cpcpub-gui-VERSION-1.noarch.rpm` | the same |
 | Arch Linux | `cpcpub-VERSION-1-ARCH.pkg.tar.zst`, `cpcpub-gui-VERSION-1-any.pkg.tar.zst` | the same |
 | Termux | `cpcpub-termux_VERSION-1_aarch64.deb` | the static Android binary, under Termux's prefix |
-| Windows | `cpcpub-VERSION-windows-x64.msi`, `-arm64.msi` | `cpcpub.exe` on PATH (and `cpcpub-v3.exe` on x64), the window in the Start menu |
+| Windows | `cpcpub-VERSION-windows-setup.exe`, for x64 and Arm64 | `cpcpub.exe` on PATH (and `cpcpub-v3.exe` on x64), the window in the Start menu |
 | Android | `cpcpub-VERSION-android-arm64.apk` | an app around the static Android binary; see [android/](../android/README.md) |
 
 The Linux packages exist for every architecture the release has a Linux
@@ -38,12 +38,13 @@ That decides the tools:
 - **nfpm for Linux.** dpkg-buildpackage and rpmbuild strip binaries and split
   out debug info by default. nfpm puts files into an archive and does nothing
   else to them.
-- **wixl for Windows.** It builds the MSI on Linux, from the same staged
-  files.
+- **Inno Setup for Windows.** It copies files into the setup program and
+  back out of it unchanged.
 - **The SDK's own tools for Android, not Gradle.** The Gradle plugin strips
   native libraries.
 - **Nothing inside is signed.** Signing a Windows binary rewrites it. The APK
-  is signed as a whole, which leaves the binary inside it alone.
+  is signed as a whole, which leaves the binary inside it alone; signing the
+  Windows setup would leave the files inside it alone in the same way.
 
 Every package is then installed and checked. The installed file's digest has
 to match the release asset's, and so does the digest the benchmark reports
@@ -67,14 +68,15 @@ is published only if all of them pass:
 
   Debian 12 must *refuse* the package (see below). The Termux package is
   installed in Termux's own image, natively on the arm64 runner.
-- **Windows:** [windows/test-msi.ps1](windows/test-msi.ps1) installs each MSI
-  on an x64 and an Arm64 runner, and checks:
-  - the digests;
+- **Windows:** [windows/test-installer.ps1](windows/test-installer.ps1)
+  installs the setup silently on an x64 and an Arm64 runner, and checks:
+  - that each got its own machine's benchmark, by digest, and its own
+    machine's window;
   - PATH, the Start-menu shortcut and the entry in Apps;
   - that the benchmark runs;
   - the window's own run;
-  - a clean uninstall;
-  - that the other machine's MSI refuses to install.
+  - that installing again over it leaves one install and one PATH entry;
+  - a clean uninstall.
 - **Android:** the APK is checked rather than installed. There is no
   emulator on the arm64 runners, and an x86 emulator's Arm translation cannot
   run a static binary. The checks are its signature, its manifest and the
@@ -110,13 +112,14 @@ python3 packaging/linux/build.py rel v0.3.6 out    # needs nfpm and readelf
 packaging/linux/test.sh out rel                    # needs docker
 ```
 
-The Windows window has to be frozen on Windows. Run
-[windows/build-gui.sh](windows/build-gui.sh) in an MSYS2 UCRT64 shell, which
-leaves `dist/cpcpub-gui`. The MSIs can then be built anywhere msitools 0.106
-or newer runs:
+The Windows setup is built on Windows. Freeze the window on each machine
+with [windows/build-gui.sh](windows/build-gui.sh), in an MSYS2 UCRT64 shell on
+x64 and a CLANGARM64 one on Arm64; each leaves `dist/cpcpub-gui`. Then, with
+Inno Setup 6.3 or newer installed:
 
-```sh
-python3 packaging/windows/build-msi.py rel dist/cpcpub-gui v0.3.6 out
+```powershell
+pwsh packaging/windows/build-installer.ps1 -Release rel `
+    -GuiX64 gui-x64 -GuiArm64 gui-arm64 -Version v0.3.6 -Out out
 ```
 
 The APK: `android/build.sh rel v0.3.6 out`, with `ANDROID_HOME` set; see
@@ -144,18 +147,20 @@ commit packages to the same bytes. The workflow sets it to the commit's time.
   `gobject-introspection`, for cairo's typelib) and openSUSE (the separate
   `typelib(Gtk)` package) end up with a window that starts.
   [linux/build.py](linux/build.py) says why a plain "or" was not enough.
-- **Both MSIs are x64 packages.** wixl cannot write an Arm64 one, and
-  Windows 11 on Arm installs x64 packages. The arm64 MSI carries the native
-  arm64 benchmark, so the measuring is native. The window is the same x64
-  build in both, and on Arm it runs under emulation; all it does is start the
-  benchmark and read what it prints. A launch condition reads the machine's
-  real architecture from the registry and refuses the wrong installer.
-- **The MSI has no wizard.** wixl has no installer UI. Opening the MSI asks
-  for elevation and shows a progress bar, and that is all. The Publisher reads
-  "Lukasz Sobala" without the diacritic, because wixl drops non-ASCII
-  properties.
-- **Unsigned.** Windows SmartScreen warns about an unsigned MSI it has not
-  seen before. Signing would need a certificate, and must apply to the MSI,
+- **One Windows setup for both machines.** It carries the x64 and the Arm64
+  builds of the benchmark and of the window, and installs the ones native to
+  the machine. On Arm, Windows would also run the x64 benchmark, under
+  emulation, and report the emulator's speed as the processor's. The setup
+  is about 50 MB, twice what one machine's would be, which seemed a fair price
+  for nobody having to know which one to download.
+- **A setup program, not an MSI.** An MSI is for one machine type, so it
+  would take two downloads. The only MSI builder that runs on Linux, wixl,
+  cannot write an Arm64 one at all. An MSI matters to managed deployment
+  (Intune, Group Policy), which is not how a benchmark gets installed, and
+  winget takes Inno Setup installers as they are. Silent installs work:
+  `/VERYSILENT /SUPPRESSMSGBOXES`.
+- **Unsigned.** Windows SmartScreen warns about an unsigned setup it has not
+  seen before. Signing would need a certificate, and must apply to the setup,
   never to the `cpcpub.exe` inside it.
 - **Not packaged:** Flatpak and Snap, whose sandboxes get in the way of the
   `/sys` reads and CPU pinning the benchmark depends on; and macOS.
