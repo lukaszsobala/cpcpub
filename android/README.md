@@ -5,7 +5,7 @@ measures nothing itself. It builds the command line, runs the benchmark, and
 reads back what it prints. You choose:
 
 - the run: both, multi-threaded only, or per-core only;
-- the variants: the baseline, each distinct one, or all four;
+- the variants: the baseline, or all four compared;
 - the hub fields;
 - the timing settings.
 
@@ -43,7 +43,7 @@ makes the same request `submit_document()` in
 [bench.c](../bench/src/bench.c) makes, and in the same way:
 
 - the same trimming of the label and notes;
-- the variant appended to the label on a `--variants` run;
+- the variant appended to the label when all four run;
 - the same percent-encoding;
 - redirects are not followed;
 - each document is uploaded exactly as the benchmark printed it.

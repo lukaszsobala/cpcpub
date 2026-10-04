@@ -133,12 +133,18 @@ public final class MainActivity extends Activity {
             + "without the other."));
 
         page.addView(heading("Variants"));
+        // Two choices, not the desktop's three: which variants differ is fixed by
+        // the -march a binary was built for, not by the processor it runs on, and
+        // the Android build's armv8-a has both a vector unit and FMA, so all four
+        // of its variants are distinct and --variants would run the same four as
+        // --variants=all.
         variants = radios(page, new String[] {
-            "Baseline only (scalar-nofma)", "Each variant this processor can tell apart",
-            "All four"}, prefs.getInt("variants", 0));
+            "Baseline only (scalar-nofma)", "All four, and compare them"},
+            prefs.getInt("variants", 0));
         page.addView(note("The benchmark carries four compilations of its kernels: "
             + "auto-vectorisation off and on, crossed with fused multiply-add off and "
-            + "on. The baseline is the one results compare across processors."));
+            + "on. The baseline is the one results compare across processors; the "
+            + "other three show how much this processor gains from each."));
 
         upload = new CheckBox(this);
         upload.setText("Upload the result to a hub");
@@ -276,8 +282,7 @@ public final class MainActivity extends Activity {
         List<String> argv = new ArrayList<>();
         argv.add(binary());
         int v = choice(variants);
-        if (v == 1) argv.add("--variants");
-        else if (v == 2) argv.add("--variants=all");
+        if (v == 1) argv.add("--variants=all");
         int m = choice(modes);
         if (m == 0) argv.add("--full");
         else if (m == 2) argv.add("--per-core");
@@ -315,8 +320,7 @@ public final class MainActivity extends Activity {
         if (n <= 0) n = Runtime.getRuntime().availableProcessors();
         int m = choice(modes);
         int passes = m == 0 ? 1 + n : m == 2 ? n : 1;
-        // Every variant runs the whole thing again; "distinct" is up to the
-        // binary, so the estimate assumes all four for both of those choices.
+        // Every variant runs the whole thing again.
         int times = choice(variants) == 0 ? 1 : 4;
         return perPass * passes * times;
     }
