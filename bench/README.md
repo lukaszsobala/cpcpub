@@ -91,7 +91,8 @@ reply and not the run. Without `--token` it goes up anonymously and the reply
 carries the delete token that is then the only way to withdraw it — printed on
 stderr, along with everything else the upload has to say, so redirecting the
 report neither hides a failed upload nor writes that token into a file you might
-share. `$CPCPUB_HUB`
+share. Its last line, `see how it compares: URL`, is the run's page on the hub.
+`$CPCPUB_HUB`
 and `$CPCPUB_TOKEN` stand in for the two flags, which keeps the token out of the
 process list. `--variants --submit` uploads one run per variant, since results
 only compare between matching builds — each run's label gets the variant name
