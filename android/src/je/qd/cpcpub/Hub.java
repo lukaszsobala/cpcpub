@@ -172,6 +172,41 @@ final class Hub {
         return log.toString();
     }
 
+    /**
+     * Withdraw an upload: DELETE /api/runs/ID with the delete token the hub
+     * gave back for it. Returns what to log; `ok[0]` says whether it went.
+     */
+    static String withdraw(String hub, String id, String deleteToken, boolean[] ok) {
+        ok[0] = false;
+        String base = hub.replaceAll("/+$", "");
+        StringBuilder log = new StringBuilder("withdrawing run ").append(id).append(" from ")
+            .append(base).append(" ...\n");
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(base + "/api/runs/" + encode(id)).openConnection();
+            conn.setInstanceFollowRedirects(false);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(60000);
+            conn.setRequestMethod("DELETE");
+            conn.setRequestProperty("X-Delete-Token", deleteToken);
+            int status = conn.getResponseCode();
+            InputStream in = status < 400 ? conn.getInputStream() : conn.getErrorStream();
+            String reply = in == null ? "" : readAll(in);
+            if (status >= 200 && status < 300) {
+                log.append("withdrawn\n");
+                ok[0] = true;
+            } else {
+                log.append("the hub refused (HTTP ").append(status).append("): ")
+                    .append(printable(reply)).append('\n');
+            }
+        } catch (IOException | IllegalArgumentException e) {
+            log.append("withdraw failed: ").append(e.getMessage()).append('\n');
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        return log.toString();
+    }
+
     private static String readAll(InputStream in) throws IOException {
         try (InputStream src = in) {
             ByteArrayOutputStream buf = new ByteArrayOutputStream();

@@ -3,14 +3,17 @@ package je.qd.cpcpub;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.net.Uri;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.util.TypedValue;
@@ -34,13 +37,16 @@ import android.widget.TextView;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -68,6 +74,17 @@ public final class MainActivity extends Activity {
     private static final int[] COOLDOWNS = {0, 30, 60, 120};
     private static final String[] COOLDOWN_NAMES = {"Off", "30 s", "1 min", "2 min"};
     private static final int COOLDOWN_DEFAULT = 1;
+    // When to say before a run that the phone is likely still warm: a battery
+    // this hot, or a run that ended this recently. A phone idles in the low
+    // thirties and comes out of a run near forty.
+    private static final float WARM_BATTERY_C = 38f;
+    private static final long RECENT_RUN_MS = 3 * 60 * 1000;
+    // PowerManager's thermal statuses, by their number, in words.
+    private static final String[] THERMAL = {
+        "not throttling", "throttling lightly", "throttling", "throttling hard",
+        "throttling very hard", "close to shutting down from heat", "shutting down from heat"};
+    // How many past results the list offers, newest first.
+    private static final int PAST_SHOWN = 100;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
@@ -100,6 +117,8 @@ public final class MainActivity extends Activity {
     private TextView command;
     private TextView status;
     private Button compareButton;
+    private Button withdrawButton;
+    private TextView warning;
     private ScrollView scroll;
     private LinearLayout results;
     private Button logButton;
@@ -114,6 +133,11 @@ public final class MainActivity extends Activity {
     private boolean leftDuringRun;
     private boolean stopped;
     private boolean uploading;
+    private PowerManager power;
+    private PowerManager.OnThermalStatusChangedListener thermalListener;
+    private int worstThermal;         // the hottest Android said it ran during this run
+    private boolean saverDuringRun;
+    private float batteryAtStart;
     private String lastRaw;
     private String lastName;
 
@@ -123,6 +147,7 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences("form", MODE_PRIVATE);
+        power = getSystemService(PowerManager.class);
 
         scroll = new ScrollView(this);
         LinearLayout page = new LinearLayout(this);
@@ -188,6 +213,9 @@ public final class MainActivity extends Activity {
             | InputType.TYPE_TEXT_VARIATION_PASSWORD, "token");
         label = field(uploadFields, "Label", "short name for this phone",
             InputType.TYPE_CLASS_TEXT, "label");
+        // The phone's own name until the label has been set once: the CPU line
+        // names only core designs, which many phones share.
+        if (!prefs.contains("label")) label.setText(deviceName());
         notes = field(uploadFields, "Notes", "cooling, power settings, anything else",
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE, "notes");
         page.addView(uploadFields);
@@ -227,8 +255,12 @@ public final class MainActivity extends Activity {
         stopButton.setText("Stop");
         stopButton.setVisibility(View.GONE);
         stopButton.setOnClickListener(v -> stop());
+        Button pastButton = new Button(this, null, android.R.attr.borderlessButtonStyle);
+        pastButton.setText("Past results");
+        pastButton.setOnClickListener(v -> showPast());
         buttons.addView(runButton);
         buttons.addView(stopButton);
+        buttons.addView(pastButton);
         page.addView(buttons, spaced());
 
         estimate = text(14, false);
@@ -245,6 +277,11 @@ public final class MainActivity extends Activity {
         status.setText("Keep the screen on this app while it measures: Android moves an "
             + "app in the background to fewer, slower cores.");
         page.addView(status);
+        // What may have held this run's numbers down, in words.
+        warning = text(14, false);
+        warning.setTextColor(0xFFD9822B);
+        warning.setVisibility(View.GONE);
+        page.addView(warning);
         // After an upload: the run's page on the hub, where it is compared.
         compareButton = new Button(this, null, android.R.attr.borderlessButtonStyle);
         compareButton.setText("See how it compares");
@@ -252,6 +289,12 @@ public final class MainActivity extends Activity {
         compareButton.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         compareButton.setVisibility(View.GONE);
         page.addView(compareButton);
+        withdrawButton = new Button(this, null, android.R.attr.borderlessButtonStyle);
+        withdrawButton.setText("Withdraw from the hub");
+        withdrawButton.setAllCaps(false);
+        withdrawButton.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        withdrawButton.setVisibility(View.GONE);
+        page.addView(withdrawButton);
 
         results = column();
         page.addView(results, spaced());
@@ -473,6 +516,50 @@ public final class MainActivity extends Activity {
             .putString("notes", notes.getText().toString())
             .apply();
 
+        // Whatever would hold the numbers down, said before the run rather
+        // than found out after it; the run is still the user's to start.
+        List<String> why = beforeRun();
+        if (why.isEmpty()) {
+            start();
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("The result may come out low")
+            .setMessage(TextUtils.join("\n\n", why) + "\n\nA phone that is warm or held "
+                + "back scores lower than it would cool and at full speed.")
+            .setPositiveButton("Run anyway", (d, w) -> start())
+            .setNegativeButton("Not now", null)
+            .show();
+    }
+
+    /** What would make a run started now measure low, in words. */
+    private List<String> beforeRun() {
+        List<String> why = new ArrayList<>();
+        if (power.isPowerSaveMode()) {
+            why.add("Battery saver is on. It holds the fast cores back; turn it off "
+                + "for the run.");
+        }
+        int thermal = power.getCurrentThermalStatus();
+        if (thermal >= PowerManager.THERMAL_STATUS_LIGHT) {
+            why.add("Android says the phone is " + thermalName(thermal) + " already, to "
+                + "cool down. Let it rest first.");
+        }
+        float battery = batteryTemp();
+        if (battery >= WARM_BATTERY_C) {
+            why.add(String.format(Locale.getDefault(), "The battery is at %.0f °C, so "
+                + "the phone is warm. Let it cool, and off the charger if it is on one.",
+                battery));
+        }
+        long since = System.currentTimeMillis() - prefs.getLong("lastRunEnd", 0);
+        if (since >= 0 && since < RECENT_RUN_MS) {
+            why.add("The last run ended " + since / 1000 + " s ago. Give the phone a few "
+                + "minutes to cool.");
+        }
+        return why;
+    }
+
+    private void start() {
+        if (proc != null || uploading) return;
         List<String> argv = argv();
         try {
             ProcessBuilder pb = new ProcessBuilder(argv);
@@ -491,6 +578,15 @@ public final class MainActivity extends Activity {
         leftDuringRun = false;
         stopped = false;
         compareButton.setVisibility(View.GONE);
+        withdrawButton.setVisibility(View.GONE);
+        warning.setVisibility(View.GONE);
+        // Android's own word on the heat, followed through the run: the
+        // hottest it gets is what the numbers were measured at.
+        worstThermal = power.getCurrentThermalStatus();
+        saverDuringRun = power.isPowerSaveMode();
+        batteryAtStart = batteryTemp();
+        thermalListener = st -> worstThermal = Math.max(worstThermal, st);
+        power.addThermalStatusListener(getMainExecutor(), thermalListener);
         started = System.nanoTime();
         coolUntil = 0;
         estimated = Math.max(1.0, estimateSeconds());
@@ -574,26 +670,14 @@ public final class MainActivity extends Activity {
     private void finished(int exit, String raw) {
         proc = null;
         main.removeCallbacks(tick);
+        afterRun();
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         progress.setVisibility(View.GONE);
         stopButton.setVisibility(View.GONE);
         runButton.setEnabled(true);
         long elapsed = Math.round((System.nanoTime() - started) / 1e9);
 
-        List<JSONObject> docs = new ArrayList<>();
-        if (!raw.trim().isEmpty()) {
-            try {
-                Object parsed = new JSONTokener(raw).nextValue();
-                if (parsed instanceof JSONArray) {
-                    JSONArray a = (JSONArray) parsed;
-                    for (int i = 0; i < a.length(); i++) docs.add(a.getJSONObject(i));
-                } else if (parsed instanceof JSONObject) {
-                    docs.add((JSONObject) parsed);
-                }
-            } catch (JSONException e) {
-                appendLog("\nthe result document did not parse: " + e.getMessage() + "\n");
-            }
-        }
+        List<JSONObject> docs = parseDocs(raw);
         if (docs.isEmpty()) {
             if (stopped) {
                 status.setText("Stopped after " + elapsed + " s.");
@@ -613,11 +697,88 @@ public final class MainActivity extends Activity {
         saveButton.setEnabled(true);
         shareButton.setEnabled(true);
         status.setText("Done in " + elapsed + " s" + (saved != null ? "; kept as " + saved : ""));
-        if (exit != 0 || leftDuringRun) log.setVisibility(View.VISIBLE);
+        if (exit != 0) log.setVisibility(View.VISIBLE);
         // The score is below the form; bring it up rather than leave it to be
         // scrolled to.
         scroll.post(() -> scroll.smoothScrollTo(0, Math.max(0, status.getTop() - dp(8))));
-        if (exit == 0 && upload.isChecked()) submit(raw, choice(variants) != 0);
+        if (exit == 0 && upload.isChecked()) submit(raw, choice(variants) != 0, lastName);
+    }
+
+    /** The documents in what the benchmark printed: one, or a --variants array. */
+    private List<JSONObject> parseDocs(String raw) {
+        List<JSONObject> docs = new ArrayList<>();
+        if (raw.trim().isEmpty()) return docs;
+        try {
+            Object parsed = new JSONTokener(raw).nextValue();
+            if (parsed instanceof JSONArray) {
+                JSONArray a = (JSONArray) parsed;
+                for (int i = 0; i < a.length(); i++) docs.add(a.getJSONObject(i));
+            } else if (parsed instanceof JSONObject) {
+                docs.add((JSONObject) parsed);
+            }
+        } catch (JSONException e) {
+            appendLog("\nthe result document did not parse: " + e.getMessage() + "\n");
+        }
+        return docs;
+    }
+
+    /** The heat and the battery saver over the run, in the log, and as a warning
+     *  where they will have held the numbers down. */
+    private void afterRun() {
+        if (thermalListener != null) {
+            power.removeThermalStatusListener(thermalListener);
+            thermalListener = null;
+        }
+        prefs.edit().putLong("lastRunEnd", System.currentTimeMillis()).apply();
+        saverDuringRun |= power.isPowerSaveMode();
+        float end = batteryTemp();
+        appendLog(String.format(Locale.US, "\nbattery %.1f °C at the start, %.1f °C at the "
+            + "end; Android said the phone was %s at its hottest\n",
+            batteryAtStart, end, thermalName(worstThermal)));
+
+        List<String> why = new ArrayList<>();
+        if (leftDuringRun) {
+            why.add("The app left the screen during the run. Android may have moved it to "
+                + "slower cores or paused it.");
+        }
+        if (worstThermal >= PowerManager.THERMAL_STATUS_LIGHT) {
+            why.add("Android said the phone was " + thermalName(worstThermal) + " during "
+                + "the run, to cool down. A longer cool-down, a cooler room, or taking the "
+                + "case off helps.");
+        }
+        if (saverDuringRun) {
+            why.add("Battery saver was on, which holds the fast cores back.");
+        }
+        if (why.isEmpty()) return;
+        warning.setText("These numbers are likely low. " + TextUtils.join(" ", why));
+        warning.setVisibility(View.VISIBLE);
+    }
+
+    private static String thermalName(int status) {
+        return status >= 0 && status < THERMAL.length ? THERMAL[status] : "at heat level " + status;
+    }
+
+    /** The battery's temperature in °C, or NaN where the phone does not say. */
+    private float batteryTemp() {
+        Intent b = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        int t = b == null ? Integer.MIN_VALUE
+            : b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
+        return t == Integer.MIN_VALUE ? Float.NaN : t / 10f;
+    }
+
+    /** What this phone calls itself: maker and model, and the chip where it says. */
+    private static String deviceName() {
+        String make = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.trim();
+        String model = Build.MODEL == null ? "" : Build.MODEL.trim();
+        String name = make.isEmpty() || model.regionMatches(true, 0, make, 0, make.length())
+            ? model : Character.toUpperCase(make.charAt(0)) + make.substring(1) + " " + model;
+        if (Build.VERSION.SDK_INT >= 31) {
+            String soc = Build.SOC_MODEL;
+            if (soc != null && !soc.isEmpty() && !soc.equals(Build.UNKNOWN)) {
+                name += " (" + soc + ")";
+            }
+        }
+        return name.trim();
     }
 
     /** Every result is kept in the app's own folder, as the desktop saves to a folder. */
@@ -637,7 +798,7 @@ public final class MainActivity extends Activity {
 
     // -- uploading -------------------------------------------------------
 
-    private void submit(String raw, boolean variantRun) {
+    private void submit(String raw, boolean variantRun, String name) {
         String url = hub.getText().toString().trim();
         if (url.isEmpty()) url = getString(R.string.hub_url);
         if (url.isEmpty()) {
@@ -656,6 +817,7 @@ public final class MainActivity extends Activity {
         new Thread(() -> {
             int landed = 0;
             String page = null;
+            JSONArray kept = new JSONArray();
             for (String doc : docs) {
                 String variant = null;
                 if (variantRun) {
@@ -669,18 +831,30 @@ public final class MainActivity extends Activity {
                 String said = Hub.submit(hubUrl, tok, lab, not, variant, doc, ok);
                 if (ok[0]) landed++;
                 if (ok[0] && page == null) page = runPage(hubUrl, said);
+                JSONObject reply = ok[0] ? reply(said) : null;
+                if (reply != null) {
+                    try {
+                        kept.put(new JSONObject()
+                            .put("hub", hubUrl).put("variant", variant)
+                            .put("id", reply.opt("id"))
+                            .put("delete_token", reply.optString("delete_token", ""))
+                            .put("page", runPage(hubUrl, said)));
+                    } catch (JSONException ignored) {
+                        // Only strings and numbers go in; it cannot fail.
+                    }
+                }
                 main.post(() -> appendLog(said));
             }
+            // The delete token is shown once, by the hub: kept beside the result,
+            // so the upload can be withdrawn from Past results long after.
+            if (kept.length() > 0) keepReceipt(name, kept);
             int n = landed;
             String first = page;
             main.post(() -> {
                 uploading = false;
                 runButton.setEnabled(true);
                 if (n == docs.size()) {
-                    // The delete token is shown once, by the hub, and kept in
-                    // the log; the table stays in view.
-                    status.setText("Uploaded. To withdraw it later you need the delete "
-                        + "token, which is in the log.");
+                    status.setText("Uploaded. It can be withdrawn later from Past results.");
                 } else {
                     status.setText("The upload failed -- the log says why. The result "
                         + "is kept on the phone.");
@@ -690,24 +864,241 @@ public final class MainActivity extends Activity {
                     compareButton.setOnClickListener(v -> openPage(first));
                     compareButton.setVisibility(View.VISIBLE);
                 }
+                if (name.equals(lastName)) showWithdraw(name);
             });
         }).start();
     }
 
-    /** The uploaded run's page on the hub, from the reply in `said`, or null. */
-    private static String runPage(String hub, String said) {
+    /** The hub's reply to an upload, from the log text in `said`, or null. */
+    private static JSONObject reply(String said) {
         for (String line : said.split("\n")) {
             if (!line.startsWith("uploaded: ")) continue;
             try {
-                String url = new JSONObject(line.substring("uploaded: ".length()))
-                    .optString("url", "");
-                if (url.startsWith("/")) url = hub.replaceAll("/+$", "") + url;
-                return url.startsWith("http://") || url.startsWith("https://") ? url : null;
+                return new JSONObject(line.substring("uploaded: ".length()));
             } catch (JSONException e) {
                 return null;
             }
         }
         return null;
+    }
+
+    /** The uploaded run's page on the hub, from the reply in `said`, or null. */
+    private static String runPage(String hub, String said) {
+        JSONObject r = reply(said);
+        String url = r == null ? "" : r.optString("url", "");
+        if (url.startsWith("/")) url = hub.replaceAll("/+$", "") + url;
+        return url.startsWith("http://") || url.startsWith("https://") ? url : null;
+    }
+
+    // -- receipts and withdrawing ----------------------------------------
+
+    /** Where the hub's replies for the result `name` are kept: the app's own
+     *  storage, which no other app can read, since a delete token withdraws. */
+    private File receiptFile(String name) {
+        return new File(new File(getFilesDir(), "uploads"), name);
+    }
+
+    private JSONArray readReceipt(String name) {
+        File f = receiptFile(name);
+        if (!f.isFile()) return new JSONArray();
+        try {
+            return new JSONArray(readFile(f));
+        } catch (IOException | JSONException e) {
+            return new JSONArray();
+        }
+    }
+
+    /** Add `uploads` to what is kept for `name`. Called off the main thread too. */
+    private synchronized void keepReceipt(String name, JSONArray uploads) {
+        JSONArray all = readReceipt(name);
+        for (int i = 0; i < uploads.length(); i++) all.put(uploads.opt(i));
+        writeReceipt(name, all);
+    }
+
+    private synchronized void writeReceipt(String name, JSONArray all) {
+        File f = receiptFile(name);
+        File dir = f.getParentFile();
+        if (dir != null && !dir.isDirectory() && !dir.mkdirs()) return;
+        try (OutputStream out = new FileOutputStream(f)) {
+            out.write(all.toString(2).getBytes(StandardCharsets.UTF_8));
+        } catch (IOException | JSONException e) {
+            main.post(() -> appendLog("\ncould not keep the upload's delete token: "
+                + e.getMessage() + "\n"));
+        }
+    }
+
+    /** The Withdraw button, for a result on screen with uploads still standing. */
+    private void showWithdraw(String name) {
+        JSONArray kept = readReceipt(name);
+        int standing = 0;
+        for (int i = 0; i < kept.length(); i++) {
+            JSONObject r = kept.optJSONObject(i);
+            if (r != null && !r.optBoolean("withdrawn") && !r.optString("delete_token").isEmpty()) {
+                standing++;
+            }
+        }
+        withdrawButton.setVisibility(standing > 0 ? View.VISIBLE : View.GONE);
+        int n = standing;
+        withdrawButton.setOnClickListener(v -> new AlertDialog.Builder(this)
+            .setTitle("Withdraw from the hub?")
+            .setMessage((n > 1 ? "All " + n + " uploads of this result come" : "The upload "
+                + "comes") + " off the hub for good. The result stays on the phone.")
+            .setPositiveButton("Withdraw", (d, w) -> withdraw(name))
+            .setNegativeButton(android.R.string.cancel, null)
+            .show());
+    }
+
+    private void withdraw(String name) {
+        withdrawButton.setEnabled(false);
+        status.setText("Withdrawing ...");
+        new Thread(() -> {
+            JSONArray kept = readReceipt(name);
+            int failed = 0;
+            for (int i = 0; i < kept.length(); i++) {
+                JSONObject r = kept.optJSONObject(i);
+                if (r == null || r.optBoolean("withdrawn")) continue;
+                boolean[] ok = new boolean[1];
+                String said = Hub.withdraw(r.optString("hub"), r.optString("id"),
+                    r.optString("delete_token"), ok);
+                main.post(() -> appendLog(said));
+                if (!ok[0]) {
+                    failed++;
+                    continue;
+                }
+                try {
+                    r.put("withdrawn", true);
+                } catch (JSONException ignored) {
+                    // A boolean; it cannot fail.
+                }
+            }
+            writeReceipt(name, kept);
+            int f = failed;
+            main.post(() -> {
+                withdrawButton.setEnabled(true);
+                if (f == 0) {
+                    status.setText("Withdrawn from the hub. The result stays on the phone.");
+                    compareButton.setVisibility(View.GONE);
+                } else {
+                    status.setText("Could not withdraw it -- the log says why.");
+                    log.setVisibility(View.VISIBLE);
+                }
+                if (name.equals(lastName)) showWithdraw(name);
+            });
+        }).start();
+    }
+
+    // -- past results ----------------------------------------------------
+
+    /** The results kept on the phone, newest first, to open one again. */
+    private void showPast() {
+        File dir = getExternalFilesDir("results");
+        File[] files = dir == null ? null : dir.listFiles((d, n) -> n.endsWith(".json"));
+        if (files == null || files.length == 0) {
+            explain("Past results", "No results yet: every run is kept here once it is done.");
+            return;
+        }
+        // The names carry the time they were made, so their order is the clock's.
+        Arrays.sort(files, (a, b) -> b.getName().compareTo(a.getName()));
+        File[] shown = Arrays.copyOf(files, Math.min(files.length, PAST_SHOWN));
+        new Thread(() -> {
+            String[] lines = new String[shown.length];
+            for (int i = 0; i < shown.length; i++) lines[i] = summary(shown[i]);
+            main.post(() -> new AlertDialog.Builder(this)
+                .setTitle("Past results")
+                .setItems(lines, (d, which) -> openPast(shown[which]))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show());
+        }).start();
+    }
+
+    /** One line for the list: when, the score, and whether it is on a hub. */
+    private String summary(File f) {
+        StringBuilder line = new StringBuilder(when(f.getName()));
+        try {
+            Object parsed = new JSONTokener(readFile(f)).nextValue();
+            JSONObject doc = parsed instanceof JSONArray ? ((JSONArray) parsed).optJSONObject(0)
+                : (JSONObject) parsed;
+            JSONObject total = doc == null ? null : doc.optJSONObject("total");
+            if (total != null) {
+                line.append(" · score ").append(Metrics.format(total.opt("score")));
+            } else if (doc != null) {
+                double best = 0;
+                for (Object[] scope : Metrics.scopes(doc)) {
+                    best = Math.max(best, ((JSONObject) scope[1]).optDouble("score", 0));
+                }
+                line.append(" · best core ").append(Metrics.format(best));
+            }
+            if (parsed instanceof JSONArray) {
+                line.append(" · ").append(((JSONArray) parsed).length()).append(" variants");
+            }
+        } catch (IOException | JSONException | ClassCastException e) {
+            line.append(" · unreadable");
+        }
+        JSONArray kept = readReceipt(f.getName());
+        if (kept.length() > 0) {
+            line.append(kept.optJSONObject(0) != null && kept.optJSONObject(0).optBoolean("withdrawn")
+                ? " · withdrawn" : " · uploaded");
+        }
+        return line.toString();
+    }
+
+    /** cpcpub-20261006-140312.json -> "6 Oct 2026, 14:03", or the name itself. */
+    private static String when(String name) {
+        try {
+            Date d = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT)
+                .parse(name.replace("cpcpub-", "").replace(".json", ""));
+            if (d != null) {
+                return java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM,
+                    java.text.DateFormat.SHORT).format(d);
+            }
+        } catch (java.text.ParseException ignored) {
+            // Not a name this app gave it.
+        }
+        return name;
+    }
+
+    private void openPast(File f) {
+        if (proc != null) return;
+        String raw;
+        try {
+            raw = readFile(f);
+        } catch (IOException e) {
+            status.setText("Could not read " + f.getName() + ": " + e.getMessage());
+            return;
+        }
+        List<JSONObject> docs = parseDocs(raw);
+        if (docs.isEmpty()) {
+            status.setText(f.getName() + " holds no result.");
+            return;
+        }
+        lastRaw = raw;
+        lastName = f.getName();
+        showResults(docs, 0);
+        saveButton.setEnabled(true);
+        shareButton.setEnabled(true);
+        warning.setVisibility(View.GONE);
+        compareButton.setVisibility(View.GONE);
+        JSONArray kept = readReceipt(lastName);
+        JSONObject first = kept.optJSONObject(0);
+        String page = first == null || first.optBoolean("withdrawn") ? "" : first.optString("page", "");
+        if (!page.isEmpty()) {
+            compareButton.setOnClickListener(v -> openPage(page));
+            compareButton.setVisibility(View.VISIBLE);
+        }
+        showWithdraw(lastName);
+        status.setText("The result from " + when(lastName) + (kept.length() == 0
+            ? ", not uploaded." : first != null && first.optBoolean("withdrawn")
+            ? ", withdrawn from the hub." : ", on the hub."));
+        scroll.post(() -> scroll.smoothScrollTo(0, Math.max(0, status.getTop() - dp(8))));
+    }
+
+    private static String readFile(File f) throws IOException {
+        try (InputStream in = new FileInputStream(f)) {
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            for (int n; (n = in.read(chunk)) > 0; ) buf.write(chunk, 0, n);
+            return buf.toString("UTF-8");
+        }
     }
 
     private void openPage(String url) {
