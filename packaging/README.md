@@ -84,6 +84,32 @@ is published only if all of them pass:
   [android/README.md](../android/README.md) says what was tried on an
   emulator by hand.
 
+## Releasing
+
+The version is the tag and nothing else: `release.yml` stamps it into every
+binary and `packages.yml` into every package, so there is no version number in
+the tree to bump. Before tagging, run the whole release once as a trial, on the
+branch and with the tag it will become:
+
+```sh
+gh workflow run release.yml --ref gui-work -f tag=v0.4.0 -f publish=false
+```
+
+It builds the branch for every target -- the only place Windows, macOS,
+Android and RISC-V builds happen -- and runs every check and package test a
+release runs. The tag need not exist, and nothing is published: the job that
+attaches assets does not start, and what it would have attached is left as the
+run's `release` artifact. When it passes, merge, then tag and push the tag:
+
+```sh
+git tag -a v0.4.0 -m "cpcpub 0.4.0" && git push origin v0.4.0
+```
+
+After the release, load its `verified-builds.json` into each hub (see
+[web/README.md](../web/README.md)), or results from the new binaries will not
+show as verified. The Android signing key must be in place before the first
+release that matters; see below.
+
 ## The Android signing key
 
 Android installs an update only if it is signed with the same key as the
@@ -104,11 +130,12 @@ gh secret set ANDROID_KEY_PASSWORD          # the same password, for a PKCS12 st
 
 ## Building them yourself
 
-From a directory holding a release's assets:
+From a directory holding a release's assets, the latest one's here:
 
 ```sh
-gh release download v0.3.6 --repo lukaszsobala/cpcpub --dir rel
-python3 packaging/linux/build.py rel v0.3.6 out    # needs nfpm and readelf
+tag=$(gh release view --repo lukaszsobala/cpcpub --json tagName -q .tagName)
+gh release download "$tag" --repo lukaszsobala/cpcpub --dir rel
+python3 packaging/linux/build.py rel "$tag" out    # needs nfpm and readelf
 packaging/linux/test.sh out rel                    # needs docker
 ```
 
@@ -118,11 +145,12 @@ x64 and a CLANGARM64 one on Arm64; each leaves `dist/cpcpub-gui`. Then, with
 Inno Setup 6.3 or newer installed:
 
 ```powershell
+$tag = gh release view --repo lukaszsobala/cpcpub --json tagName -q .tagName
 pwsh packaging/windows/build-installer.ps1 -Release rel `
-    -GuiX64 gui-x64 -GuiArm64 gui-arm64 -Version v0.3.6 -Out out
+    -GuiX64 gui-x64 -GuiArm64 gui-arm64 -Version $tag -Out out
 ```
 
-The APK: `android/build.sh rel v0.3.6 out`, with `ANDROID_HOME` set; see
+The APK: `android/build.sh rel "$tag" out`, with `ANDROID_HOME` set; see
 [android/README.md](../android/README.md#building).
 
 `SOURCE_DATE_EPOCH` dates everything inside the Linux packages, so the same

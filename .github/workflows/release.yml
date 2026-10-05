@@ -59,12 +59,23 @@
 # these jobs do, so a dispatch for a tag older than the packaging fails there
 # rather than packaging an old release with today's files.
 #
+# A trial run: dispatched with `publish` off, on a branch and with the tag it
+# will become (gh workflow run release.yml --ref BRANCH -f tag=vX.Y.Z -f
+# publish=false), it builds that branch for every target, stamped with that
+# version, and runs every check and package test a release runs -- and
+# publishes nothing. The tag need not exist yet. The job that could write is
+# not started at all, so a trial run never holds a token that could; what it
+# would have published is left as the run's `release` artifact. It is how a
+# change to the benchmark gets compiled for Windows, macOS, Android and RISC-V
+# before a tag rather than by one.
+#
 # Secrets: this file uses none itself. It passes the Android signing key on to
 # packages.yml, which uses it in one step and says how. The only other
 # credential in play is the automatic, per-run GITHUB_TOKEN, given to `gh`
 # through the environment -- never on a command line, never echoed, never
 # written to a file. Permissions are empty by default and read-only on the
-# build jobs; exactly one job may write, and only to attach assets. The build
+# build jobs; exactly one job may write, only to attach assets, and only when
+# publishing. The build
 # jobs check out with persist-credentials disabled, so the token is not left in
 # .git/config while a Makefile and a compiler run.
 
@@ -76,8 +87,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "existing tag to build and upload to"
+        description: "the version: an existing tag to build and publish, or with publish off, the version a trial build of this branch is stamped with"
         required: true
+      publish:
+        description: "attach the result to the tag's release; off builds and tests everything and publishes nothing"
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -89,6 +104,9 @@ env:
   # One source of truth for what is being built, so a run cannot publish to a
   # tag it did not check out.
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  # What is checked out: the tag being published, or for a trial run the
+  # commit it was dispatched on, the tag not existing yet.
+  REF: ${{ (github.event_name == 'push' || inputs.publish) && (github.event.inputs.tag || github.ref_name) || github.sha }}
   # The hub a released binary uploads to when `--submit` is given no address.
   # The port is not optional over IPv4: the host has no public v4 of its own and
   # reaches the internet through two forwarded ports. Over IPv6 the bare name
@@ -290,7 +308,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.REF }}
           persist-credentials: false
 
       - name: Install the toolchain
@@ -635,6 +653,7 @@ jobs:
     uses: ./.github/workflows/packages.yml
     with:
       tag: ${{ github.event.inputs.tag || github.ref_name }}
+      ref: ${{ (github.event_name == 'push' || inputs.publish) && (github.event.inputs.tag || github.ref_name) || github.sha }}
     # The Android signing key, and nothing else: packages.yml names the four
     # secrets it takes and hands them to the one step that signs.
     secrets:
@@ -643,11 +662,13 @@ jobs:
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
-  publish:
+  # Everything a release is, checked and left as one artifact -- for a trial
+  # run, the end of the line.
+  manifest:
     needs: [build, packages]
     runs-on: ubuntu-24.04
     permissions:
-      contents: write        # the only write in this workflow: attach assets
+      contents: read
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -728,6 +749,30 @@ jobs:
           # it have been checked against the manifest: they are downloads to
           # check like any other, but not builds a hub can verify.
           (cd packages && sha256sum -- *) | tee -a SHA256SUMS
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: staged/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: manifest
+    # Not started for a trial run, so it never holds the write token there.
+    if: ${{ github.event_name == 'push' || inputs.publish }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write        # the only write in this workflow: attach assets
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: staged
+
+      # The bytes about to go up are the ones the manifest job took digests of.
+      - name: Check against the checksums
+        run: cd staged && sha256sum -c SHA256SUMS
 
       # `gh` reads the token from the environment, so it never reaches a process
       # list or a log line. --clobber so re-running the workflow for a tag

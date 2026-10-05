@@ -3,7 +3,9 @@
 #
 # Two ways in. release.yml calls this with the tag it is releasing, after its
 # build jobs have left the binaries as artifacts of the same run, and attaches
-# what comes out. Pushed on its own -- a change to the packaging, the window or
+# what comes out -- or, for a trial run, with the commit it built as `ref`, so
+# the packaging checked out is that commit's and not a tag that does not exist
+# yet. Pushed on its own -- a change to the packaging, the window or
 # this file -- it packages the binaries of the latest published release
 # instead, so the packaging can be worked on without cutting a release, and it
 # uploads nothing but run artifacts.
@@ -34,6 +36,11 @@ on:
         description: "the release being built; its binaries are this run's build-* artifacts"
         required: true
         type: string
+      ref:
+        description: "what to check out, when not the tag: the commit a trial run of release.yml was dispatched on"
+        required: false
+        type: string
+        default: ""
     secrets:
       ANDROID_KEYSTORE:
         required: false
@@ -74,11 +81,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
+          REF: ${{ inputs.ref }}
         run: |
           set -eu
           if [ -n "$TAG" ]; then
             echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-            echo "ref=$TAG" >> "$GITHUB_OUTPUT"
+            echo "ref=${REF:-$TAG}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)

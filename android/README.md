@@ -73,8 +73,9 @@ hides the choice if the flag is not there.
 ## Building
 
 ```sh
-gh release download v0.3.6 --repo lukaszsobala/cpcpub --pattern 'cpcpub-android-*' --dir rel
-ANDROID_HOME=~/Android/Sdk android/build.sh rel v0.3.6 out
+tag=$(gh release view --repo lukaszsobala/cpcpub --json tagName -q .tagName)
+gh release download "$tag" --repo lukaszsobala/cpcpub --pattern 'cpcpub-android-*' --dir rel
+ANDROID_HOME=~/Android/Sdk android/build.sh rel "$tag" out
 ```
 
 It needs `platforms;android-35`, a build-tools, a JDK and python3. Without a
