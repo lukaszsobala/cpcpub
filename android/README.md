@@ -7,13 +7,16 @@ reads back what it prints. You choose:
 - the run: multi-threaded, per-core, or Both, which ticks the two;
 - the variants: the baseline, or all four compared;
 - a cool-down between runs, 30 s unless you pick otherwise;
-- the hub fields;
+- the hub fields, with the label set to the phone's own name until you change
+  it (`Build.MANUFACTURER`, `Build.MODEL`, and the chip, `Build.SOC_MODEL`, on
+  Android 12 and later);
 - the timing settings.
 
 The result appears as a table. Tap a heading for what that column means; the
 score and the columns it is a geometric mean of are in bold. Every result is
 also kept in `Android/data/je.qd.cpcpub/files/results/`, and can be saved
-elsewhere or shared as JSON.
+elsewhere or shared as JSON. **Past results** lists them, newest first, with
+the score and whether each is on a hub, and opens one again.
 
 It needs Android 10 (API 29) or newer on a 64-bit Arm device, which is nearly
 every phone sold since 2019.
@@ -50,8 +53,11 @@ makes the same request `submit_document()` in
 - each document is uploaded exactly as the benchmark printed it.
 
 After an upload, "See how it compares" opens the run's page on the hub. The
-hub's reply, delete token included, goes to the log, which opens by itself
-only when an upload fails. The default hub is whichever one the release baked
+hub's reply goes to the log, which opens by itself only when an upload fails,
+and is kept beside the result in the app's private storage (`files/uploads/`,
+which no other app can read). Its delete token is what **Withdraw from the
+hub** sends, then or later from Past results, to take the upload off the hub;
+for an "all four" run it withdraws all four. The default hub is whichever one the release baked
 into the binary: `build.sh` reads it out of the binary's help text.
 
 ## Measuring on a phone
@@ -59,6 +65,20 @@ into the binary: `build.sh` reads it out of the binary's help text.
 Keep the app on screen while it runs, which it helps with by keeping the
 screen on. If the app leaves the screen, Android moves it to the slower cores
 and may pause it. The log says so if that happened during a run.
+
+Before a run, the app says so if the result is likely to come out low, and
+leaves the choice to run anyway:
+
+- battery saver is on (`PowerManager.isPowerSaveMode()`);
+- Android already reports the phone as throttling (its thermal status is
+  light or worse);
+- the battery is at 38 °C or more;
+- the last run ended less than three minutes ago.
+
+During the run it follows Android's thermal status. Afterwards the log gives
+the battery temperature at the start and the end and the hottest status, and a
+warning under the result says if the phone throttled, if battery saver was on,
+or if the app left the screen.
 
 A phone slows down as it heats, and half a minute of every core at once heats
 it. Without a rest, the per-core sweep after the multi-threaded run, and each
@@ -91,7 +111,13 @@ keystore in the environment the APK is signed with a throwaway key; see
     document;
   - the table, the variant pages and the explanations;
   - the local copy of each result;
-  - an upload of a two-variant result to a real hub.
+  - an upload of a two-variant result to a real hub;
+  - the cool-down's countdown;
+  - each warning before and after a run, with battery saver and the thermal
+    status set from `adb` (`cmd power set-mode`, `cmd thermalservice
+    override-status`);
+  - Past results, and withdrawing a one-variant and an "all four" upload;
+  - the label taken from the phone's name.
 - **The real binary has not run on the emulator.** Its translation from Arm
   to x86 cannot run a static Arm binary, not even `--version`.
 - **Termux's arm64 image ran the real binary natively** (the `linux-test`
