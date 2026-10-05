@@ -2492,6 +2492,30 @@ static void print_reply(FILE *o, const char *body) {
     if (i < len) fprintf(o, " ...");
 }
 
+// The run's page on the hub, from the "url" in its reply -- a path such as
+// "/#run=12" on this hub, or a whole address -- written to `out` as a whole
+// address. False when the reply names none. Not a JSON parser: it takes the
+// first "url" key's string and refuses anything but printable ASCII in it, so
+// what reaches the terminal is a plain address or nothing.
+static int reply_page(const char *body, const char *hub, size_t hub_len,
+                      char *out, size_t cap) {
+    const char *p = strstr(body, "\"url\"");
+    if (!p) return 0;
+    p += 5;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (*p++ != ':') return 0;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (*p++ != '"') return 0;
+    const char *end = p;
+    while (*end > 0x20 && *end < 0x7f && *end != '"' && *end != '\\') ++end;
+    if (*end != '"' || end == p) return 0;
+    const int n = *p == '/'
+        ? snprintf(out, cap, "%.*s%.*s", (int)hub_len, hub, (int)(end - p), p)
+        : snprintf(out, cap, "%.*s", (int)(end - p), p);
+    if (n < 0 || (size_t)n >= cap) return 0;
+    return !strncmp(out, "http://", 7) || !strncmp(out, "https://", 8);
+}
+
 // POST one result document. `variant` names the build it came from when a
 // --variants run is uploading several, which is how the labels on the board
 // stay told apart; the hub keys a run on the build flags in the document
@@ -2569,6 +2593,10 @@ static int submit_document(const char *doc, size_t len, const char *variant) {
         fprintf(o, "uploaded: ");
         print_reply(o, reply.body);
         fputc('\n', o);
+        // And the one part of it worth clicking, on a line of its own.
+        char page[512];
+        if (reply_page(reply.body, g_hub, base_len, page, sizeof(page)))
+            fprintf(o, "see how it compares: %s\n", page);
     } else if (reply.status >= 300 && reply.status < 400 && reply.location[0]) {
         // Almost always an http:// address answering for an https:// hub. Not
         // followed: the second address may be a different transport, a
