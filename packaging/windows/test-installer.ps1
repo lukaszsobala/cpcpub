@@ -1,9 +1,9 @@
 # Install cpcpub's Windows setup on this machine and check it the way
 # test-inside.sh checks a Linux package: the installed benchmark is the
 # release's build for this machine, to the byte; it is on PATH, it runs and
-# names itself; the Start-menu window finds it, runs it and reads the result
-# back; installing again over it changes nothing; and uninstalling takes all
-# of it away again.
+# names itself; the Start-menu window finds the fastest build of it this
+# processor runs, runs it and reads the result back; installing again over it
+# changes nothing; and uninstalling takes all of it away again.
 #
 #   pwsh packaging/windows/test-installer.ps1 -Setup X.exe -Release DIR -Machine x64|arm64
 param(
@@ -102,10 +102,14 @@ if (-not (Test-Path $report)) {
 }
 $r = Get-Content -Raw $report | ConvertFrom-Json
 Write-Host "binary=$($r.binary) gtk=$($r.gtk) exit=$($r.exit) docs=$($r.docs) saved=$($r.saved)"
-if ($r.binary -ne $exe) { throw "the window found $($r.binary), not $exe" }
+# The fastest build installed that this processor runs. .NET asks the
+# processor itself, the window asks Windows: two answers that should agree.
+$pick = $exe
+if ($Machine -eq "x64" -and [System.Runtime.Intrinsics.X86.Avx2]::IsSupported) { $pick = Join-Path $dir "cpcpub-v3.exe" }
+if ($r.binary -ne $pick) { throw "the window picked $($r.binary), not $pick" }
 if ($r.exit -ne 0 -or $r.docs -ne 1) { Write-Host $r.log; throw "the window's run failed" }
 if (-not $r.saved) { throw "the window saved no result" }
-Write-Host "GTK $($r.gtk): found $exe, ran it, saved the result"
+Write-Host "GTK $($r.gtk): picked $pick, ran it, saved the result"
 
 Say "install again over it"
 $code = Silent $Setup (Join-Path $work "reinstall.log")

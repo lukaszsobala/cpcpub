@@ -49,11 +49,66 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # benchmark, start it, read both of its streams and show a result.
 SMOKE = os.environ.get("CPCPUB_GUI_SMOKE", "")
 
+# Where the window keeps the upload fields between runs. The token in it is a
+# credential, so the file is the user's alone; see save_settings.
+SETTINGS = os.path.join(GLib.get_user_config_dir(), "cpcpub", "gui.json")
+
+# What is kept there besides the notes, the upload tick and where results go:
+# the window's text fields, each with the variable that wins over it. Those
+# win for one session and are not written back in what was kept.
+KEPT_TEXT = (("hub", "CPCPUB_HUB"), ("token", "CPCPUB_TOKEN"), ("run_label", None))
+
+
+def cpuinfo(key):
+    """The first `key` line of /proc/cpuinfo, or "" where there is none."""
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as info:
+            for line in info:
+                name, _, value = line.partition(":")
+                if name.strip() == key:
+                    return value.strip()
+    except OSError:
+        pass
+    return ""
+
+
+# What x86-64-v3 adds to the baseline, by the names Linux gives them (abm is
+# how it lists LZCNT).
+X86_64_V3 = {"avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave"}
+
+
+def has_x86_64_v3():
+    if os.name == "nt":
+        # Python has no CPUID. Windows answers for AVX2 (feature 40,
+        # PF_AVX2_INSTRUCTIONS_AVAILABLE), and the processors that have AVX2
+        # have the rest of x86-64-v3 too; a Windows too old to know the
+        # question answers no, which only keeps the plain build.
+        try:
+            import ctypes
+            return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(40))
+        except (AttributeError, OSError):
+            return False
+    return X86_64_V3 <= set(cpuinfo("flags").split())
+
+
+# The RVA23 extensions a compiler emits code for, beyond the vector unit. A
+# kernel too old to name them answers no, which only keeps the plain build.
+RVA23 = {"zba", "zbb", "zbs", "zicond", "zfa", "zcb", "zvbb"}
+
+
+def has_rva23():
+    base, *extensions = cpuinfo("isa").lower().split("_")  # rv64imafdcv_zba_...
+    return base.startswith("rv64") and "v" in base[4:] and RVA23 <= set(extensions)
+
+
 # The other builds a package installs beside the plain one, by the suffix
-# their file names carry: the same benchmark for a newer instruction set.
+# their file names carry: the same benchmark for a newer instruction set, and
+# how to tell whether this processor has it. The builds do not check for
+# themselves: one started on a processor without those instructions dies in
+# the middle of a run.
 BUILDS = {
-    "-v3": "x86-64-v3 (AVX2 and FMA)",
-    "-rva23": "the RISC-V RVA23 profile",
+    "-v3": ("x86-64-v3 (AVX2 and FMA)", has_x86_64_v3),
+    "-rva23": ("the RISC-V RVA23 profile", has_rva23),
 }
 
 # The four variants the binary carries, in the order --list-variants prints
@@ -265,12 +320,50 @@ def find_binary():
 
 
 def other_builds(binary):
-    """The builds installed beside the plain `binary`, as (file name, target)."""
+    """The builds installed beside the plain `binary`, as (file name, target,
+    whether this processor runs it)."""
     folder, name = os.path.split(binary)
     if name != "cpcpub" + EXE:
         return []
-    return [("cpcpub" + suffix + EXE, target) for suffix, target in BUILDS.items()
+    return [("cpcpub" + suffix + EXE, target, runs) for suffix, (target, runs) in BUILDS.items()
             if os.path.isfile(os.path.join(folder, "cpcpub" + suffix + EXE))]
+
+
+def best_build(binary):
+    """The build beside the plain `binary` for the newest instruction set this
+    processor has -- the fastest one that runs here -- else `binary`."""
+    for name, _target, runs in other_builds(binary):
+        if runs():
+            return os.path.join(os.path.dirname(binary), name)
+    return binary
+
+
+def load_settings():
+    if SMOKE:
+        return {}  # the packaging tests' run is the same on every machine
+    try:
+        with open(SETTINGS, encoding="utf-8") as fh:
+            settings = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return settings if isinstance(settings, dict) else {}
+
+
+def save_settings(settings):
+    """Write `settings` readable by its owner only: it holds the token. The
+    reason it could not be written, or "" when it was."""
+    if SMOKE:
+        return ""
+    tmp = SETTINGS + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(settings, fh, indent=2)
+        os.replace(tmp, SETTINGS)
+    except OSError as exc:
+        return f"could not keep the upload settings in {SETTINGS}: {exc.strerror or exc}"
+    return ""
 
 
 def quote_command(argv):
@@ -784,12 +877,17 @@ class Window(Gtk.ApplicationWindow):
         paned.set_start_child(form_scroll)
         paned.set_resize_start_child(False)
         paned.set_end_child(self.build_output())
+        # The form scrolls and the output does not: squeezed below its height,
+        # the status line and the link to an upload fall off the window.
+        paned.set_shrink_end_child(False)
 
         # Both groups tick their boxes only now: each tick rewrites the
         # command line, which is in the footer built after the form.
         self.reload_variants()
         self.mode_group.set_checks([self.mode_threads, self.mode_percore], every=True)
         self.advanced.connect("notify::expanded", lambda *_: self.fit_form())
+        self.restore_settings()
+        self.connect("close-request", self.on_close)
         # Once, after the first layout pass: until then there is nothing to
         # measure.
         self.connect("map", lambda *_: GLib.idle_add(self.fit_form))
@@ -833,22 +931,6 @@ class Window(Gtk.ApplicationWindow):
                 grid.attach(widget, 0, row, span + 1, 1)
             row += 1
             return widget
-
-        # Benchmark binary.
-        binrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.binary = Gtk.Entry(hexpand=True, placeholder_text="path to cpcpub")
-        self.binary.set_text(find_binary())
-        self.binary.connect(
-            "changed",
-            lambda *_: (self.reload_variants(), self.update_command(),
-                        self.update_binary_tip()),
-        )
-        self.update_binary_tip()
-        binrow.append(self.binary)
-        pick = Gtk.Button(label="Browse…")
-        pick.connect("clicked", self.on_pick_binary)
-        binrow.append(pick)
-        field("Benchmark", binrow)
 
         # Variants and what to run, each a column of checks and the two side
         # by side: a column reads as a list to pick from, and side by side they
@@ -929,11 +1011,10 @@ class Window(Gtk.ApplicationWindow):
 
         # The placeholder names the binary's own default; see reload_variants.
         self.hub = Gtk.Entry(hexpand=True)
-        self.hub.set_text(os.environ.get("CPCPUB_HUB", ""))
         self.token = Gtk.PasswordEntry(hexpand=True, show_peek_icon=True)
-        self.token.set_text(os.environ.get("CPCPUB_TOKEN", ""))
         self.token.set_tooltip_text(
-            "From the hub's Account tab; it ties the upload to your account.\n"
+            "From the hub's Account tab; it ties the upload to your account. "
+            "Kept for next time.\n"
             "Leave empty to upload anonymously -- every hub accepts that."
         )
         self.run_label = Gtk.Entry(hexpand=True, placeholder_text="short name for this machine")
@@ -995,6 +1076,27 @@ class Window(Gtk.ApplicationWindow):
             adv.attach(widget, 1, i, 1, 1)
             signal = "changed" if isinstance(widget, Gtk.Entry) else "value-changed"
             widget.connect(signal, lambda *_: self.update_command())
+
+        # The benchmark itself, last: the window finds it, and picks the
+        # fastest build of it this processor runs, so there is seldom a reason
+        # to look.
+        binrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, hexpand=True)
+        self.binary = Gtk.Entry(hexpand=True, placeholder_text="path to cpcpub")
+        self.binary.set_text(best_build(find_binary()))
+        self.binary.connect(
+            "changed",
+            lambda *_: (self.reload_variants(), self.update_command(),
+                        self.update_binary_tip()),
+        )
+        self.update_binary_tip()
+        binrow.append(self.binary)
+        pick = Gtk.Button(label="Browse…")
+        pick.connect("clicked", self.on_pick_binary)
+        binrow.append(pick)
+        lab = Gtk.Label(label="Benchmark", xalign=0)
+        lab.add_css_class("dim-label")
+        adv.attach(lab, 0, len(fields), 1, 1)
+        adv.attach(binrow, 1, len(fields), 1, 1)
         field("", exp)
         return grid
 
@@ -1053,8 +1155,13 @@ class Window(Gtk.ApplicationWindow):
         self.status.set_text("Ready.")
         status.append(self.status)
         # After an upload: the result's page on the hub.
-        self.hub_link = Gtk.LinkButton(label="See how it compares", uri="about:blank")
+        self.hub_page = ""
+        self.hub_link = Gtk.Button(label="See how it compares", valign=Gtk.Align.CENTER)
+        self.hub_link.add_css_class("suggested-action")
         self.hub_link.set_visible(False)
+        self.hub_link.connect(
+            "clicked", lambda *_: Gtk.UriLauncher(uri=self.hub_page).launch(self, None, None),
+        )
         status.append(self.hub_link)
         box.append(status)
         return box
@@ -1081,16 +1188,17 @@ class Window(Gtk.ApplicationWindow):
     # -- form behaviour ----------------------------------------------------
 
     def update_binary_tip(self):
-        tip = "The benchmark this window runs."
-        others = other_builds(self.binary.get_text().strip())
+        tip = ("The benchmark this window runs. It starts as the fastest build "
+               "installed that this processor runs.")
+        folder = os.path.dirname(self.binary.get_text().strip())
+        others = other_builds(os.path.join(folder, "cpcpub" + EXE))
         if others:
-            # A package installs the newer-ISA builds beside the plain one, and
-            # the plain one is what the window starts with: it is the build
-            # every result compares against, and it runs everywhere.
-            tip += "\nBeside it:" + "".join(
-                f"\n  {name}, built for {target}" for name, target in others
-            ) + ("\nFaster where the processor has those instructions, and "
-                 "refuses to start where it does not. Browse to pick one.")
+            # A package installs the newer-ISA builds beside the plain one.
+            tip += "\nInstalled:\n  cpcpub" + EXE + ", for any processor of its kind" + "".join(
+                f"\n  {other}, built for {target}"
+                + ("" if runs() else " -- which this processor lacks")
+                for other, target, runs in others
+            )
         self.binary.set_tooltip_text(tip)
 
     def reload_variants(self):
@@ -1129,15 +1237,52 @@ class Window(Gtk.ApplicationWindow):
         split would leave half the form behind a scrollbar for no reason.
         """
         natural = self.form_box.measure(Gtk.Orientation.VERTICAL, -1)[1]
-        height = self.get_height()
+        height = self.paned.get_height()
         cap = int(height * 0.62) if height > 0 else 380
-        self.paned.set_position(min(max(natural, 150), cap))
+        if height > 0:
+            # Never into the room the output needs to show all of itself.
+            below = self.paned.get_end_child().measure(
+                Gtk.Orientation.VERTICAL, self.paned.get_width())[0]
+            cap = min(cap, height - below - 1)  # and the handle's pixel
+        self.paned.set_position(max(min(natural, cap), 0))
 
     def on_submit_toggled(self, *_):
         self.submit_grid.set_visible(self.do_submit.get_active())
         self.fit_form()
         self.run_btn.set_label("Run and upload" if self.do_submit.get_active() else "Run")
         self.update_command()
+
+    def restore_settings(self):
+        self.kept = load_settings()
+        for name, env in KEPT_TEXT:
+            text = os.environ.get(env, "") if env else ""
+            getattr(self, name).set_text(text or str(self.kept.get(name) or ""))
+        self.notes.get_buffer().set_text(str(self.kept.get("notes") or ""))
+        outdir = str(self.kept.get("outdir") or "")
+        if os.path.isdir(outdir):
+            self.outdir.set_text(outdir)
+        self.do_submit.set_active(bool(self.kept.get("upload")))
+
+    def keep_settings(self):
+        settings = dict(self.kept)
+        for name, env in KEPT_TEXT:
+            text = getattr(self, name).get_text().strip()
+            if not (env and text and text == os.environ.get(env)):
+                settings[name] = text
+        buf = self.notes.get_buffer()
+        settings["notes"] = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip()
+        settings["outdir"] = self.outdir.get_text().strip()
+        settings["upload"] = self.do_submit.get_active()
+        if settings != self.kept:
+            problem = save_settings(settings)
+            if problem:
+                self.log(problem + "\n")
+            else:
+                self.kept = settings
+
+    def on_close(self, *_):
+        self.keep_settings()
+        return False  # and close
 
     def selected_variants(self):
         return [name for name, check in self.variant_checks if check.get_active()]
@@ -1341,6 +1486,7 @@ class Window(Gtk.ApplicationWindow):
                 Gtk.AlertDialog(message="Uploading needs curl", detail=detail).show(self)
                 return
 
+        self.keep_settings()
         argv, env = self.build_argv()
         try:
             self.proc = subprocess.Popen(
@@ -1516,7 +1662,7 @@ class Window(Gtk.ApplicationWindow):
         if page.startswith("/"):
             page = self.upload_hub.rstrip("/") + page
         if page.startswith(("http://", "https://")):
-            self.hub_link.set_uri(page)
+            self.hub_page = page
             self.hub_link.set_visible(True)
         tip = f"Opens {page}." if page else ""
         tokens = [str(r["delete_token"]) for r in self.uploads if r.get("delete_token")]
