@@ -31,6 +31,8 @@
 #include <stdlib.h>
 #include <string.h>
 #ifndef _WIN32
+#include <errno.h>
+#include <time.h>               // nanosleep
 #include <unistd.h>             // sysconf
 #endif
 
@@ -277,6 +279,22 @@ static inline int plat_loadavg(double *out) {
     return -1;
 #else
     return getloadavg(out, 1) == 1 ? 0 : -1;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Sleep
+// ---------------------------------------------------------------------------
+
+// Idle the calling thread for `seconds`. A signal handler cuts nanosleep short
+// and leaves what remains in its second argument, so it goes back to sleep.
+static inline void plat_sleep(double seconds) {
+#ifdef _WIN32
+    Sleep((DWORD)(seconds * 1000.0 + 0.5));
+#else
+    const time_t whole = (time_t)seconds;
+    struct timespec left = { whole, (long)((seconds - (double)whole) * 1e9) };
+    while (nanosleep(&left, &left) != 0 && errno == EINTR) {}
 #endif
 }
 

@@ -58,6 +58,7 @@ profile. Plain `make` (`rv64gc`) runs everywhere.
 ./cpcpub --full --variants                # ...once per build variant
 ./cpcpub --cpus 4-7 --threads 4           # only the big cluster
 ./cpcpub --time 2.0 --reps 5              # longer and more repetitions
+./cpcpub --full --cooldown 30             # let a phone cool before each batch
 ./cpcpub --no-mem / --no-pin              # skip the memory phases / do not pin
 ./cpcpub --mhz 1050                       # state the clock on a board that will not
 ./cpcpub -v                               # explain every metric afterwards
@@ -74,6 +75,15 @@ separately, since N threads share the cache and one core does not.
 does at once, the per-core sweep what each core type does on its own, and
 neither is interpretable without the other. Each phase runs `--reps` times and
 the **best** is kept — interference only ever slows a run down.
+
+A phone or a fanless board throttles as it heats, so in a `--full` run the
+per-core sweep starts on a device the multi-threaded run just warmed, and in a
+`--variants` run each variant starts warmer than the last. `--cooldown SEC`
+idles that long before each multi-threaded run and each per-core sweep after
+the first, so each starts about as cool as the first did. Not between the cores
+of a sweep, which load one core at a time. 30 s is a fair start on a phone; a
+desktop with a fan does not need it. The document records it as
+`config.cooldown_seconds`.
 
 `cpcpub` warns when the load average says the machine is busy and when the
 working set does not clear last-level cache, and reports the DRAM controller
