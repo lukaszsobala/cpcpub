@@ -62,6 +62,12 @@ public final class MainActivity extends Activity {
     private static final int PHASES_PER_PASS = 15;
     private static final double SETUP_SECONDS_PER_PASS = 0.1;
     private static final int SAVE_REQUEST = 1;
+    // The cool-down choices, in seconds, and the one a new install starts on:
+    // a phone heats in the half minute of the multi-threaded run, and starts
+    // the per-core sweep throttled unless it is let cool first.
+    private static final int[] COOLDOWNS = {0, 30, 60, 120};
+    private static final String[] COOLDOWN_NAMES = {"Off", "30 s", "1 min", "2 min"};
+    private static final int COOLDOWN_DEFAULT = 1;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
@@ -71,6 +77,10 @@ public final class MainActivity extends Activity {
     private CheckBox perCore;
     private boolean syncingModes;  // set while the code, not the user, ticks them
     private RadioGroup variants;
+    private RadioGroup cooldown;
+    private TextView cooldownHeading;
+    private TextView cooldownNote;
+    private boolean canCoolDown = true;  // until the binary says otherwise
     private CheckBox upload;
     private LinearLayout uploadFields;
     private LinearLayout advancedFields;
@@ -99,6 +109,7 @@ public final class MainActivity extends Activity {
 
     private Process proc;
     private long started;
+    private long coolUntil;  // System.nanoTime() when the benchmark's rest ends
     private double estimated;
     private boolean leftDuringRun;
     private boolean stopped;
@@ -157,6 +168,13 @@ public final class MainActivity extends Activity {
             + "auto-vectorisation off and on, crossed with fused multiply-add off and "
             + "on. The baseline is the one results compare across processors; the "
             + "other three show how much this processor gains from each."));
+
+        cooldownHeading = heading("Cool-down");
+        page.addView(cooldownHeading);
+        cooldown = radios(page, COOLDOWN_NAMES, prefs.getInt("cooldown", COOLDOWN_DEFAULT));
+        cooldown.setOrientation(LinearLayout.HORIZONTAL);
+        cooldownNote = note("");
+        page.addView(cooldownNote);
 
         upload = new CheckBox(this);
         upload.setText("Upload the result to a hub");
@@ -274,7 +292,9 @@ public final class MainActivity extends Activity {
         multi.setOnCheckedChangeListener((b, on) -> onModeChecked(perCore));
         perCore.setOnCheckedChangeListener((b, on) -> onModeChecked(multi));
         variants.setOnCheckedChangeListener((g, id) -> updateCommand());
+        cooldown.setOnCheckedChangeListener((g, id) -> updateCommand());
         updateCommand();
+        checkCooldown();
     }
 
     @Override
@@ -318,6 +338,9 @@ public final class MainActivity extends Activity {
         argv.add("--time"); argv.add(number(seconds, "0.5"));
         argv.add("--reps"); argv.add(number(reps, "3"));
         argv.add("--warmup"); argv.add(number(warmup, "0.15"));
+        if (rests() > 0 && cooldownSeconds() > 0) {
+            argv.add("--cooldown"); argv.add(Integer.toString(cooldownSeconds()));
+        }
         argv.add("--json");
         return argv;
     }
@@ -347,7 +370,50 @@ public final class MainActivity extends Activity {
         int passes = m == 0 ? 1 + n : m == 2 ? n : 1;
         // Every variant runs the whole thing again.
         int times = choice(variants) == 0 ? 1 : 4;
-        return perPass * passes * times;
+        return perPass * passes * times + rests() * cooldownSeconds();
+    }
+
+    /** A binary from before --cooldown refuses the flag outright; ask its help
+     *  text once, off the main thread, and take the choice away if it is not
+     *  there rather than offer one that fails the run. */
+    private void checkCooldown() {
+        new Thread(() -> {
+            boolean has = true;
+            try {
+                Process p = new ProcessBuilder(binary(), "--help").redirectErrorStream(true).start();
+                p.getOutputStream().close();
+                StringBuilder help = new StringBuilder();
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                        p.getInputStream(), StandardCharsets.UTF_8))) {
+                    for (String line; (line = r.readLine()) != null; ) help.append(line).append('\n');
+                }
+                p.waitFor();
+                has = help.indexOf("--cooldown") >= 0;
+            } catch (IOException | InterruptedException e) {
+                // Leave the choice up: the run will say what is wrong.
+            }
+            if (has) return;
+            main.post(() -> {
+                canCoolDown = false;
+                cooldownHeading.setVisibility(View.GONE);
+                cooldown.setVisibility(View.GONE);
+                cooldownNote.setVisibility(View.GONE);
+                updateCommand();
+            });
+        }).start();
+    }
+
+    private int cooldownSeconds() {
+        if (!canCoolDown) return 0;
+        int i = choice(cooldown);
+        return i >= 0 && i < COOLDOWNS.length ? COOLDOWNS[i] : 0;
+    }
+
+    /** How many rests --cooldown takes: one before each batch but the first, a
+     *  batch being a multi-threaded run or a whole per-core sweep. */
+    private int rests() {
+        int batches = (mode() == 0 ? 2 : 1) * (choice(variants) == 0 ? 1 : 4);
+        return batches - 1;
     }
 
     private static int countCpus(String list) {
@@ -368,6 +434,19 @@ public final class MainActivity extends Activity {
     }
 
     private void updateCommand() {
+        // A run of one batch has nothing to rest between: the choice is shown
+        // greyed rather than taken away, with the reason under it.
+        boolean applies = rests() > 0;
+        for (int i = 0; i < cooldown.getChildCount(); i++) {
+            cooldown.getChildAt(i).setEnabled(applies);
+        }
+        cooldownNote.setText(applies
+            ? "Phones slow down as they heat. A rest before the per-core sweep, and "
+              + "before each variant, lets the phone start each one about as cool as "
+              + "the first, so no part of the result is measured throttled by the "
+              + "part before it."
+            : "Only between runs: tick Both, or all four variants, for there to be "
+              + "something to rest between.");
         List<String> argv = argv();
         command.setText("cpcpub " + TextUtils.join(" ", argv.subList(1, argv.size())));
         double s = estimateSeconds();
@@ -386,6 +465,7 @@ public final class MainActivity extends Activity {
         }
         prefs.edit()
             .putInt("mode", mode()).putInt("variants", choice(variants))
+            .putInt("cooldown", choice(cooldown))
             .putBoolean("upload", upload.isChecked())
             .putString("hub", hub.getText().toString())
             .putString("token", token.getText().toString())
@@ -412,6 +492,7 @@ public final class MainActivity extends Activity {
         stopped = false;
         compareButton.setVisibility(View.GONE);
         started = System.nanoTime();
+        coolUntil = 0;
         estimated = Math.max(1.0, estimateSeconds());
         runButton.setEnabled(false);
         stopButton.setVisibility(View.VISIBLE);
@@ -427,7 +508,7 @@ public final class MainActivity extends Activity {
                     p.getErrorStream(), StandardCharsets.UTF_8))) {
                 for (String line; (line = r.readLine()) != null; ) {
                     String l = line;
-                    main.post(() -> appendLog(l + "\n"));
+                    main.post(() -> onErrLine(l));
                 }
             } catch (IOException ignored) {
                 // The process went away; its exit status says how.
@@ -461,11 +542,26 @@ public final class MainActivity extends Activity {
             double elapsed = (System.nanoTime() - started) / 1e9;
             // Held short of full: the benchmark says nothing until it is done.
             progress.setProgress((int) (1000 * Math.min(0.99, elapsed / estimated)));
-            status.setText(String.format(Locale.getDefault(), "Running: %d s of about %d s",
-                (int) elapsed, Math.round(estimated)));
+            long left = (coolUntil - System.nanoTime()) / 1_000_000_000L;
+            status.setText(coolUntil > System.nanoTime()
+                ? String.format(Locale.getDefault(),
+                    "Cooling down, %d s left (%d s of about %d s)", left + 1,
+                    (int) elapsed, Math.round(estimated))
+                : String.format(Locale.getDefault(), "Running: %d s of about %d s",
+                    (int) elapsed, Math.round(estimated)));
             main.postDelayed(this, 500);
         }
     };
+
+    private void onErrLine(String line) {
+        appendLog(line + "\n");
+        // The benchmark says when it starts to rest, and for how long.
+        if (line.startsWith("cooling down for ")) {
+            String[] words = line.split(" ");
+            double secs = words.length > 3 ? parse(words[3], 0) : 0;
+            coolUntil = System.nanoTime() + (long) (secs * 1e9);
+        }
+    }
 
     private void stop() {
         if (proc != null) {

@@ -6,6 +6,7 @@ reads back what it prints. You choose:
 
 - the run: multi-threaded, per-core, or Both, which ticks the two;
 - the variants: the baseline, or all four compared;
+- a cool-down between runs, 30 s unless you pick otherwise;
 - the hub fields;
 - the timing settings.
 
@@ -58,6 +59,16 @@ into the binary: `build.sh` reads it out of the binary's help text.
 Keep the app on screen while it runs, which it helps with by keeping the
 screen on. If the app leaves the screen, Android moves it to the slower cores
 and may pause it. The log says so if that happened during a run.
+
+A phone slows down as it heats, and half a minute of every core at once heats
+it. Without a rest, the per-core sweep after the multi-threaded run, and each
+variant after the first, would be measured on a throttled phone. So the app
+passes `--cooldown`, which rests before each multi-threaded run and per-core
+sweep after the first. It offers Off, 30 s, 1 min and 2 min, starts on 30 s,
+and greys the choice out when there is only one run to make. While the
+benchmark rests, the status line counts the rest down. A binary from before
+`--cooldown` would refuse the flag, so the app reads the binary's help once and
+hides the choice if the flag is not there.
 
 ## Building
 
