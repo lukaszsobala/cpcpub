@@ -24,17 +24,21 @@ almost certainly already has:
 
 The benchmark itself still needs nothing installed. The window looks for the
 `bench/cpcpub` this tree builds, then the `cpcpub` installed beside itself, then
-`cpcpub` on `PATH`; point it somewhere else with **Browse…**. Where a package
-put a newer-ISA build beside the plain one -- `cpcpub-v3`, `cpcpub-rva23` -- the
-field's tooltip says so, and Browse picks it.
+`cpcpub` on `PATH`. Where a package put a newer-ISA build beside the plain one
+-- `cpcpub-v3`, `cpcpub-rva23` -- it takes the newest one this processor has
+the instructions for, read off `/proc/cpuinfo` (on Windows, the system's own
+AVX2 check), and the plain one otherwise. Those builds do not check for
+themselves: started on a processor without the instructions, one dies in the
+middle of a run. The path is under **Advanced**, with **Browse…** to point it
+somewhere else.
 
 ## What the controls do
 
 **Variants** — one checkbox per build variant the binary reports from
 `--list-variants`; a target where the toggles change nothing dims the names
 that are the same code and says so in the tooltip. One variant alone is
-`--variant NAME`, several are `--variants=A,B`, and every one is
-`--variants=all`. **All** sums up the boxes under it — ticked when every
+`--variant NAME`, several are `--variants=A,B`, and **All** is
+`--variants`, every variant that is not the baseline's code again. **All** sums up the boxes under it — ticked when every
 variant is, a dash when some are — so ticking the last variant ticks it too.
 Untick any variant to leave "all" with the rest still ticked, or untick
 **All** to go back to the baseline alone.
@@ -54,14 +58,22 @@ element at a time, which the *Submit a result* tab will do for you.
 
 **Upload the result to a hub** — `--submit`, `--label` and `--notes`; the
 fields appear only when it is ticked, and the Run button becomes *Run and
-submit*. The token goes into
+upload*. The token goes into
 the environment as `$CPCPUB_TOKEN` rather than onto the command line, which is
-what the benchmark reads it from and keeps it out of the process list. The hub's
+what the benchmark reads it from and keeps it out of the process list. After an
+upload, **See how it compares** opens the run's page on the hub. The hub's
 reply, including the delete token an anonymous upload needs to withdraw itself,
-lands in the **Log** and nowhere else — the log opens by itself after a run
-that uploaded, but copy the token before closing the window.
+is in **Output › Log** and in that button's tooltip, and nowhere else: copy it
+before closing the window.
 
-**Advanced** — `--threads`, `--cpus`, `--time`, `--reps`, `--warmup`.
+The hub, token, label, notes, the upload tick and **Save to** are kept for next
+time, in `cpcpub/gui.json` under the user's configuration folder
+(`~/.config` on Linux, `%LOCALAPPDATA%` on Windows), readable by its owner only.
+`$CPCPUB_HUB` and `$CPCPUB_TOKEN`, when set, win over what was kept and are not
+written back in its place.
+
+**Advanced** — `--threads`, `--cpus`, `--time`, `--reps`, `--warmup`, and
+the benchmark the window runs.
 
 ## The results
 

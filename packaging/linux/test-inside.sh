@@ -94,17 +94,23 @@ DISPLAY=:99 GDK_BACKEND=x11 GSK_RENDERER=cairo \
     2>/tmp/smoke/stderr || true
 kill "$xvfb" 2>/dev/null || true
 python3 - <<'PY'
-import json, sys
+import json, os, sys
 try:
     report = json.load(open("/tmp/smoke/report.json"))
 except OSError:
     print(open("/tmp/smoke/stderr").read())
     sys.exit("the window wrote no report")
 print({k: v for k, v in report.items() if k != "log"})
-assert report["binary"] == "/usr/bin/cpcpub", report["binary"]
+# The fastest build installed that this processor runs: the x86-64-v3 one
+# where the processor has all of x86-64-v3, as Linux names the parts.
+flags = next((line.split(":", 1)[1].split() for line in open("/proc/cpuinfo")
+              if line.startswith("flags")), [])
+v3 = {"avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave"} <= set(flags)
+want = "/usr/bin/cpcpub-v3" if v3 and os.path.exists("/usr/bin/cpcpub-v3") else "/usr/bin/cpcpub"
+assert report["binary"] == want, (report["binary"], want)
 assert report["exit"] == 0 and report["docs"] == 1, report["log"]
 assert report["saved"], "no result document was saved"
-print(f"GTK {report['gtk']}: found /usr/bin/cpcpub, ran it, saved the result")
+print(f"GTK {report['gtk']}: picked {want}, ran it, saved the result")
 PY
 
 say "remove"
