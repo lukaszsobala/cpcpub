@@ -72,8 +72,12 @@ time, in `cpcpub/gui.json` under the user's configuration folder
 `$CPCPUB_HUB` and `$CPCPUB_TOKEN`, when set, win over what was kept and are not
 written back in its place.
 
-**Advanced** — `--threads`, `--cpus`, `--time`, `--reps`, `--warmup`, and
-the benchmark the window runs.
+**Advanced** — `--threads`, `--cpus`, `--time`, `--reps`, `--warmup`,
+**Cool-down**, and the benchmark the window runs. Cool-down is `--cooldown`:
+seconds of rest before each multi-threaded run and per-core sweep after the
+first, for a laptop or fanless machine that slows down as it heats. It is
+greyed out for a run with only one of them, the estimate counts it, and the
+status line counts each rest down.
 
 ## The results
 
