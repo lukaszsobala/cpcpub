@@ -88,6 +88,22 @@ static int       g_verbose = 0;
 // Where human-readable prose goes.
 static FILE *msg(void) { return g_format == FMT_TEXT ? stdout : stderr; }
 
+// --cooldown: seconds to idle before each batch of measuring but the first --
+// a multi-threaded run, or a whole per-core sweep -- so a phone or a fanless
+// board starts each one about as cool as it started the first, rather than
+// throttled by the one before. Not between the cores of a sweep: one core at a
+// time heats a device far less than all of them at once. 0, the default, goes
+// straight on.
+static double g_cooldown = 0.0;
+static int    g_batches  = 0;     // batches begun so far
+
+static void cool_down(void) {
+    if (g_batches++ == 0 || g_cooldown <= 0.0) return;
+    fprintf(msg(), "cooling down for %g s before the next run\n", g_cooldown);
+    fflush(msg());
+    plat_sleep(g_cooldown);
+}
+
 // ---------------------------------------------------------------------------
 // The JSON sink
 // ---------------------------------------------------------------------------
@@ -1593,6 +1609,9 @@ static void usage(const char *prog) {
         "  --time SEC         measured seconds per phase (default 0.5)\n"
         "  --reps N           repetitions per phase, best is kept (default 3)\n"
         "  --warmup SEC       warm-up seconds before each phase (default 0.15)\n"
+        "  --cooldown SEC     idle this long before each multi-threaded run and\n"
+        "                     each per-core sweep after the first, for a phone or\n"
+        "                     fanless board to stop throttling (default 0)\n"
         "  --mem-per-thread B per-thread buffer for the memory phases (default 16 MiB)\n"
         "  --mem BYTES        total memory across all threads (overrides the above)\n"
         "  --no-mem           skip the memory bandwidth and latency phases\n"
@@ -2121,6 +2140,8 @@ static void json_open(const char *mode, const run_opts_t *o, int threads,
     // core has it to itself -- so the sweep's size is its own key rather than
     // whichever of the two happened to be set last.
     if (mem_sweep > 0) jout(", \"mem_bytes_per_core_sweep\": %zu", mem_sweep);
+    // Only when there was one: a document without it is one that went straight on.
+    if (g_cooldown > 0.0) jout(", \"cooldown_seconds\": %g", g_cooldown);
     jout(", \"pin\": %s, \"clock\": \"%s\", \"seed\": %llu }",
          pin ? "true" : "false", g_clock_raw ? "raw" : "mono",
          (unsigned long long)o->seed);
@@ -2715,6 +2736,7 @@ static int run_variant(const run_cfg_t *c, run_opts_t *opts, int idx, int n_sel,
     print_variant(opts->kernels, idx, n_sel);
 
     if (c->want_threads) {
+        cool_down();
         fprintf(msg(), "config: threads=%d time=%.2fs/phase x%d reps warmup=%.2fs "
                        "mem=%zu MiB/thread pin=%s\n\n",
                 c->threads, c->duration, c->reps, c->warmup, c->mem_mt >> 20,
@@ -2729,6 +2751,7 @@ static int run_variant(const run_cfg_t *c, run_opts_t *opts, int idx, int n_sel,
     }
 
     if (c->want_cores) {
+        cool_down();
         fprintf(msg(), "%smode: per-core sweep over %d CPUs, %.2fs/phase x %d reps "
                        "(best kept),\n      warmup %.2fs, mem %zu MiB/thread\n\n",
                 c->want_threads ? "\n" : "", c->n_cpus, c->duration, c->reps,
@@ -2888,6 +2911,8 @@ int main(int argc, char **argv) {
             reps = atoi(argv[++i]);
         } else if (!strcmp(a, "--warmup") && i + 1 < argc) {
             warmup = atof(argv[++i]);
+        } else if (!strcmp(a, "--cooldown") && i + 1 < argc) {
+            g_cooldown = atof(argv[++i]);
         } else if (!strcmp(a, "--mem-per-thread") && i + 1 < argc) {
             mem_per_thread = (size_t)strtoull(argv[++i], NULL, 0);
             mem_explicit = 1;
@@ -2952,6 +2977,8 @@ int main(int argc, char **argv) {
 
     if (duration < 0.05) duration = 0.05;
     if (warmup < 0.0) warmup = 0.0;
+    if (!(g_cooldown > 0.0)) g_cooldown = 0.0;     // negative or not a number
+    if (g_cooldown > 3600.0) g_cooldown = 3600.0;
     if (threads < 1) threads = 1;
     if (reps < 1) reps = 1;
 

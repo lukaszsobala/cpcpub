@@ -56,7 +56,7 @@ SECTION_KEYS = {
     "system": {"sysname", "release", "machine", "cpus", "cpu_models"},
     "config": {"threads", "seconds_per_phase", "reps", "warmup_seconds",
                "mem_bytes_per_thread", "mem_bytes_per_core_sweep",
-               "pin", "clock", "seed"},
+               "cooldown_seconds", "pin", "clock", "seed"},
     "dram":   {"name", "mhz_min", "mhz_max"},
 }
 
@@ -89,8 +89,9 @@ SECTION_COLUMNS = {
 }
 
 # A short but complete run: both halves of --full, one CPU, so `make check`
-# costs a second or two rather than sweeping every core on the machine.
-LIVE_ARGS = ["--full", "--cpus", "0", "--threads", "1",
+# costs a second or two rather than sweeping every core on the machine. A
+# token cool-down between the halves, so the document carries that key too.
+LIVE_ARGS = ["--full", "--cpus", "0", "--threads", "1", "--cooldown", "0.01",
              "--time", "0.05", "--reps", "1", "--warmup", "0.02", "--json"]
 
 

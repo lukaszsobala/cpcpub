@@ -23,7 +23,7 @@ Written by `json_open` / `json_result` / `emit_json` in
               "cpu_models": … },
   "config": { "threads": …, "seconds_per_phase": …, "reps": …,
               "warmup_seconds": …, "mem_bytes_per_thread": …,
-              "mem_bytes_per_core_sweep": …, "pin": true,
+              "mem_bytes_per_core_sweep": …, "cooldown_seconds": …, "pin": true,
               "clock": "raw", "seed": 1 },
   "dram":   { "name": …, "mhz_min": …, "mhz_max": … },
   "threads": [ record, … ],
@@ -40,7 +40,10 @@ on machines exposing a DRAM devfreq node; `system` is only as complete as the
 host will say. `config.mem_bytes_per_core_sweep` appears only when a per-core
 sweep ran (`per-core` and `full`) — the two phases size their buffers
 differently, N threads sharing the cache that one swept core has to itself, so
-`mem_bytes_per_thread` describes the multi-threaded phase where there is one. Each system names its own hardware and the field passes that
+`mem_bytes_per_thread` describes the multi-threaded phase where there is one.
+`config.cooldown_seconds` appears only when `--cooldown` idled the machine
+before each multi-threaded run and per-core sweep after the first; the hub
+keeps it in the raw document and reads nothing from it. Each system names its own hardware and the field passes that
 through unchanged, so the same silicon reads `aarch64` on Linux, `arm64` on
 macOS and `ARM64` on Windows — `build.target` is the normalised one to key on.
 `config.clock` records the clock that was *used*: asking for `raw` on a host
