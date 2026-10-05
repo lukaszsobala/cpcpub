@@ -844,6 +844,7 @@ class Window(Gtk.ApplicationWindow):
         self.upload_hub = ""
         self.uploads = []    # the hub's replies, one per uploaded document
         self.stopped = False
+        self.cool_until = 0.0   # when the benchmark's current rest ends
         self.command_line = ""
         self.token_in_env = False
 
@@ -1053,6 +1054,8 @@ class Window(Gtk.ApplicationWindow):
         self.warmup = Gtk.SpinButton.new_with_range(0.0, 10.0, 0.05)
         self.warmup.set_digits(2)
         self.warmup.set_value(0.15)
+        self.cooldown = Gtk.SpinButton.new_with_range(0, 600, 5)
+        self.cooldown.set_value(0)
 
         fields = (
             ("Threads", self.threads,
@@ -1066,6 +1069,12 @@ class Window(Gtk.ApplicationWindow):
               "interference only ever slows a run down.")),
             ("Warm-up", self.warmup,
              "Unmeasured time before each measurement, for the clock to ramp up."),
+            ("Cool-down", self.cooldown,
+             ("Seconds to rest before each multi-threaded run and each per-core "
+              "sweep after the first, so a laptop or small fanless machine that "
+              "slows down as it heats starts each one cool. 0: go straight on.\n"
+              "Only for a run with more than one of them: both kinds, or more "
+              "than one variant.")),
         )
         for i, (text, widget, tip) in enumerate(fields):
             widget.set_tooltip_text(tip)
@@ -1317,6 +1326,8 @@ class Window(Gtk.ApplicationWindow):
         argv += ["--time", f"{self.seconds.get_value():g}"]
         argv += ["--reps", f"{self.reps.get_value_as_int()}"]
         argv += ["--warmup", f"{self.warmup.get_value():g}"]
+        if self.cooldown.get_sensitive() and self.cooldown.get_value_as_int() > 0:
+            argv += ["--cooldown", f"{self.cooldown.get_value_as_int()}"]
         argv.append("--json")
 
         env = {}
@@ -1341,8 +1352,9 @@ class Window(Gtk.ApplicationWindow):
         return argv, env
 
     def update_command(self):
-        argv, env = self.build_argv()
+        # The estimate first: it decides whether a cool-down applies at all.
         self.update_estimate()
+        argv, env = self.build_argv()
         # The binary's path is in the form already; what is worth a line is
         # what the rest of the form turned into.
         self.command.set_text(quote_command(argv[1:]))
@@ -1383,16 +1395,22 @@ class Window(Gtk.ApplicationWindow):
             cpus = os.cpu_count() or 1
 
         if self.mode_full.get_active():
-            passes, what = 1 + cpus, f"1 threaded pass + {cpus} cores"
+            passes, batches, what = 1 + cpus, 2, f"1 threaded pass + {cpus} cores"
         elif self.mode_percore.get_active():
-            passes, what = cpus, f"{cpus} cores"
+            passes, batches, what = cpus, 1, f"{cpus} cores"
         else:
-            passes, what = 1, "1 threaded pass"
+            passes, batches, what = 1, 1, "1 threaded pass"
 
         variants = max(1, len(self.selected_variants()))
         if variants > 1:
             what += f" x {variants} variants"
-        return per_pass * passes * variants, what
+        # A rest before each batch -- a threaded pass, a sweep -- but the first.
+        rests = batches * variants - 1
+        self.cooldown.set_sensitive(rests > 0)
+        rest = self.cooldown.get_value_as_int() if rests > 0 else 0
+        if rest:
+            what += f" + {rests} cool-down{'s' if rests > 1 else ''}"
+        return per_pass * passes * variants + rests * rest, what
 
     def update_estimate(self):
         seconds, what = self.estimate_seconds()
@@ -1507,6 +1525,7 @@ class Window(Gtk.ApplicationWindow):
         self.upload_hub = hub
         self.uploads = []
         self.stopped = False
+        self.cool_until = 0.0
         self.hub_link.set_visible(False)
         self.stdout_buf = []
         self.exit_status = -1
@@ -1541,7 +1560,8 @@ class Window(Gtk.ApplicationWindow):
         self.progress.set_text(
             f"{int(elapsed)} s of about {round(self.estimated)} s"
         )
-        self.status.set_text("Running")
+        left = self.cool_until - time.monotonic()
+        self.status.set_text(f"Cooling down, {int(left) + 1} s left" if left > 0 else "Running")
         return GLib.SOURCE_CONTINUE
 
     def read_lines(self, pipe, handler):
@@ -1570,6 +1590,9 @@ class Window(Gtk.ApplicationWindow):
 
     def on_stderr_line(self, line):
         self.log(line + "\n")
+        cooling = re.match(r"cooling down for ([0-9.]+) s", line)
+        if cooling:
+            self.cool_until = time.monotonic() + float(cooling.group(1))
         # The hub's reply to an upload, printed by the benchmark as it came:
         # the run's id, its page on the hub, and the delete token.
         if line.startswith("uploaded: "):
