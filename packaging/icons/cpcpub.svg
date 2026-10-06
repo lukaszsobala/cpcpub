@@ -2,9 +2,9 @@
   <!-- cpcpub: a processor whose die is a stopwatch face. Every number the
        benchmark reports is a rate over a fixed slice of wall-clock time, and
        the shaded wedge is that slice; the crown takes the place of the middle
-       pin on top. Plain shapes, so it renders the same everywhere; the ICO and
-       Android sizes are generated from this file by make-icons.sh. Colours
-       are the hub's accent pair. -->
+       pin on top. Plain shapes, so it renders the same everywhere; the ICO, the
+       Android sizes and the hub's two icons are generated from this file by
+       make-icons.sh. Colours are the hub's accent pair. -->
   <g fill="#2f6f4f">
     <rect x="32.5" y="12" width="7" height="14" rx="1.5"/>
     <rect x="32.5" y="102" width="7" height="14" rx="1.5"/>
