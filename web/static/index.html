@@ -9,11 +9,13 @@
      default-src 'self', which covers images, and a data: favicon is
      refused under it. -->
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<!-- Safari takes no SVG icon, and a home-screen icon is a square PNG. -->
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 </head>
 <body>
 <header>
   <div class="masthead">
-    <h1>cpcpub results</h1>
+    <h1><img class="logo" src="/favicon.svg" alt="">cpcpub results</h1>
     <!-- Filled in by the page: who you are, or the way to become someone. -->
     <div class="whoami" id="whoami"></div>
   </div>
