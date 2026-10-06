@@ -15,9 +15,12 @@ const state = {
   localOffset: 0,       // and where this browser's own list starts
   accountRuns: null,    // this account's uploads, once fetched; null = not yet
   accountError: "",     // why that listing is missing, if it is
-  rows: [],             // current leaderboard page: one row per upload
-  children: new Map(),  // run id -> that upload's records, once expanded
-  expanded: new Set(),  // run ids currently showing their records
+  rows: [],             // current leaderboard page: one row per upload, or per CPU
+  grouped: false,       // the page is one row per CPU (Group by CPU)
+  children: new Map(),  // run id (or CPU group key) -> its rows, once expanded
+  expanded: new Set(),  // run ids (or CPU group keys) currently showing them
+  kindsOpen: new Set(), // "run|scope|kind" of core kinds unfolded to their cores
+  openRun: null,        // the run open over the page, kept in the URL
   selected: new Map(),  // core id -> row; all of one scope, see retargetSelection
   params: new URLSearchParams(),   // the filters the current board was loaded with
   sort: "score",        // which metric the board is ranked by, set by its header
@@ -197,6 +200,19 @@ function copyButton(btn) {
   navigator.clipboard.writeText(pre.textContent).then(() => done("copied"), select);
 }
 
+// The same for one line of text that is not on the page, such as a link. Where
+// there is no clipboard, the browser's own prompt holds it ready to copy.
+function copyText(text, btn) {
+  const label = btn.textContent;
+  const done = (msg) => {
+    btn.textContent = msg;
+    setTimeout(() => { btn.textContent = label; }, 1500);
+  };
+  const ask = () => window.prompt("Copy this link:", text);
+  if (!navigator.clipboard) return ask();
+  navigator.clipboard.writeText(text).then(() => done("copied"), ask);
+}
+
 // ---------------------------------------------------------------------------
 // Formatting
 // ---------------------------------------------------------------------------
@@ -211,6 +227,54 @@ function fmt(v, digits) {
   return v.toFixed(3);
 }
 
+function ordinal(n) {
+  const t = n % 100;
+  const suffix = t >= 11 && t <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th";
+  return `${n}${suffix}`;
+}
+
+function mean(values) {
+  const v = values.filter((x) => x !== null && x !== undefined);
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+}
+
+// [4, 5, 6, 7, 9] -> "4–7, 9": the CPUs a kind of core is, as the kernel
+// writes a CPU list.
+function cpuList(cpus) {
+  const out = [];
+  for (let i = 0; i < cpus.length; i++) {
+    let j = i;
+    while (j + 1 < cpus.length && cpus[j + 1] === cpus[j] + 1) j++;
+    out.push(j > i ? `${cpus[i]}–${cpus[j]}` : `${cpus[i]}`);
+    i = j;
+  }
+  return out.join(", ");
+}
+
+// The mean of each metric over some records, in the reading the page shows.
+function meanRow(members) {
+  const out = { normalised: true, mhz: mean(members.map((r) => r.mhz)) };
+  for (const m of state.metrics) out[m.key] = mean(members.map((r) => value(r, m)));
+  return out;
+}
+
+// How a kind of core is named in a table: "large cores ×4", "all 8 threads".
+function kindName(kind, scope, n) {
+  const noun = scope === "thread" ? "threads" : "cores";
+  if (kind.startsWith("all ")) return `all ${n} ${noun}`;
+  return `${kind} ${noun} ×${n}`;
+}
+
+// A value against the median of its CPU's runs, signed so that + is better:
+// "+4%", "−12%", "±0%".
+function versus(v, median, better) {
+  if (v === null || v === undefined || !median || !v) return null;
+  const ratio = better === "low" ? median / v : v / median;
+  const pct = (ratio - 1) * 100;
+  if (Math.abs(pct) < 0.5) return { text: "±0%", pct: 0 };
+  return { text: `${pct > 0 ? "+" : "−"}${Math.abs(pct).toFixed(0)}%`, pct };
+}
+
 // Per-GHz normalisation. Rates divide by clock and latencies in ns become
 // cycles; `ratio` and `fixed` pass through untouched -- the first is already
 // clock-independent, the second is not the core clock's to set (see METRICS in
@@ -218,6 +282,9 @@ function fmt(v, digits) {
 function value(row, metric) {
   const raw = row[metric.key];
   if (raw === null || raw === undefined) return null;
+  // A median or a mean the page or the server made from rows already read
+  // per GHz: dividing again would read it per GHz squared.
+  if (row.normalised) return raw;
   if (state.norm === "abs" || !row.mhz) return raw;
   const ghz = row.mhz / 1000;
   if (!ghz) return raw;
@@ -363,6 +430,7 @@ function filterParams() {
   // and shown as a chip above the table so it is never a filter you cannot see.
   if (state.submitter) p.set("user", state.submitter);
   if (form.elements.verified.value) p.set("verified", form.elements.verified.value);
+  if (form.elements.bycpu.checked) p.set("group", "cpu");
   // Sorting is not a filter either -- it lives on the column headers.
   p.set("sort", state.sort);
   p.set("order", state.order);
@@ -416,8 +484,9 @@ async function loadBoard({ keepPage = false } = {}) {
   await retargetSelection(state.params.get("scope"));
   const page = await api("/api/cores?" + state.params.toString());
   if (gen !== boardGen) return;        // a newer load is already on its way
-  state.rows = page.cores;
-  state.total = page.total ?? page.cores.length;
+  state.grouped = state.params.get("group") === "cpu";
+  state.rows = state.grouped ? page.groups : page.cores;
+  state.total = page.total ?? state.rows.length;
   // Withdrawing the last rows of the last page, or a filter narrowing under
   // you, can leave the board standing past the end of its own listing. Step
   // back to where the rows now stop rather than showing an empty board with a
@@ -459,6 +528,32 @@ async function toggleExpand(row) {
   renderBoard();
 }
 
+function groupKey(g) {
+  return JSON.stringify([g.cpu_models, g.target, g.vectorize, g.fma, g.threads, g.run_id]);
+}
+
+// The runs one row of the CPU board stands for, under the same filters and in
+// the same order, picked out by the exact CPU line rather than the search box.
+async function toggleGroup(g) {
+  const key = groupKey(g);
+  if (state.expanded.delete(key)) return renderBoard();
+  if (!state.children.has(key)) {
+    const p = new URLSearchParams(state.params);
+    p.delete("group");
+    p.delete("offset");
+    p.set("cpu", g.cpu_models);
+    p.set("target", g.target);
+    p.set("vectorize", String(g.vectorize));
+    p.set("fma", String(g.fma));
+    if (g.scope !== "cpu" && g.threads !== null) p.set("threads", String(g.threads));
+    p.set("limit", String(MAX_PAGE));
+    const { cores } = await api("/api/cores?" + p.toString());
+    state.children.set(key, cores);
+  }
+  state.expanded.add(key);
+  renderBoard();
+}
+
 function selectBox(row) {
   const box = el("td");
   const cb = el("input");
@@ -494,6 +589,27 @@ function sortHeader(label, unit, key) {
   return th;
 }
 
+function fitHeader() {
+  const th = el("th", "num", "vs CPU");
+  th.title = "against the median of every run on the same CPU with the same build, " +
+             "at the metric the board is sorted by; + is better";
+  return th;
+}
+
+// Where a run stands among the runs on its CPU, at the board's metric.
+function fitCell(row) {
+  const td = el("td", "num fit");
+  const f = row.cpu_fit;
+  const m = state.metrics.find((x) => x.key === state.sort);
+  const vs = f && m ? versus(f.value, f.median, m.better) : null;
+  if (!vs) return td;
+  td.textContent = vs.text;
+  if (m.better !== "none" && vs.pct) td.classList.add(vs.pct > 0 ? "good" : "bad");
+  td.title = (m.better !== "none" ? `${ordinal(f.rank)} of ` : "among ") +
+             `${f.of} runs on this CPU; their median is ${fmt(f.median)}`;
+  return td;
+}
+
 function metricCells(tr, row) {
   tr.append(el("td", "num", row.mhz ? Math.round(row.mhz) : "—"));
   for (const m of shownMetrics()) tr.append(el("td", "num", fmt(value(row, m))));
@@ -520,6 +636,19 @@ function trustBadge(row) {
                `${row.release_build} results — that it does so is the ` +
                `result's own word, not something checked here`;
   return mark;
+}
+
+// A run as a link, #run=N, so it can be opened in a new tab, copied or
+// bookmarked like any other. A plain click opens it over the page.
+function runLink(id, text) {
+  const a = el("a", "linkish", text);
+  a.href = `#run=${id}`;
+  a.addEventListener("click", (e) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    showRun(id).catch((err) => alert(err.message));
+  });
+  return a;
 }
 
 function filterBySubmitter(name) {
@@ -574,69 +703,161 @@ function renderBoard() {
         goToPage);
 
   const hr = el("tr");
-  hr.append(el("th", "num", "#"), el("th", "", ""), el("th", "wide", "machine"),
+  hr.append(el("th", "num", "#"), el("th", "", ""),
+            el("th", "wide", state.grouped ? "CPU" : "machine"),
             el("th", "", "OS"), el("th", "", "arch"), el("th", "", "build"),
-            sortHeader("MHz", "", "mhz"));
+            fitHeader(), sortHeader("MHz", "", "mhz"));
   for (const m of shownMetrics()) hr.append(sortHeader(m.label, unitOf(m), m.key));
   thead.append(hr);
 
+  if (state.grouped) {
+    state.rows.forEach((g, i) => renderGroup(tbody, g, state.offset + i + 1));
+    return;
+  }
   state.rows.forEach((row, i) => {
-    const open = state.expanded.has(row.run_id);
-    const tr = el("tr", "run-row");
     // Its place in the whole ranking: on page three of a hundred-row board the
     // top row is 201st, and numbering it 1 would say the opposite.
-    tr.append(el("td", "num", state.offset + i + 1), selectBox(row));
-
-    const name = el("td", "wide");
-    const head = el("div", "run-head");
-    if ((row.records ?? 1) > 1) {
-      const ex = el("button", "expander", open ? "▾" : "▸");
-      ex.type = "button";
-      ex.title = open ? "hide this run's records" : "show every record in this run";
-      ex.setAttribute("aria-expanded", String(open));
-      ex.addEventListener("click", () => toggleExpand(row).catch((e) => alert(e.message)));
-      head.append(ex);
-    } else {
-      head.append(el("span", "expander blank", " "));
-    }
-    const link = el("button", "linkish", machineName(row));
-    link.type = "button";
-    link.addEventListener("click", () => showRun(row.run_id));
-    head.append(link);
-    const mark = trustBadge(row);
-    if (mark) head.append(mark);
-    name.append(head);
-    if (row.label) name.append(el("span", "label", row.label));
-    // Who uploaded it, when anyone signed in did. Clicking narrows the board to
-    // that account -- one machine's owner usually has several, and reading them
-    // together is the reason to have accounts at all.
-    if (row.user) {
-      const by = el("button", "by", `by ${row.user}`);
-      by.type = "button";
-      by.title = `show only ${row.user}'s uploads`;
-      by.addEventListener("click", () => filterBySubmitter(row.user));
-      name.append(by);
-    }
-    tr.append(name);
-
-    // The family only -- Linux, Windows, macOS. The build number the upload
-    // also carries is a different question, and it is on the run's own page.
-    tr.append(el("td", "", osName(row)), el("td", "", row.target || "—"),
-              el("td", "flags", flagsText(row)));
-    metricCells(tr, row);
-    tbody.append(tr);
-
-    if (!open) return;
-    for (const c of state.children.get(row.run_id) || []) {
-      const sub = el("tr", "child-row");
-      sub.append(el("td", "num", ""), selectBox(c));
-      const cname = el("td", "wide");
-      cname.append(el("span", "childname", recordName(c)));
-      sub.append(cname, el("td", "", ""), el("td", "", ""), el("td", "", ""));
-      metricCells(sub, c);
-      tbody.append(sub);
-    }
+    tbody.append(runRow(row, state.offset + i + 1));
+    if (state.expanded.has(row.run_id)) renderRecords(tbody, row);
   });
+}
+
+// One upload's row. `nested` is a run listed under its CPU on the grouped
+// board, which has no records to unfold there: its own page has them.
+function runRow(row, number, nested = false) {
+  const open = state.expanded.has(row.run_id);
+  const tr = el("tr", nested ? "run-row nested" : "run-row");
+  tr.append(el("td", "num", number), selectBox(row));
+
+  const name = el("td", "wide");
+  const head = el("div", "run-head");
+  if (!nested && (row.records ?? 1) > 1) {
+    const ex = el("button", "expander", open ? "▾" : "▸");
+    ex.type = "button";
+    ex.title = open ? "hide this run's records" : "show every record in this run";
+    ex.setAttribute("aria-expanded", String(open));
+    ex.addEventListener("click", () => toggleExpand(row).catch((e) => alert(e.message)));
+    head.append(ex);
+  } else {
+    head.append(el("span", "expander blank", " "));
+  }
+  head.append(runLink(row.run_id, nested ? row.label || `run ${row.run_id}` : machineName(row)));
+  const mark = trustBadge(row);
+  if (mark) head.append(mark);
+  name.append(head);
+  if (row.label && !nested) name.append(el("span", "label", row.label));
+  // Who uploaded it, when anyone signed in did. Clicking narrows the board to
+  // that account -- one machine's owner usually has several, and reading them
+  // together is the reason to have accounts at all.
+  if (row.user) {
+    const by = el("button", "by", `by ${row.user}`);
+    by.type = "button";
+    by.title = `show only ${row.user}'s uploads`;
+    by.addEventListener("click", () => filterBySubmitter(row.user));
+    name.append(by);
+  }
+  tr.append(name);
+
+  // The family only -- Linux, Windows, macOS. The build number the upload
+  // also carries is a different question, and it is on the run's own page.
+  tr.append(el("td", "", osName(row)), el("td", "", row.target || "—"),
+            el("td", "flags", flagsText(row)), fitCell(row));
+  metricCells(tr, row);
+  return tr;
+}
+
+// An expanded run's records. Several cores of one kind are one averaged row,
+// which unfolds to the cores; a kind of one, or a record of no kind, is shown
+// as it is.
+function renderRecords(tbody, row) {
+  const kinds = new Map();
+  for (const c of state.children.get(row.run_id) || []) {
+    const key = c.type ? `${c.scope}|${c.type}` : `record|${c.id}`;
+    if (!kinds.has(key)) kinds.set(key, []);
+    kinds.get(key).push(c);
+  }
+  const blanks = () => [el("td", "", ""), el("td", "", ""), el("td", "", ""), el("td", "", "")];
+  const record = (c, deeper) => {
+    const sub = el("tr", deeper ? "child-row deeper" : "child-row");
+    sub.append(el("td", "num", ""), selectBox(c));
+    const cname = el("td", "wide");
+    cname.append(el("span", "childname", recordName(c)));
+    if (c.type && !deeper && !c.type.startsWith("all ")) cname.append(el("span", "hint", ` ${c.type}`));
+    sub.append(cname, ...blanks());
+    metricCells(sub, c);
+    tbody.append(sub);
+  };
+  for (const [key, members] of kinds) {
+    if (members.length < 2) { record(members[0], false); continue; }
+    const c0 = members[0];
+    const openKey = `${row.run_id}|${key}`;
+    const open = state.kindsOpen.has(openKey);
+    const sub = el("tr", "child-row kind-row");
+    sub.append(el("td", "num", ""), el("td"));
+    const cname = el("td", "wide");
+    const label = el("span", "childname");
+    const ex = el("button", "expander", open ? "▾" : "▸");
+    ex.type = "button";
+    ex.title = open ? "fold these cores into their average" : "show each of these";
+    ex.setAttribute("aria-expanded", String(open));
+    ex.addEventListener("click", () => {
+      if (!state.kindsOpen.delete(openKey)) state.kindsOpen.add(openKey);
+      renderBoard();
+    });
+    const cpus = members.map((m) => m.cpu).filter((x) => x !== null && x >= 0)
+      .sort((a, b) => a - b);
+    label.append(ex, `${kindName(c0.type, c0.scope, members.length)}`);
+    if (cpus.length) label.append(el("span", "hint", ` cpu ${cpuList(cpus)} · mean`));
+    cname.append(label);
+    sub.append(cname, ...blanks());
+    metricCells(sub, meanRow(members));
+    tbody.append(sub);
+    if (open) for (const c of members) record(c, true);
+  }
+}
+
+// One row of the board grouped by CPU: the median of its runs, unfolding to
+// the runs themselves, each with where it stands among them.
+function renderGroup(tbody, g, number) {
+  const key = groupKey(g);
+  const open = state.expanded.has(key);
+  const tr = el("tr", "run-row cpu-row");
+  tr.append(el("td", "num", number), el("td"));
+  const name = el("td", "wide");
+  const head = el("div", "run-head");
+  if (g.runs > 1) {
+    const ex = el("button", "expander", open ? "▾" : "▸");
+    ex.type = "button";
+    ex.title = open ? "hide the runs" : "show each run on this CPU";
+    ex.setAttribute("aria-expanded", String(open));
+    ex.addEventListener("click", () => toggleGroup(g).catch((e) => alert(e.message)));
+    head.append(ex, el("strong", null, machineName(g)));
+  } else {
+    head.append(el("span", "expander blank", " "),
+                g.run_id ? runLink(g.run_id, machineName(g)) : machineName(g));
+  }
+  name.append(head);
+  name.append(el("span", "label", g.runs > 1 ? `median of ${g.runs} runs` : "1 run"));
+  tr.append(name);
+  const systems = (g.sysnames || []).map((s) => osName({ sysname: s })).join(", ");
+  tr.append(el("td", "", systems || "—"), el("td", "", g.target || "—"),
+            el("td", "flags", flagsText(g)));
+  // The spread of its runs, worst to best, against their median.
+  const spread = el("td", "num fit");
+  const m = state.metrics.find((x) => x.key === state.sort);
+  if (m && g.runs > 1) {
+    const ends = [versus(g.low, g.sort_value, m.better), versus(g.high, g.sort_value, m.better)]
+      .filter(Boolean).sort((a, b) => a.pct - b.pct);
+    if (ends.length === 2) {
+      spread.textContent = `${ends[0].text} … ${ends[1].text}`;
+      spread.title = "the worst and the best of these runs against their median";
+    }
+  }
+  tr.append(spread);
+  metricCells(tr, g);
+  tbody.append(tr);
+  if (!open) return;
+  for (const r of state.children.get(key) || []) tbody.append(runRow(r, "", true));
 }
 
 // The record that stands for one run at the board's metric, in a given scope --
@@ -712,6 +933,8 @@ function syncHash() {
   if (state.submitter) parts.push(`user=${state.submitter}`);
   const ids = [...state.selected.keys()];
   if (ids.length) parts.push(`compare=${ids.join(",")}`);
+  // The run open over the page, so the address bar is its link while it is.
+  if (state.openRun) parts.push(`run=${state.openRun}`);
   const want = parts.length ? "#" + parts.join("&") : "";
   if (location.hash !== want) {
     history.replaceState(null, "", location.pathname + want);
@@ -790,10 +1013,8 @@ function renderSelection() {
     // CPU model stays directly under it, since that is what the label means to
     // everyone who did not write it.
     const top = el("div", "chip-top");
-    const title = el("button", "linkish", named);
-    title.type = "button";
+    const title = runLink(r.run_id, named);
     title.title = "open this result";
-    title.addEventListener("click", () => showRun(r.run_id).catch((e) => alert(e.message)));
     // Dropping a row from here rather than going back to find its tick on the
     // board, which on page three of a long board is a hunt.
     const drop = el("button", "chip-x", "×");
@@ -883,6 +1104,11 @@ async function showRun(id) {
   const mark = trustBadge(run);
   if (mark) title.append(mark);
   box.append(title);
+  const share = el("button", "linkish copylink", "copy link");
+  share.type = "button";
+  share.addEventListener("click", () =>
+    copyText(`${location.origin}${location.pathname}#run=${run.id}`, share));
+  box.append(share);
   if (run.label) box.append(el("p", "label big", run.label));
   if (run.notes) box.append(el("p", "notes", run.notes));
 
@@ -944,7 +1170,80 @@ async function showRun(id) {
     box.append(list);
   }
 
+  if (rank.cpu && rank.cpu.scopes && Object.keys(rank.cpu.scopes).length) {
+    box.append(sameCpu(rank.cpu.scopes));
+  }
+
   box.append(el("h3", null, "Records"));
+  box.append(recordsTable(run));
+  if (run.cores.some((c) => c.scope === "thread")) {
+    box.append(el("p", "note legend",
+      "A thread's MEM is its share while every thread ran at once; the " +
+      "whole-machine row is their sum."));
+  }
+  box.append(el("p", "note legend", "↑ higher is better · ↓ lower is better"));
+
+  const dl = el("a", "linkish", "download the original JSON");
+  dl.href = `/api/runs/${run.id}/raw`;
+  dl.setAttribute("download", `cpcpub-run-${run.id}.json`);
+  const dlp = el("p");
+  dlp.append(dl);
+  box.append(dlp);
+
+  $("#detail").hidden = false;
+  state.openRun = run.id;
+  syncHash();
+}
+
+function closeRun() {
+  $("#detail").hidden = true;
+  state.openRun = null;
+  syncHash();
+}
+
+// Where this run stands among the runs on the same CPU with the same build:
+// its whole machine and its best core, each against their median.
+function sameCpu(scopes) {
+  const wrap = el("div");
+  wrap.append(el("h3", null, "Against the same CPU"));
+  const names = { total: "whole machine", cpu: "best core" };
+  const order = ["total", "cpu"].filter((k) => scopes[k]);
+  const table = el("table", "fit-table");
+  const hr = el("tr");
+  hr.append(el("th"));
+  for (const k of order) hr.append(el("th", "num", `${names[k]} · ${scopes[k].runs} runs`));
+  const thead = el("thead");
+  thead.append(hr);
+  const tbody = el("tbody");
+  for (const m of shownMetrics()) {
+    if (m.better === "none" || order.every((k) => !scopes[k].metrics[m.key])) continue;
+    const tr = el("tr");
+    tr.append(el("td", null, m.label));
+    for (const k of order) {
+      const f = scopes[k].metrics[m.key];
+      const vs = f ? versus(f.value, f.median, m.better) : null;
+      const td = el("td", "num fit");
+      if (vs) {
+        td.textContent = `${vs.text} · ${ordinal(f.rank)}`;
+        if (vs.pct) td.classList.add(vs.pct > 0 ? "good" : "bad");
+        td.title = `${fmt(f.value)} against a median of ${fmt(f.median)} ` +
+                   `(${fmt(f.low)} to ${fmt(f.high)})`;
+      }
+      tr.append(td);
+    }
+    tbody.append(tr);
+  }
+  table.append(thead, tbody);
+  const scroller = el("div", "scroller");
+  scroller.append(table);
+  wrap.append(scroller);
+  wrap.append(el("p", "note legend", "Against the median of those runs; + is better."));
+  return wrap;
+}
+
+// A run's records, the whole machine first, then each kind of core and each
+// kind of thread as one averaged row that unfolds to its records.
+function recordsTable(run) {
   const scroller = el("div", "scroller");
   const table = el("table");
   const thead = el("thead");
@@ -958,27 +1257,62 @@ async function showRun(id) {
   }
   thead.append(hr);
   const tbody = el("tbody");
-  for (const c of run.cores) {
-    const tr = el("tr");
-    tr.append(el("td", null, c.scope),
-              el("td", "num", c.cpu ?? "—"),
-              el("td", "num", c.mhz ? Math.round(c.mhz) : "—"));
-    for (const m of shownMetrics()) tr.append(el("td", "num", fmt(c[m.key])));
+  // The run page shows the figures as measured, whatever the board reads.
+  const raw = (rec) => {
+    const out = { mhz: rec.mhz };
+    for (const m of state.metrics) out[m.key] = rec[m.key];
+    return out;
+  };
+  const line = (name, cpu, rec, cls) => {
+    const tr = el("tr", cls);
+    tr.append(name, el("td", "num", cpu), el("td", "num", rec.mhz ? Math.round(rec.mhz) : "—"));
+    for (const m of shownMetrics()) tr.append(el("td", "num", fmt(rec[m.key])));
     tbody.append(tr);
+    return tr;
+  };
+  const byId = new Map(run.cores.map((c) => [c.id, c]));
+  const kinded = new Set((run.types || []).flatMap((t) => t.ids));
+  for (const c of run.cores) {
+    if (c.scope === "total") line(el("td", null, "total"), "—", c, "");
+  }
+  for (const scope of ["cpu", "thread"]) {
+    for (const t of (run.types || []).filter((k) => k.scope === scope)) {
+      const members = t.ids.map((i) => byId.get(i)).filter(Boolean);
+      // A kind of one -- a phone's prime core -- is its own record, named.
+      if (members.length === 1) {
+        const one = members[0];
+        line(el("td", null, `${t.name} ${scope === "thread" ? "thread" : "core"}`),
+             one.cpu ?? "—", raw(one), "");
+        continue;
+      }
+      const avg = { mhz: mean(members.map((r) => r.mhz)) };
+      for (const m of state.metrics) avg[m.key] = mean(members.map((r) => r[m.key]));
+      const name = el("td");
+      const ex = el("button", "expander", "▸");
+      ex.type = "button";
+      ex.title = "show each of these";
+      ex.setAttribute("aria-expanded", "false");
+      name.append(ex, kindName(t.name, scope, members.length));
+      line(name, cpuList(t.cpus) || "—", avg, "kind-row");
+      const rows = members.map((r) =>
+        line(el("td", "childname", recordName(r)), r.cpu ?? "—", raw(r), "child-row"));
+      for (const r of rows) r.hidden = true;
+      ex.addEventListener("click", () => {
+        const open = rows[0].hidden;
+        for (const r of rows) r.hidden = !open;
+        ex.textContent = open ? "▾" : "▸";
+        ex.setAttribute("aria-expanded", String(open));
+      });
+    }
+    for (const c of run.cores) {
+      if (c.scope === scope && !kinded.has(c.id)) {
+        line(el("td", null, recordName(c)), c.cpu ?? "—", c, "");
+      }
+    }
   }
   table.append(thead, tbody);
   scroller.append(table);
-  box.append(scroller);
-  box.append(el("p", "note legend", "↑ higher is better · ↓ lower is better"));
-
-  const dl = el("a", "linkish", "download the original JSON");
-  dl.href = `/api/runs/${run.id}/raw`;
-  dl.setAttribute("download", `cpcpub-run-${run.id}.json`);
-  const dlp = el("p");
-  dlp.append(dl);
-  box.append(dlp);
-
-  $("#detail").hidden = false;
+  return scroller;
 }
 
 // ---------------------------------------------------------------------------
@@ -1590,10 +1924,7 @@ function uploadReceipt(job, res) {
     `Stored run ${res.id}${job.variant ? ` (${job.variant})` : ""} — one ` +
     `leaderboard row holding all ${res.records} records.`));
   const line = el("p");
-  const link = el("button", "linkish", "See where it lands");
-  link.type = "button";
-  link.addEventListener("click", () => showRun(res.id));
-  line.append(link);
+  line.append(runLink(res.id, "See where it lands"));
   card.append(line);
   if (res.user) {
     card.append(el("p", "muted",
@@ -1742,10 +2073,7 @@ function renderRunList(box, entries, picked, remove, redraw) {
 }
 
 function runTitle(id, name) {
-  const title = el("button", "linkish", name || `run ${id}`);
-  title.type = "button";
-  title.addEventListener("click", () => showRun(id));
-  return title;
+  return runLink(id, name || `run ${id}`);
 }
 
 // The account half is fetched, so its drawing is kept apart from its loading:
@@ -1938,6 +2266,9 @@ function setupDropzone() {
 }
 
 async function boot() {
+  // Read before anything rewrites the hash: restoring a comparison does, and
+  // would drop the run from a link carrying both.
+  const deepRun = location.hash.match(/run=(\d+)/);
   setupTabs();
   setupDropzone();
   setupPageSizes();
@@ -1986,7 +2317,7 @@ async function boot() {
   // it is what the board is ranked by as well as what it prints: switching to
   // per GHz reorders the rows, so it has to ask the server again.
   for (const name of ["scope", "target", "os", "vectorize", "fma", "verified",
-                      "limit", "norm"]) {
+                      "limit", "norm", "bycpu"]) {
     $("#filters").elements[name].addEventListener("change", () => {
       loadBoard().catch((err) => alert(err.message));
     });
@@ -2004,12 +2335,22 @@ async function boot() {
     renderSelection();
     renderBoard();
   });
-  $("#detail-close").addEventListener("click", () => { $("#detail").hidden = true; });
+  $("#detail-close").addEventListener("click", closeRun);
   $("#detail").addEventListener("click", (e) => {
-    if (e.target.id === "detail") $("#detail").hidden = true;
+    if (e.target.id === "detail") closeRun();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") $("#detail").hidden = true;
+    if (e.key === "Escape" && !$("#detail").hidden) closeRun();
+  });
+  // A #run=N typed or pasted into the address bar, or reached by Back, opens
+  // that run; its absence closes the one open.
+  window.addEventListener("hashchange", () => {
+    const want = location.hash.match(/run=(\d+)/);
+    if (want && Number(want[1]) !== state.openRun) {
+      showRun(Number(want[1])).catch((e) => alert(e.message));
+    } else if (!want && state.openRun) {
+      closeRun();
+    }
   });
 
   // Who is signed in decides what the Account tab and the shell commands say,
@@ -2047,8 +2388,7 @@ async function boot() {
     renderBoard();
     if (kept.length) showTab("compare");
   }
-  const m = location.hash.match(/run=(\d+)/);
-  if (m) showRun(Number(m[1])).catch(() => {});
+  if (deepRun) showRun(Number(deepRun[1])).catch(() => {});
 }
 
 boot().catch((e) => {
