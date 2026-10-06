@@ -61,10 +61,16 @@ fields appear only when it is ticked, and the Run button becomes *Run and
 upload*. The token goes into
 the environment as `$CPCPUB_TOKEN` rather than onto the command line, which is
 what the benchmark reads it from and keeps it out of the process list. After an
-upload, **See how it compares** opens the run's page on the hub. The hub's
-reply, including the delete token an anonymous upload needs to withdraw itself,
-is in **Output › Log** and in that button's tooltip, and nowhere else: copy it
-before closing the window.
+upload, **See how it compares** opens the run's page on the hub, and
+**Withdraw** takes the upload off it again (every variant's, for a
+`--variants` run). The hub's reply to each upload, delete token included, is
+kept in `cpcpub/uploads/` under the user's configuration folder, readable by
+its owner only, under the result's file name. So **Withdraw** also works on a
+result reopened later with **Open…**.
+
+With Upload ticked and no hub to send to, the window asks before measuring. No
+Hub URL, no `$CPCPUB_HUB` and no address built into the benchmark is the usual
+case for a build from this tree. It offers to run without uploading instead.
 
 The hub, token, label, notes, the upload tick and **Save to** are kept for next
 time, in `cpcpub/gui.json` under the user's configuration folder
@@ -73,7 +79,9 @@ time, in `cpcpub/gui.json` under the user's configuration folder
 written back in its place.
 
 **Advanced** — `--threads`, `--cpus`, `--time`, `--reps`, `--warmup`,
-**Cool-down**, and the benchmark the window runs. Cool-down is `--cooldown`:
+**Cool-down**, and the benchmark the window runs. The window asks that binary
+for its variants and default hub in the background, once typing in the path
+pauses. Cool-down is `--cooldown`:
 seconds of rest before each multi-threaded run and per-core sweep after the
 first, for a laptop or fanless machine that slows down as it heats. It is
 greyed out for a run with only one of them, the estimate counts it, and the
@@ -82,13 +90,31 @@ status line counts each rest down.
 ## The results
 
 A finished run fills a table under the form: a row for the multi-threaded
-total and one per CPU, then the clock, the score, and a column per kernel with
+total, then the per-core sweep with one row per kind of core, then the clock, the score, and a column per kernel with
 its unit under the name. Hover over a heading or a value for what it means in
 words; a clock's value also says whether it was measured, rated, given or
 estimated. The score and the six columns it is a geometric mean of are in
 bold. Click a heading to sort by that column — click again to reverse it. A
 `--variants` run gets a page per variant, switched between by the buttons above
 the table.
+
+A kind-of-core row is the mean of its cores and unfolds to them. The grouping
+is the results hub's: sorted by score, a step of more than 15% starts a new
+kind. An Arm CPU line that names several designs ("Cortex-A55 + Cortex-A78")
+names the kinds; otherwise they are large, medium and small. Identical cores
+are one row, "all 8 cores". A kind of one core, such as a phone's prime core,
+is just that core's row.
+
+**Open…** in the header bar shows a result saved earlier, with its hub link
+and **Withdraw** if it was uploaded from this window.
+
+The benchmark's warnings appear as a button beside the status line, such as a
+busy machine, or a memory test small enough to fit in the cache. The log that
+also holds them stays hidden after a run that went well. If the benchmark
+crashes, the status line names the signal. If a newer-ISA build dies of an
+illegal instruction, it suggests the plain build.
+
+Closing the window during a run asks first, since closing stops the run.
 
 The text behind the table is hidden until you press **Output** in the header
 bar: the benchmark's **Log**, a plain-text **Report** of the same numbers to
