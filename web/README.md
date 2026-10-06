@@ -138,10 +138,11 @@ python3 verified.py --db runs.sqlite3 --forget v0.1.0
 | --- | --- | --- |
 | `POST` | `/api/runs?label=&notes=` | upload one document; returns `{id, delete_token, user, records}` |
 | `GET` | `/api/runs?limit=&offset=&user=` | recent runs, optionally one submitter's |
-| `GET` | `/api/runs/<id>`, `/raw`, `/rank` | one run; the document as uploaded; its percentile per metric |
+| `GET` | `/api/runs/<id>`, `/raw`, `/rank` | one run, with its kinds of core; the document as uploaded; its percentile per metric and its standing on the same CPU |
 | `DELETE` | `/api/runs/<id>` | withdraw; needs `X-Delete-Token` or a signed-in owner |
-| `GET` | `/api/cores?scope=&target=&os=&vectorize=&fma=&q=&user=&verified=release&sort=&order=&norm=&limit=&offset=` | leaderboard rows: one per upload, each its best record at `sort` |
-| `GET` | `/api/cores?run=<id>` / `?ids=1,2,3` | every record of one run / named records |
+| `GET` | `/api/cores?scope=&target=&os=&vectorize=&fma=&q=&cpu=&threads=&user=&verified=release&sort=&order=&norm=&limit=&offset=` | leaderboard rows: one per upload, each its best record at `sort`, with `cpu_fit` |
+| `GET` | `/api/cores?group=cpu&scope=…` | the same filters, one row per CPU: the medians of its runs |
+| `GET` | `/api/cores?run=<id>` / `?ids=1,2,3` | every record of one run, each with its `type` / named records |
 | `GET` | `/api/metrics`, `/api/stats`, `/api/builds` | metric definitions; counts, including one per architecture and one per operating system, which is what fills the board's **Arch** and **OS** pickers; recognised release digests |
 | `GET` | `/api/users/<name>` | public profile: name, since, run count |
 | `GET` | `/api/auth/policy` | what registering here costs: `{open, invite_required, bits}` |
@@ -158,6 +159,29 @@ shown for it. It is the page's **Values** picker, and it is a server-side sort
 because the board is paged: ordering a page after it arrives would only sort the
 rows that happened to be on it. With `group=run` it also decides which record
 stands for an upload — per GHz that is its most efficient core, not its fastest.
+
+**The same CPU.** Runs are peers when they name the same `cpu_models`,
+target, vectorize and FMA, and for the whole-machine and per-thread scopes
+the same thread count. A board row's `cpu_fit` is where its value at `sort`
+stands among its peers' values, picked the same way:
+`{value, median, low, high, rank, of}`, absent with no peer. `group=cpu` folds
+the board into one row per set of peers, ordered by their median; `cpu=` (the
+exact line) and `threads=` then list one row's runs. `/rank` gives the same
+standing for every ranked metric, for the whole machine and the best core.
+The page shows it as a percentage of the median, signed so that + is better.
+
+**Kinds of core.** A run's per-core records are grouped by score: sorted, a
+step of more than 15% starts a new kind. Where the CPU line names several
+designs, as an Arm one does ("Cortex-A55 + Cortex-A78"), the kinds take those
+names, with the closest steps joined until the counts agree. Otherwise they
+are large, medium and small. Threads take the kind of the CPU they were pinned
+to. `/api/runs/<id>` lists them as `types` and marks each record with its
+`type`; the page shows one averaged row per kind, unfolding to the records.
+
+**Per-thread MEM.** On the per-thread rows, MEM is each thread's share of the
+memory bandwidth while every thread ran at once. The whole-machine row is
+their sum, so a thread's figure is far below what the same core manages on
+its own.
 
 Both listings are paged: `limit` (default 50, clamped to 500 — the sizes the
 page's own **Show** pickers offer) and `offset`, and both answer with

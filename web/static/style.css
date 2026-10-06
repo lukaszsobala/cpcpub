@@ -112,7 +112,7 @@ button.linkish {
   background: none; border: 0; padding: 0; font: inherit; color: var(--accent);
   cursor: pointer; text-align: left;
 }
-a.linkish { color: var(--accent); }
+a.linkish { color: var(--accent); text-decoration: none; }
 button.linkish:hover, a.linkish:hover { text-decoration: underline; }
 
 .note { color: var(--muted); font-size: 0.85rem; margin: 0.85rem 0; }
@@ -172,6 +172,20 @@ th.sorted .sorth { color: var(--accent); }
 .child-row td { color: var(--muted); border-bottom-style: dotted; }
 .child-row .childname { padding-left: 1.4rem; }
 .child-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+/* a kind of core, averaged, and the cores it folds */
+.kind-row td { color: var(--ink); }
+.kind-row .expander { margin-right: 0.3rem; }
+.child-row.deeper .childname { padding-left: 2.8rem; }
+/* a run listed under its CPU on the grouped board */
+.run-row.nested td { border-bottom-style: dotted; }
+.run-row.nested .run-head { padding-left: 1.4rem; }
+.cpu-row strong { font-weight: 600; }
+/* where a run stands among its CPU's runs */
+.fit { color: var(--muted); }
+.fit.good { color: var(--ok); }
+.fit.bad { color: var(--warn); }
+.fit-table td:first-child { color: var(--muted); }
+.copylink { font-size: 0.8rem; }
 
 /* compare ---------------------------------------------------------------- */
 .cmp-head { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 1.25rem; }

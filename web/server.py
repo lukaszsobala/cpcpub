@@ -31,6 +31,7 @@ import mimetypes
 import re
 import secrets
 import sqlite3
+import statistics
 import sys
 import threading
 import time
@@ -812,6 +813,140 @@ def sort_expr(sort: str, norm: str) -> str:
             f"ELSE c.{sort} {op} (c.mhz / 1000.0) END")
 
 
+def normalised(row: dict, key: str, norm: str) -> float | None:
+    """One value as the page shows it: sort_expr() in Python."""
+    v = row.get(key)
+    if v is None or norm != "ghz" or not row.get("mhz"):
+        return v
+    ghz = row["mhz"] / 1000.0
+    kind = KIND_OF.get(key)
+    return v / ghz if kind == "rate" else v * ghz if kind == "time" else v
+
+
+# Kinds of core ----------------------------------------------------------------
+#
+# A per-core sweep lists every CPU, and on a phone or a hybrid PC that is two or
+# three kinds of core over and over: eight or twelve rows where three would say
+# it all. The hub groups them so a page can show one averaged row per kind.
+#
+# They are grouped by what they measured. A record carries no core type, and a
+# PC's single brand string names none. Sorted by score, a step of more than
+# CORE_TYPE_GAP between neighbours starts a new kind. Cores of one design
+# differ by a few percent (a favoured core's turbo bin, a cluster clocked a
+# step lower); different designs differ by a quarter or more. Two designs
+# closer than the gap are grouped as one, which is what their numbers say
+# anyway.
+CORE_TYPE_GAP = 1.15
+
+
+def named_designs(cpu_models: str | None) -> list[str]:
+    """The core designs a CPU line names, when it names more than one.
+
+    An Arm machine is named from each CPU's MIDR: distinct names joined with
+    " + ", in the order of each design's first CPU, and the board in
+    parentheses after, as in "Cortex-A55 + Cortex-A76 (Radxa ROCK 5B)".
+    """
+    if not cpu_models:
+        return []
+    line = re.sub(r"\s*\([^()]*\)$", "", cpu_models)
+    names = [n.strip() for n in line.split(" + ") if n.strip()]
+    return names if len(names) > 1 else []
+
+
+def _size_names(n: int) -> list[str]:
+    if n == 2:
+        return ["large", "small"]
+    return ["large"] + [f"medium {i}" if n > 3 else "medium"
+                        for i in range(1, n - 1)] + ["small"]
+
+
+def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
+    """The kinds of core in one run, fastest first.
+
+    Each is {"scope", "name", "ids", "cpus"}. Per-core records are grouped by
+    score. The multi-threaded run's threads follow the kind of the CPU each was
+    pinned to, or are one group where that is not known. A scope with fewer
+    than two records is not grouped.
+    """
+    def cpu_of(r):
+        c = r.get("cpu")
+        return c if isinstance(c, int) and c >= 0 else None
+
+    cores = sorted((r for r in records if r.get("scope") == "cpu" and r.get("score")),
+                   key=lambda r: -r["score"])
+    groups: list[list[dict]] = []
+    for r in cores:
+        if groups and groups[-1][-1]["score"] / r["score"] <= CORE_TYPE_GAP:
+            groups[-1].append(r)
+        else:
+            groups.append([r])
+    names = named_designs(cpu_models)
+    # Fewer designs named than steps found: two of the groups are one design at
+    # two clocks, as a phone's prime core and the rest of its big cluster are.
+    # The closest pair is joined until the counts agree.
+    while names and len(groups) > len(names):
+        i = min(range(len(groups) - 1),
+                key=lambda k: groups[k][-1]["score"] / groups[k + 1][0]["score"])
+        groups[i:i + 2] = [groups[i] + groups[i + 1]]
+    if len(groups) == 1:
+        labels = ["all cores"]
+    elif names and len(names) == len(groups):
+        # The line lists designs in the order of their first CPU, so the group
+        # holding the lowest-numbered CPU is the first name.
+        first = [min((cpu_of(r) for r in g if cpu_of(r) is not None), default=1 << 30)
+                 for g in groups]
+        labels = [""] * len(groups)
+        for name, k in zip(names, sorted(range(len(groups)), key=first.__getitem__)):
+            labels[k] = name
+    else:
+        labels = _size_names(len(groups))
+
+    out = []
+    if len(cores) > 1:
+        for label, g in zip(labels, groups):
+            out.append({"scope": "cpu", "name": label, "ids": [r["id"] for r in g],
+                        "cpus": sorted(c for c in map(cpu_of, g) if c is not None)})
+
+    threads = [r for r in records if r.get("scope") == "thread"]
+    if len(threads) > 1:
+        kind = {cpu_of(r): label for label, g in zip(labels, groups) for r in g
+                if cpu_of(r) is not None} if len(cores) > 1 else {}
+        if all(cpu_of(t) in kind for t in threads):
+            for label in labels:
+                mine = [t for t in threads if kind[cpu_of(t)] == label]
+                if mine:
+                    out.append({"scope": "thread", "name": label,
+                                "ids": [t["id"] for t in mine],
+                                "cpus": sorted(cpu_of(t) for t in mine)})
+        else:
+            out.append({"scope": "thread", "name": "all threads",
+                        "ids": [t["id"] for t in threads],
+                        "cpus": sorted(c for c in map(cpu_of, threads) if c is not None)})
+    return out
+
+
+# The same CPU -------------------------------------------------------------
+#
+# How a result sits among the others from the same processor: a phone measured
+# warm, or a desktop on a power-saving plan, shows as one run well under the
+# rest. Runs are peers when they name the same CPU line, the same target and
+# the same two build switches -- the board's own condition for comparing them
+# at all -- and, for the whole-machine and per-thread rows, the same number of
+# threads, since a run on half the cores is a different measurement.
+
+def peer_key(row: dict, scope: str | None) -> tuple:
+    key = (row.get("cpu_models"), row.get("target"), row.get("vectorize"), row.get("fma"))
+    return key if scope == "cpu" else key + (row.get("threads"),)
+
+
+def standing(value: float, values: list[float], better: str) -> dict:
+    """Where `value` stands among `values`, which include it."""
+    beats = (lambda v: v < value) if better == "low" else (lambda v: v > value)
+    return {"value": value, "median": statistics.median(values),
+            "low": min(values), "high": max(values), "of": len(values),
+            "rank": 1 + sum(1 for v in values if better != "none" and beats(v))}
+
+
 class Store:
     # The attest_* columns are vestigial: the hub once accepted GitHub
     # signatures over a result, and no longer does. They stay on the table so
@@ -960,7 +1095,141 @@ class Store:
                 f"WHERE run_id = ? ORDER BY id", (run_id,)).fetchall()
         out = dict(row)
         out["cores"] = [dict(c) for c in cores]
+        out["types"] = core_types(out["cores"], out["cpu_models"])
+        kind = {i: t["name"] for t in out["types"] for i in t["ids"]}
+        for c in out["cores"]:
+            c["type"] = kind.get(c["id"])
         return out
+
+    def types_of_run(self, run_id: int) -> list[dict]:
+        """core_types() for one stored run, whatever a listing narrowed it to."""
+        with self.connect() as db:
+            run = db.execute("SELECT cpu_models FROM runs WHERE id = ?",
+                             (run_id,)).fetchone()
+            if run is None:
+                return []
+            rows = db.execute("SELECT id, scope, cpu, score FROM cores "
+                              "WHERE run_id = ?", (run_id,)).fetchall()
+        return core_types([dict(r) for r in rows], run["cpu_models"])
+
+    def run_bests(self, cpu_models: list[str], scope: str,
+                  exprs: list[tuple[str, str, str]]) -> list[dict]:
+        """Every run of these CPU lines at one scope, one row each.
+
+        A row holds what peer_key() reads plus, for each (name, SQL, MIN|MAX)
+        in `exprs`, that aggregate over the run's records -- its best core, or
+        for the one-record total scope, its total.
+        """
+        if not cpu_models:
+            return []
+        cols = ", ".join(f"{agg}({sql}) AS {name}" for name, sql, agg in exprs)
+        marks = ",".join("?" * len(cpu_models))
+        with self.connect() as db:
+            rows = db.execute(
+                f"SELECT r.id AS run_id, r.cpu_models, r.target, r.vectorize, "
+                f"       r.fma, r.threads, {cols} "
+                f"FROM cores c JOIN runs r ON r.id = c.run_id "
+                f"WHERE c.scope = ? AND r.cpu_models IN ({marks}) "
+                f"GROUP BY r.id", [scope, *cpu_models]).fetchall()
+        return [dict(r) for r in rows]
+
+    def cpu_fit(self, run_id: int) -> dict | None:
+        """How this run stands among its peers, per metric: whole machine and best core."""
+        with self.connect() as db:
+            run = db.execute("SELECT cpu_models, target, vectorize, fma, threads "
+                             "FROM runs WHERE id = ?", (run_id,)).fetchone()
+            scopes = {r["scope"] for r in db.execute(
+                "SELECT DISTINCT scope FROM cores WHERE run_id = ?", (run_id,))}
+        if run is None or not run["cpu_models"]:
+            return None
+        ranked = [m for m in METRICS if m["better"] != "none"]
+        exprs = [(m["key"], f"c.{m['key']}", "MIN" if m["better"] == "low" else "MAX")
+                 for m in ranked]
+        out: dict = {"cpu_models": run["cpu_models"], "scopes": {}}
+        # Per-thread rows are left out: each is a share of the whole machine's
+        # memory and caches, and the total row already says what that came to.
+        for scope in ("total", "cpu"):
+            if scope not in scopes:
+                continue
+            want = peer_key(dict(run), scope)
+            peers = [p for p in self.run_bests([run["cpu_models"]], scope, exprs)
+                     if peer_key(p, scope) == want]
+            mine = next((p for p in peers if p["run_id"] == run_id), None)
+            if mine is None or len(peers) < 2:
+                continue
+            metrics = {}
+            for m in ranked:
+                vals = [p[m["key"]] for p in peers if p[m["key"]] is not None]
+                if mine[m["key"]] is not None and len(vals) > 1:
+                    metrics[m["key"]] = standing(mine[m["key"]], vals, m["better"])
+            out["scopes"][scope] = {"runs": len(peers), "metrics": metrics}
+        return out
+
+    def add_fit(self, rows: list[dict], scope: str, sort: str, desc: bool,
+                norm: str) -> None:
+        """Mark each board row with where it stands among its CPU's runs.
+
+        At the board's own metric, reading and pick: a run's representative is
+        compared with every other run's representative, chosen the same way.
+        Rows with no peer are left unmarked.
+        """
+        models = sorted({r["cpu_models"] for r in rows if r.get("cpu_models")})
+        if not models or sort == "mhz":
+            return
+        better = next(m["better"] for m in METRICS if m["key"] == sort)
+        peers = self.run_bests(models, scope,
+                               [("v", sort_expr(sort, norm), "MAX" if desc else "MIN")])
+        by_key: dict[tuple, list[float]] = defaultdict(list)
+        for p in peers:
+            if p["v"] is not None:
+                by_key[peer_key(p, scope)].append(p["v"])
+        for r in rows:
+            vals = by_key.get(peer_key(r, scope), []) if r.get("cpu_models") else []
+            if len(vals) > 1 and r.get("sort_value") is not None:
+                r["cpu_fit"] = standing(r["sort_value"], vals, better)
+
+    def cpu_groups(self, *, sort: str, desc: bool, norm: str, limit: int,
+                   offset: int, **filters) -> tuple[list[dict], int]:
+        """The board with one row per CPU line rather than per run.
+
+        A row is the median of its runs' representatives, metric by metric,
+        in the reading the board is showing (`normalised` says the per-GHz
+        arithmetic is done already). Ordered by the median at `sort`. Returns
+        one page of rows and how many there are in all.
+        """
+        scope = filters.get("scope")
+        rows = self.cores(group_run=True, sort=sort, desc=desc, norm=norm,
+                          limit=-1, offset=0, **filters)
+        grouped: dict[tuple, list[dict]] = {}
+        for r in rows:
+            # A machine that named no CPU is a group of its own: "unknown" is
+            # not a processor two runs can share.
+            key = peer_key(r, scope) if r.get("cpu_models") else ("run", r["run_id"])
+            grouped.setdefault(key, []).append(r)
+
+        def median(vals):
+            vals = [v for v in vals if v is not None]
+            return statistics.median(vals) if vals else None
+
+        out = []
+        for members in grouped.values():
+            first = members[0]
+            g = {k: first.get(k) for k in ("cpu_models", "target", "vectorize", "fma",
+                                            "machine", "threads", "scope")}
+            g["runs"] = len(members)
+            g["run_id"] = first["run_id"] if len(members) == 1 else None
+            g["sysnames"] = sorted({m["sysname"] for m in members if m.get("sysname")})
+            g["mhz"] = median(m.get("mhz") for m in members)
+            g["normalised"] = norm == "ghz"
+            for key in METRIC_KEYS:
+                g[key] = median(normalised(m, key, norm) for m in members)
+            g["sort_value"] = median(m.get("sort_value") for m in members)
+            vals = [m["sort_value"] for m in members if m.get("sort_value") is not None]
+            g["low"], g["high"] = (min(vals), max(vals)) if vals else (None, None)
+            out.append(g)
+        out.sort(key=lambda g: (g["sort_value"] is None,
+                                -(g["sort_value"] or 0) if desc else (g["sort_value"] or 0)))
+        return out[offset:offset + limit], len(out)
 
     def raw(self, run_id: int) -> str | None:
         with self.connect() as db:
@@ -986,7 +1255,8 @@ class Store:
                      sysname: str | None = None,
                      search: str | None = None, ids: list[int] | None = None,
                      run: int | None = None, user_id: int | None = None,
-                     verified: str | None = None) -> tuple[list[str], list[object]]:
+                     verified: str | None = None, cpu: str | None = None,
+                     threads: int | None = None) -> tuple[list[str], list[object]]:
         """The WHERE that a listing and its count are both built from.
 
         In one place because they must agree: a count taken over different
@@ -1025,6 +1295,14 @@ class Store:
         if sysname:
             where.append("LOWER(r.sysname) = LOWER(?)")
             args.append(sysname)
+        # The exact CPU line, for one row of the board grouped by CPU: the
+        # search box matches a part of it, and "Ryzen 7" is several CPUs.
+        if cpu:
+            where.append("r.cpu_models = ?")
+            args.append(cpu)
+        if threads is not None:
+            where.append("r.threads = ?")
+            args.append(threads)
         if search:
             where.append("(r.cpu_models LIKE ? OR r.label LIKE ? OR r.machine LIKE ?)")
             pat = f"%{search}%"
@@ -1096,6 +1374,7 @@ class Store:
             # this run also carries stays on the run's own page.
             f"       r.sysname, "
             f"       {SUBMITTER}, {RELEASE_BUILD}, "
+            f"       {key} AS sort_value, "
             f"       m.peers AS records "
             f"FROM matched m "
             f"JOIN cores c ON c.id = m.core_id "
@@ -1147,6 +1426,7 @@ class Store:
                     # Share of the population this run beats.
                     "percentile": (100.0 * (total - worse) / total) if total else None,
                 }
+        out["cpu"] = self.cpu_fit(run_id)
         return out
 
     def stats(self) -> dict:
@@ -1919,8 +2199,10 @@ class Handler(BaseHTTPRequestHandler):
         if scope is not None and scope not in SCOPES:
             raise Invalid(f"unknown scope {scope!r}")
         group = one("group", "none" if addressed else "run")
-        if group not in ("run", "none"):
-            raise Invalid("group must be 'run' or 'none'")
+        if group not in ("run", "none", "cpu"):
+            raise Invalid("group must be 'run', 'none' or 'cpu'")
+        if group == "cpu" and scope is None:
+            raise Invalid("group=cpu needs a scope")
         run = one("run")
         if run is not None:
             try:
@@ -1969,13 +2251,31 @@ class Handler(BaseHTTPRequestHandler):
             "search": _text(one("q"), 64, "q"),
             "ids": ids,
             "run": run,
+            "cpu": _text(one("cpu"), MAX_TEXT, "cpu"),
+            "threads": None if one("threads") is None
+                       else clamp_int(one("threads"), 0, 1 << 20, 0),
         }
         group_run = (group == "run")
         limit = clamp_int(one("limit", "50"), 1, MAX_PAGE, 50)
         offset = clamp_int(one("offset", "0"), 0, MAX_OFFSET, 0)
+        if group == "cpu":
+            groups, total = self.store.cpu_groups(
+                sort=sort, desc=(order == "desc"), norm=norm, limit=limit,
+                offset=offset, **filters)
+            return {"groups": groups, "limit": limit, "offset": offset,
+                    "total": total}
         cores = self.store.cores(group_run=group_run, sort=sort,
                                  desc=(order == "desc"), norm=norm, limit=limit,
                                  offset=offset, **filters)
+        if group_run and scope is not None:
+            self.store.add_fit(cores, scope, sort, order == "desc", norm)
+        # One run's records, as the board's expanded row shows them: each says
+        # which kind of core it is, judged from the whole run and not only the
+        # records this listing kept.
+        if run is not None:
+            kind = {i: t["name"] for t in self.store.types_of_run(run) for i in t["ids"]}
+            for c in cores:
+                c["type"] = kind.get(c["id"])
         return {"cores": cores, "limit": limit, "offset": offset,
                 "total": self.total(len(cores), limit, offset,
                                     lambda: self.store.count_cores(

@@ -621,6 +621,141 @@ class HubTest(unittest.TestCase):
         self.assertFalse(limiter.allow("a"))
         self.assertTrue(limiter.allow("b"))
 
+    # -- kinds of core and the same CPU -----------------------------------
+    def hybrid(self, cpu_models, scores, mode="per-core", threads_pinned=True):
+        """A run whose CPU i scored scores[i], under this CPU line."""
+        doc = document(mode)
+        doc["system"]["cpu_models"] = cpu_models
+        doc["system"]["cpus"] = len(scores)
+        doc["cores"] = [core(cpu=i, score=s) for i, s in enumerate(scores)]
+        if mode == "full":
+            n = len(scores)
+            doc["config"]["threads"] = n
+            doc["threads"] = [core("thread", i if threads_pinned else -1, score=5000.0)
+                              for i in range(n)]
+            doc["total"] = core("total", None, threads=n)
+        return self.upload(doc)
+
+    def test_a_run_says_which_kind_each_core_is(self):
+        out = self.hybrid("Hybrid Kinds 1", [8000, 8100, 7900, 8050,
+                                             10500, 10600, 10400, 10550], mode="full")
+        _, run = self.req(f"/api/runs/{out['id']}")
+        kinds = [(t["scope"], t["name"], t["cpus"]) for t in run["types"]]
+        self.assertEqual(kinds, [("cpu", "large", [4, 5, 6, 7]),
+                                 ("cpu", "small", [0, 1, 2, 3]),
+                                 ("thread", "large", [4, 5, 6, 7]),
+                                 ("thread", "small", [0, 1, 2, 3])])
+        by_cpu = {(c["scope"], c["cpu"]): c["type"] for c in run["cores"]}
+        self.assertEqual(by_cpu[("cpu", 0)], "small")
+        self.assertEqual(by_cpu[("thread", 7)], "large")
+        self.assertIsNone(by_cpu[("total", None)])
+
+    def test_the_expanded_row_carries_the_kinds_too(self):
+        out = self.hybrid("Hybrid Kinds 2", [8000, 8000, 10500, 10500], mode="full")
+        _, page = self.req(f"/api/cores?run={out['id']}&scope=thread")
+        self.assertEqual({c["cpu"]: c["type"] for c in page["cores"]},
+                         {0: "small", 1: "small", 2: "large", 3: "large"})
+
+    def test_a_fit_says_how_a_run_stands_on_its_cpu(self):
+        cpu = "Fit CPU 1"
+        ids = [self.hybrid(cpu, [s])["id"] for s in (10000, 11000, 12000)]
+        lone = self.hybrid("Fit CPU 2", [9000])["id"]
+        _, page = self.req("/api/cores?scope=cpu&q=Fit+CPU&limit=50")
+        fit = {r["run_id"]: r.get("cpu_fit") for r in page["cores"]}
+        self.assertIsNone(fit[lone])
+        self.assertEqual([fit[i]["rank"] for i in ids], [3, 2, 1])
+        self.assertEqual({fit[i]["of"] for i in ids}, {3})
+        self.assertAlmostEqual(fit[ids[0]]["median"], 11000, delta=1)
+        # A latency ranks the other way round.
+        _, page = self.req("/api/cores?scope=cpu&q=Fit+CPU+1&sort=mem_lat_ns&order=asc")
+        self.assertEqual({r["cpu_fit"]["rank"] for r in page["cores"]}, {1})
+
+    def test_peers_must_share_the_build(self):
+        cpu = "Fit CPU 3"
+        self.hybrid(cpu, [10000])
+        doc = document()
+        doc["system"]["cpu_models"] = cpu
+        doc["build"]["vectorize"] = True
+        self.upload(doc)
+        _, page = self.req("/api/cores?scope=cpu&vectorize=&fma=&q=Fit+CPU+3")
+        self.assertEqual(len(page["cores"]), 2)
+        self.assertTrue(all("cpu_fit" not in r for r in page["cores"]))
+
+    def test_the_board_groups_by_cpu(self):
+        for s in (10000, 11000, 12000):
+            self.hybrid("Group CPU A", [s])
+        self.hybrid("Group CPU B", [20000])
+        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=Group+CPU")
+        rows = [(g["cpu_models"], g["runs"]) for g in page["groups"]]
+        self.assertEqual(rows, [("Group CPU B", 1), ("Group CPU A", 3)])
+        self.assertEqual(page["total"], 2)
+        a = page["groups"][1]
+        self.assertAlmostEqual(a["score"], 11000, delta=1)
+        self.assertAlmostEqual(a["low"], 10000, delta=1)
+        self.assertAlmostEqual(a["high"], 12000, delta=1)
+        # Unfolding one: its runs, by the exact CPU line.
+        _, runs = self.req("/api/cores?scope=cpu&cpu=Group+CPU+A")
+        self.assertEqual(len(runs["cores"]), 3)
+
+    def test_grouping_by_cpu_needs_a_scope(self):
+        code, _ = self.expect_error("/api/cores?group=cpu&ids=1")
+        self.assertEqual(code, 400)
+
+    def test_the_run_page_has_the_same_cpu_standing(self):
+        cpu = "Fit CPU 4"
+        self.hybrid(cpu, [10000, 10000], mode="full")
+        out = self.hybrid(cpu, [12000, 12000], mode="full")
+        _, rank = self.req(f"/api/runs/{out['id']}/rank")
+        self.assertEqual(rank["cpu"]["cpu_models"], cpu)
+        best = rank["cpu"]["scopes"]["cpu"]
+        self.assertEqual(best["runs"], 2)
+        self.assertEqual(best["metrics"]["score"]["rank"], 1)
+        self.assertIn("total", rank["cpu"]["scopes"])
+
+
+class CoreTypesTest(unittest.TestCase):
+    @staticmethod
+    def kinds(scores, cpu_models="", threads=()):
+        recs = [{"id": i, "scope": "cpu", "cpu": i, "score": s}
+                for i, s in enumerate(scores)]
+        recs += [{"id": 100 + i, "scope": "thread", "cpu": c, "score": 1.0}
+                 for i, c in enumerate(threads)]
+        return [(t["scope"], t["name"], t["cpus"])
+                for t in srv.core_types(recs, cpu_models)]
+
+    def test_a_phone_names_its_designs(self):
+        self.assertEqual(
+            self.kinds([2000, 2010, 1990, 2005, 6000, 6100, 5950, 7600],
+                       "Cortex-A55 + Cortex-A78 + Cortex-X1 (Qualcomm SM8350)"),
+            [("cpu", "Cortex-X1", [7]), ("cpu", "Cortex-A78", [4, 5, 6]),
+             ("cpu", "Cortex-A55", [0, 1, 2, 3])])
+
+    def test_one_design_at_two_clocks_is_one_kind_when_the_line_says_so(self):
+        # The prime core is a faster-clocked X4: three steps, two names.
+        self.assertEqual(
+            self.kinds([4000, 4000, 4000, 4000, 6500, 6500, 6500, 7600],
+                       "Cortex-A720 + Cortex-X4"),
+            [("cpu", "Cortex-X4", [4, 5, 6, 7]),
+             ("cpu", "Cortex-A720", [0, 1, 2, 3])])
+
+    def test_a_brand_string_gives_sizes(self):
+        self.assertEqual(self.kinds([8000, 8000, 10500, 10500, 3000],
+                                    "Intel(R) Core(TM) Ultra 7 155H"),
+                         [("cpu", "large", [2, 3]), ("cpu", "medium", [0, 1]),
+                          ("cpu", "small", [4])])
+
+    def test_alike_cores_are_one_kind(self):
+        self.assertEqual(self.kinds([10000, 10400, 9800, 10200]),
+                         [("cpu", "all cores", [0, 1, 2, 3])])
+
+    def test_a_single_core_is_not_grouped(self):
+        self.assertEqual(self.kinds([10000]), [])
+
+    def test_unpinned_threads_are_one_group(self):
+        self.assertEqual(self.kinds([8000, 10500], threads=(-1, -1)),
+                         [("cpu", "large", [1]), ("cpu", "small", [0]),
+                          ("thread", "all threads", [])])
+
 
 class Browser:
     """One client with its own cookie jar, as a browser has.
