@@ -99,8 +99,12 @@ passes `--cooldown`, which rests before each multi-threaded run and per-core
 sweep after the first. It offers Off, 30 s, 1 min and 2 min, starts on 30 s,
 and greys the choice out when there is only one run to make. While the
 benchmark rests, the status line counts the rest down. A binary from before
-`--cooldown` would refuse the flag, so the app reads the binary's help once and
-hides the choice if the flag is not there.
+`--cooldown` would refuse the flag, so the app reads the binary's help once.
+If the flag isn't there, the choice stays on screen, greyed out, with a note
+that the benchmark is too old for it. The CI build's APK is such a case until
+v0.4.0 is released, because CI packs the latest released benchmark, v0.3.6.
+
+The token field has a Show/Hide button, to check a pasted token.
 
 ## Building
 

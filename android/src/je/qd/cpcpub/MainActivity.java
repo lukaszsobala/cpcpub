@@ -210,6 +210,7 @@ public final class MainActivity extends Activity {
         token = field(uploadFields, "Token (optional, from the hub's Account tab)", "",
             InputType.TYPE_CLASS_TEXT
             | InputType.TYPE_TEXT_VARIATION_PASSWORD, "token");
+        revealable(token);
         label = field(uploadFields, "Label", "short name for this phone",
             InputType.TYPE_CLASS_TEXT, "label");
         // The phone's own name until the label has been set once: the CPU line
@@ -411,8 +412,9 @@ public final class MainActivity extends Activity {
     }
 
     /** A binary from before --cooldown refuses the flag outright; ask its help
-     *  text once, off the main thread, and take the choice away if it is not
-     *  there rather than offer one that fails the run. */
+     *  text once, off the main thread, and grey the choice out if it is not
+     *  there rather than offer one that fails the run. It stays in view with
+     *  the reason under it: a choice that silently vanishes reads as a bug. */
     private void checkCooldown() {
         new Thread(() -> {
             boolean has = true;
@@ -432,9 +434,6 @@ public final class MainActivity extends Activity {
             if (has) return;
             main.post(() -> {
                 canCoolDown = false;
-                cooldownHeading.setVisibility(View.GONE);
-                cooldown.setVisibility(View.GONE);
-                cooldownNote.setVisibility(View.GONE);
                 updateCommand();
             });
         }).start();
@@ -473,11 +472,13 @@ public final class MainActivity extends Activity {
     private void updateCommand() {
         // A run of one batch has nothing to rest between: the choice is shown
         // greyed rather than taken away, with the reason under it.
-        boolean applies = rests() > 0;
+        boolean applies = canCoolDown && rests() > 0;
         for (int i = 0; i < cooldown.getChildCount(); i++) {
             cooldown.getChildAt(i).setEnabled(applies);
         }
-        cooldownNote.setText(applies
+        cooldownNote.setText(!canCoolDown
+            ? "The benchmark in this build is too old for a cool-down."
+            : applies
             ? "A rest between runs, so each starts on a cool phone."
             : "Needs Both or all four variants.");
         List<String> argv = argv();
@@ -1316,6 +1317,30 @@ public final class MainActivity extends Activity {
         if (g.getCheckedRadioButtonId() == View.NO_ID) g.check(g.getChildAt(0).getId());
         parent.addView(g);
         return g;
+    }
+
+    /** A Show/Hide button beside a password field, to check what was pasted. */
+    private void revealable(EditText e) {
+        LinearLayout parent = (LinearLayout) e.getParent();
+        int at = parent.indexOfChild(e);
+        parent.removeView(e);
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(e, new LinearLayout.LayoutParams(0,
+            ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button toggle = new Button(this, null, android.R.attr.borderlessButtonStyle);
+        toggle.setText("Show");
+        toggle.setAllCaps(false);
+        toggle.setOnClickListener(v -> {
+            boolean shown = toggle.getText().equals("Hide");
+            e.setInputType(InputType.TYPE_CLASS_TEXT | (shown
+                ? InputType.TYPE_TEXT_VARIATION_PASSWORD
+                : InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD));
+            e.setSelection(e.getText().length());
+            toggle.setText(shown ? "Show" : "Hide");
+        });
+        row.addView(toggle);
+        parent.addView(row, at);
     }
 
     private EditText field(LinearLayout parent, String title, String hint, int type,
