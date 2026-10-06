@@ -34,6 +34,10 @@ somewhere else.
 
 ## What the controls do
 
+Variants, Run, and Save to with the upload fields under it sit side by side
+in three columns that never scroll. Advanced is under them and scrolls on its
+own when the window is too short for all of it.
+
 **Variants** — one checkbox per build variant the binary reports from
 `--list-variants`; a target where the toggles change nothing dims the names
 that are the same code and says so in the tooltip. One variant alone is

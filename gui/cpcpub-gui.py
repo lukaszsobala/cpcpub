@@ -1064,14 +1064,14 @@ class Window(Gtk.ApplicationWindow):
         paned.set_position(300)
         self.set_child(paned)
 
-        form_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         self.form_box = self.build_form()
-        form_scroll.set_child(self.form_box)
-        paned.set_start_child(form_scroll)
+        paned.set_start_child(self.form_box)
         paned.set_resize_start_child(False)
+        # Neither half is squeezed below its minimum: the form's options would
+        # be cut off, and the output's status line and the link to an upload
+        # would fall off the window. Only Advanced scrolls, on its own.
+        paned.set_shrink_start_child(False)
         paned.set_end_child(self.build_output())
-        # The form scrolls and the output does not: squeezed below its height,
-        # the status line and the link to an upload fall off the window.
         paned.set_shrink_end_child(False)
 
         # Both groups tick their boxes only now: each tick rewrites the
@@ -1104,33 +1104,28 @@ class Window(Gtk.ApplicationWindow):
     # -- the form ----------------------------------------------------------
 
     def build_form(self):
-        """A label column and a control column, densely: the whole form is
-        meant to sit above the output without pushing it off the window."""
-        grid = Gtk.Grid(column_spacing=10, row_spacing=6)
-        grid.set_margin_top(10)
-        grid.set_margin_bottom(10)
-        grid.set_margin_start(12)
-        grid.set_margin_end(12)
-        row = 0
+        """The options above the output. What to run, where the result goes
+        and where it is uploaded sit side by side in columns that never
+        scroll; Advanced is under them and scrolls on its own when the window
+        is short, so opening it never pushes the rest out of view."""
+        form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        form.set_margin_top(10)
+        form.set_margin_bottom(6)
+        form.set_margin_start(12)
+        form.set_margin_end(12)
 
-        def field(text, widget, span=1, top=False):
-            nonlocal row
-            if text:
-                valign = Gtk.Align.START if top else Gtk.Align.BASELINE_CENTER
-                # A check's text sits a little below its top edge.
-                lab = Gtk.Label(label=text, xalign=0, valign=valign, margin_top=4 if top else 0)
-                lab.add_css_class("dim-label")
-                grid.attach(lab, 0, row, 1, 1)
-                grid.attach(widget, 1, row, span, 1)
-            else:
-                grid.attach(widget, 0, row, span + 1, 1)
-            row += 1
-            return widget
+        def label(text, **kw):
+            lab = Gtk.Label(label=text, xalign=0, **kw)
+            lab.add_css_class("dim-label")
+            return lab
 
-        # Variants and what to run, each a column of checks and the two side
-        # by side: a column reads as a list to pick from, and side by side they
-        # cost the height of the longer one rather than of both.
+        columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=28)
+        form.append(columns)
+
+        # Variants and what to run, each a column of checks under its heading:
+        # a column reads as a list to pick from.
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        vbox.append(label("Variants", margin_bottom=2))
         self.all_variants = Gtk.CheckButton(label="All")
         self.all_variants.set_tooltip_text(
             "Run every variant that differs from the baseline in this build, one "
@@ -1145,10 +1140,12 @@ class Window(Gtk.ApplicationWindow):
         )
         vbox.append(self.variant_list)
         self.variant_checks = []
+        columns.append(vbox)
 
         # The same shape as the variants: Both sums up the two under it, and
         # a run needs at least one of them.
         modes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        modes.append(label("Run", margin_bottom=2))
         self.mode_full = Gtk.CheckButton(label="Both")
         self.mode_threads = Gtk.CheckButton(label="Multi-threaded")
         self.mode_percore = Gtk.CheckButton(label="Per-core")
@@ -1170,17 +1167,13 @@ class Window(Gtk.ApplicationWindow):
         mode_list.append(self.mode_percore)
         modes.append(mode_list)
         self.mode_group = CheckGroup(self.mode_full, self.update_command, keep_one=True)
+        columns.append(modes)
 
-        picks = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        picks.append(vbox)
-        run_lab = Gtk.Label(label="Run", xalign=0, valign=Gtk.Align.START,
-                            margin_start=32, margin_top=4)
-        run_lab.add_css_class("dim-label")
-        picks.append(run_lab)
-        picks.append(modes)
-        field("Variants", picks, top=True)
-
-        # Output directory.
+        # Where the result goes, and the hub it is uploaded to: the column that
+        # takes the rest of the width, its fields all as wide as it is.
+        where = Gtk.Grid(column_spacing=10, row_spacing=6, hexpand=True,
+                         valign=Gtk.Align.START)
+        columns.append(where)
         outrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.outdir = Gtk.Entry(hexpand=True)
         self.outdir.set_text(
@@ -1192,17 +1185,14 @@ class Window(Gtk.ApplicationWindow):
         choose = Gtk.Button(label="Choose…")
         choose.connect("clicked", self.on_pick_outdir)
         outrow.append(choose)
-        field("Save to", outrow)
+        where.attach(label("Save to"), 0, 0, 1, 1)
+        where.attach(outrow, 1, 0, 1, 1)
 
         # Submit to the hub. The fields appear only when there is an upload:
         # they are the tallest thing here and most runs do not want them.
         self.do_submit = Gtk.CheckButton(label="Upload the result to a hub")
         self.do_submit.connect("toggled", self.on_submit_toggled)
-        field("", self.do_submit)
-
-        self.submit_grid = Gtk.Grid(column_spacing=10, row_spacing=4, margin_start=16)
-        self.submit_grid.set_visible(False)
-        field("", self.submit_grid)
+        where.attach(self.do_submit, 0, 1, 2, 1)
 
         # The placeholder names the binary's own default; see reload_variants.
         self.hub = Gtk.Entry(hexpand=True)
@@ -1222,24 +1212,40 @@ class Window(Gtk.ApplicationWindow):
         notes_scroll = Gtk.ScrolledWindow(hexpand=True, min_content_height=44)
         notes_scroll.set_child(self.notes)
         notes_scroll.add_css_class("frame")
+        self.submit_rows = []
         for i, (text, widget) in enumerate(
             (("Hub URL", self.hub), ("Token", self.token),
-             ("Label", self.run_label), ("Notes", notes_scroll))
+             ("Label", self.run_label), ("Notes", notes_scroll)), start=2,
         ):
-            lab = Gtk.Label(label=text, xalign=0, valign=Gtk.Align.START)
-            lab.add_css_class("dim-label")
-            self.submit_grid.attach(lab, 0, i, 1, 1)
-            self.submit_grid.attach(widget, 1, i, 1, 1)
+            lab = label(text, valign=Gtk.Align.START if widget is notes_scroll
+                        else Gtk.Align.CENTER, margin_start=16)
+            where.attach(lab, 0, i, 1, 1)
+            where.attach(widget, 1, i, 1, 1)
+            self.submit_rows += [lab, widget]
+        for w in self.submit_rows:
+            w.set_visible(False)
         for w in (self.hub, self.run_label):
             w.connect("changed", lambda *_: self.update_command())
 
-        # Advanced.
-        exp = self.advanced = Gtk.Expander(label="Advanced")
-        adv = Gtk.Grid(column_spacing=10, row_spacing=4, margin_start=16, margin_top=4)
-        exp.set_child(adv)
+        # Advanced, under the columns, in a scroller of its own: when the
+        # window is short it is Advanced that gives way, not the options above.
+        exp = self.advanced = Gtk.Expander(label="Advanced", vexpand=True)
+        form.append(exp)
+        adv_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                        propagate_natural_height=True, vexpand=True)
+        adv_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                          margin_start=16, margin_top=6)
+        adv = Gtk.Grid(column_spacing=10, row_spacing=6)
+        adv_box.append(adv)
+        adv_scroll.set_child(adv_box)
+        exp.set_child(adv_scroll)
+        # The first label column is one width across the grid and the row
+        # under it, so the benchmark's path lines up with the fields above.
+        first_column = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)
 
-        self.threads = Gtk.Entry(placeholder_text="auto (online CPUs)", width_chars=16)
-        self.cpus = Gtk.Entry(placeholder_text="e.g. 0-3,6", width_chars=16)
+        # Short fields, as wide as what goes in them, three to a row.
+        self.threads = Gtk.Entry(placeholder_text="auto", width_chars=10, max_width_chars=10)
+        self.cpus = Gtk.Entry(placeholder_text="e.g. 0-3,6", width_chars=10, max_width_chars=10)
         self.seconds = Gtk.SpinButton.new_with_range(0.05, 60.0, 0.05)
         self.seconds.set_digits(2)
         self.seconds.set_value(0.5)
@@ -1250,40 +1256,48 @@ class Window(Gtk.ApplicationWindow):
         self.warmup.set_value(0.15)
         self.cooldown = Gtk.SpinButton.new_with_range(0, 600, 5)
         self.cooldown.set_value(0)
+        for spin in (self.seconds, self.reps, self.warmup, self.cooldown):
+            spin.set_width_chars(5)
 
-        fields = (
-            ("Threads", self.threads,
-             "How many threads to run at once. Blank: one per CPU."),
-            ("CPUs", self.cpus,
-             "Use only these CPUs: 0-3,6 means CPUs 0 to 3 and CPU 6."),
-            ("Seconds/phase", self.seconds,
-             "How long each measurement lasts. Longer is steadier, and slower."),
-            ("Repetitions", self.reps,
-             ("How often each measurement is taken. The best is kept: "
-              "interference only ever slows a run down.")),
-            ("Warm-up", self.warmup,
-             "Unmeasured time before each measurement, for the clock to ramp up."),
-            ("Cool-down", self.cooldown,
-             ("Seconds to rest before each multi-threaded run and each per-core "
-              "sweep after the first, so a laptop or small fanless machine that "
-              "slows down as it heats starts each one cool. 0: go straight on.\n"
-              "Only for a run with more than one of them: both kinds, or more "
-              "than one variant.")),
+        tips = {
+            "Threads": "How many threads to run at once. Blank: one per CPU.",
+            "CPUs": "Use only these CPUs: 0-3,6 means CPUs 0 to 3 and CPU 6.",
+            "Seconds/phase":
+                "How long each measurement lasts. Longer is steadier, and slower.",
+            "Repetitions": "How often each measurement is taken. The best is kept: "
+                           "interference only ever slows a run down.",
+            "Warm-up":
+                "Unmeasured time before each measurement, for the clock to ramp up.",
+            "Cool-down": "Seconds to rest before each multi-threaded run and each "
+                         "per-core sweep after the first, so a laptop or small "
+                         "fanless machine that slows down as it heats starts each "
+                         "one cool. 0: go straight on.\n"
+                         "Only for a run with more than one of them: both kinds, "
+                         "or more than one variant.",
+        }
+        layout = (
+            (("Threads", self.threads), ("Seconds/phase", self.seconds),
+             ("Warm-up", self.warmup)),
+            (("CPUs", self.cpus), ("Repetitions", self.reps),
+             ("Cool-down", self.cooldown)),
         )
-        for i, (text, widget, tip) in enumerate(fields):
-            widget.set_tooltip_text(tip)
-            widget.set_halign(Gtk.Align.START)
-            lab = Gtk.Label(label=text, xalign=0)
-            lab.add_css_class("dim-label")
-            adv.attach(lab, 0, i, 1, 1)
-            adv.attach(widget, 1, i, 1, 1)
-            signal = "changed" if isinstance(widget, Gtk.Entry) else "value-changed"
-            widget.connect(signal, lambda *_: self.update_command())
+        for r, row in enumerate(layout):
+            for c, (text, widget) in enumerate(row):
+                widget.set_tooltip_text(tips[text])
+                widget.set_halign(Gtk.Align.START)
+                lab = label(text, margin_start=24 if c else 0)
+                if c == 0:
+                    first_column.add_widget(lab)
+                adv.attach(lab, 2 * c, r, 1, 1)
+                adv.attach(widget, 2 * c + 1, r, 1, 1)
+                signal = "changed" if isinstance(widget, Gtk.Entry) else "value-changed"
+                widget.connect(signal, lambda *_: self.update_command())
 
         # The benchmark itself, last: the window finds it, and picks the
         # fastest build of it this processor runs, so there is seldom a reason
-        # to look.
-        binrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, hexpand=True)
+        # to look. A row of its own, so its width does not spread the short
+        # fields above across the window.
+        binrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self.binary = Gtk.Entry(hexpand=True, placeholder_text="path to cpcpub")
         self.binary.set_text(best_build(find_binary()))
         self.binary.connect(
@@ -1292,16 +1306,15 @@ class Window(Gtk.ApplicationWindow):
                         self.update_binary_tip()),
         )
         self.update_binary_tip()
+        bin_label = label("Benchmark")
+        first_column.add_widget(bin_label)
+        binrow.append(bin_label)
         binrow.append(self.binary)
         pick = Gtk.Button(label="Browse…")
         pick.connect("clicked", self.on_pick_binary)
         binrow.append(pick)
-        lab = Gtk.Label(label="Benchmark", xalign=0)
-        lab.add_css_class("dim-label")
-        adv.attach(lab, 0, len(fields), 1, 1)
-        adv.attach(binrow, 1, len(fields), 1, 1)
-        field("", exp)
-        return grid
+        adv_box.append(binrow)
+        return form
 
     def build_output(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -1484,21 +1497,25 @@ class Window(Gtk.ApplicationWindow):
     def fit_form(self):
         """Give the form the height it now wants, up to most of the window.
 
-        Opening the hub fields or Advanced roughly doubles it, and a fixed
-        split would leave half the form behind a scrollbar for no reason.
+        Opening the hub fields or Advanced makes it much taller, and a fixed
+        split would leave Advanced behind a scrollbar for no reason.
         """
-        natural = self.form_box.measure(Gtk.Orientation.VERTICAL, -1)[1]
+        width = self.paned.get_width() or -1
+        least, natural = self.form_box.measure(Gtk.Orientation.VERTICAL, width)[:2]
         height = self.paned.get_height()
-        cap = int(height * 0.62) if height > 0 else 380
+        cap = int(height * 0.68) if height > 0 else 420
         if height > 0:
             # Never into the room the output needs to show all of itself.
             below = self.paned.get_end_child().measure(
                 Gtk.Orientation.VERTICAL, self.paned.get_width())[0]
             cap = min(cap, height - below - 1)  # and the handle's pixel
-        self.paned.set_position(max(min(natural, cap), 0))
+        # Never below what shows every option but Advanced: that is what
+        # scrolls when there is less room.
+        self.paned.set_position(max(min(natural, cap), least))
 
     def on_submit_toggled(self, *_):
-        self.submit_grid.set_visible(self.do_submit.get_active())
+        for w in self.submit_rows:
+            w.set_visible(self.do_submit.get_active())
         self.fit_form()
         self.run_btn.set_label("Run and upload" if self.do_submit.get_active() else "Run")
         self.update_command()
