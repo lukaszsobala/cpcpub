@@ -35,7 +35,7 @@ The release's `cpcpub-android-arm64` rides in the APK as
   checks the APK's copy against the release before it finishes.
 - **Why no Gradle:** the Android Gradle plugin strips every native library by
   default, which would change the digest. `build.sh` uses the SDK's own
-  tools instead (aapt2, javac, d8, zipalign, apksigner). The app is four Java
+  tools instead (aapt2, javac, d8, zipalign, apksigner). The app is five Java
   files with no libraries, so those tools are all it needs.
 
 ## Uploading
@@ -55,16 +55,28 @@ makes the same request `submit_document()` in
 After an upload, "See how it compares" opens the run's page on the hub. The
 hub's reply goes to the log, which opens by itself only when an upload fails,
 and is kept beside the result in the app's private storage (`files/uploads/`,
-which no other app can read). Its delete token is what **Withdraw from the
-hub** sends, then or later from Past results, to take the upload off the hub;
+which no other app can read). Its delete token is what **Withdraw**
+sends, then or later from Past results, to take the upload off the hub;
 for an "all four" run it withdraws all four. The default hub is whichever one the release baked
 into the binary: `build.sh` reads it out of the binary's help text.
 
 ## Measuring on a phone
 
-Keep the app on screen while it runs, which it helps with by keeping the
-screen on. If the app leaves the screen, Android moves it to the slower cores
-and may pause it. The log says so if that happened during a run.
+Keep the app on screen while it runs. The app keeps the screen on by itself
+during a run (`FLAG_KEEP_SCREEN_ON`, no permission needed).
+
+Leaving the app used to stop a run. Once another app is opened, Android caches
+cpcpub and freezes it, and the benchmark freezes with it, because it shares
+the app's cgroup. So a run now holds a foreground service (`RunService`, of
+the special-use type) and a partial wake lock, which keep the app out of the
+cache and the CPU awake with the screen off. Android asks once, before the
+first run, whether the app may post notifications. The answer only decides
+whether the service's "Measuring" notification shows; the run goes ahead
+either way.
+
+The benchmark process stays in the `top-app` cpuset it started in, but other
+apps then compete for the cores, so the warning under the result still says
+when the app left the screen.
 
 Before a run, the app says so if the result is likely to come out low, and
 leaves the choice to run anyway:
@@ -72,7 +84,7 @@ leaves the choice to run anyway:
 - battery saver is on (`PowerManager.isPowerSaveMode()`);
 - Android already reports the phone as throttling (its thermal status is
   light or worse);
-- the battery is at 38 °C or more;
+- the battery is at 45 °C or more;
 - the last run ended less than three minutes ago.
 
 During the run it follows Android's thermal status. Afterwards the log gives
@@ -117,7 +129,12 @@ keystore in the environment the APK is signed with a throwaway key; see
     status set from `adb` (`cmd power set-mode`, `cmd thermalservice
     override-status`);
   - Past results, and withdrawing a one-variant and an "all four" upload;
-  - the label taken from the phone's name.
+  - the label taken from the phone's name;
+  - leaving mid-run for two other apps:
+    - without the service, the app and the benchmark ended up in
+      `do_freezer_trap`;
+    - with it, the app stayed at the foreground-service state and the run
+      finished on time.
 - **The real binary has not run on the emulator.** Its translation from Arm
   to x86 cannot run a static Arm binary, not even `--version`.
 - **Termux's arm64 image ran the real binary natively** (the `linux-test`

@@ -6,7 +6,7 @@
 # -> OUT_DIR/cpcpub-VERSION-android-arm64.apk. Needs $ANDROID_HOME with
 # platforms/android-35 and a build-tools, a JDK (javac, keytool) and python3.
 #
-# The SDK's own tools and no Gradle: the app is four Java files and no
+# The SDK's own tools and no Gradle: the app is five Java files and no
 # libraries, and the steps below are the whole of what Gradle would do for it
 # -- except strip the binary, which the Android Gradle plugin does to every
 # native library by default and which would make every result the app

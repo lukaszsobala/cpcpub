@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.net.Uri;
@@ -68,6 +69,7 @@ public final class MainActivity extends Activity {
     private static final int PHASES_PER_PASS = 15;
     private static final double SETUP_SECONDS_PER_PASS = 0.1;
     private static final int SAVE_REQUEST = 1;
+    private static final int NOTIFY_REQUEST = 2;
     // The cool-down choices, in seconds, and the one a new install starts on:
     // a phone heats in the half minute of the multi-threaded run, and starts
     // the per-core sweep throttled unless it is let cool first.
@@ -77,7 +79,7 @@ public final class MainActivity extends Activity {
     // When to say before a run that the phone is likely still warm: a battery
     // this hot, or a run that ended this recently. A phone idles in the low
     // thirties and comes out of a run near forty.
-    private static final float WARM_BATTERY_C = 38f;
+    private static final float WARM_BATTERY_C = 45f;
     private static final long RECENT_RUN_MS = 3 * 60 * 1000;
     // PowerManager's thermal statuses, by their number, in words.
     private static final String[] THERMAL = {
@@ -172,13 +174,12 @@ public final class MainActivity extends Activity {
         // needs at least one of them.
         int mode = prefs.getInt("mode", 0);
         both = check(page, "Both", 0);
-        multi = check(page, "Multi-threaded: every thread at once", dp(28));
-        perCore = check(page, "Per-core: each core on its own, one after another", dp(28));
+        multi = check(page, "Multi-threaded: all threads at once", dp(28));
+        perCore = check(page, "Per-core: each core on its own", dp(28));
         multi.setChecked(mode != 2);
         perCore.setChecked(mode != 1);
         both.setChecked(mode == 0);
-        page.addView(note("Both is the one to upload: neither half means much "
-            + "without the other."));
+        page.addView(note("Uploading both is most useful for comparisons."));
 
         page.addView(heading("Variants"));
         // Two choices, not the desktop's three: which variants differ is fixed by
@@ -189,10 +190,8 @@ public final class MainActivity extends Activity {
         variants = radios(page, new String[] {
             "Baseline only (scalar-nofma)", "All four, and compare them"},
             prefs.getInt("variants", 0));
-        page.addView(note("The benchmark carries four compilations of its kernels: "
-            + "auto-vectorisation off and on, crossed with fused multiply-add off and "
-            + "on. The baseline is the one results compare across processors; the "
-            + "other three show how much this processor gains from each."));
+        page.addView(note("Compare baseline across architectures, "
+            + "others only within the same architecture."));
 
         cooldownHeading = heading("Cool-down");
         page.addView(cooldownHeading);
@@ -208,8 +207,8 @@ public final class MainActivity extends Activity {
         uploadFields = column();
         hub = field(uploadFields, "Hub URL", getString(R.string.hub_url),
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI, "hub");
-        token = field(uploadFields, "Token (from the hub's Account tab; empty uploads "
-            + "anonymously)", "", InputType.TYPE_CLASS_TEXT
+        token = field(uploadFields, "Token (optional, from the hub's Account tab)", "",
+            InputType.TYPE_CLASS_TEXT
             | InputType.TYPE_TEXT_VARIATION_PASSWORD, "token");
         label = field(uploadFields, "Label", "short name for this phone",
             InputType.TYPE_CLASS_TEXT, "label");
@@ -224,15 +223,18 @@ public final class MainActivity extends Activity {
             runButton.setText(on ? "Run and upload" : "Run");
         });
 
+        // A disclosure rather than an action, so it stays flat, with the arrow
+        // saying which way it is.
         Button advanced = new Button(this, null, android.R.attr.borderlessButtonStyle);
-        advanced.setText("Advanced");
+        advanced.setText("Advanced ▸");
+        advanced.setAllCaps(false);
         advanced.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         page.addView(advanced);
         advancedFields = column();
         advancedFields.setVisibility(View.GONE);
         threads = field(advancedFields, "Threads (blank: one per CPU)", "auto",
             InputType.TYPE_CLASS_NUMBER, null);
-        cpus = field(advancedFields, "CPUs (0-3,6 means CPUs 0 to 3 and CPU 6)", "all",
+        cpus = field(advancedFields, "CPUs (e.g. 0-3,6)", "all",
             InputType.TYPE_CLASS_TEXT, null);
         seconds = field(advancedFields, "Seconds per measurement", "",
             InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL, null);
@@ -244,23 +246,19 @@ public final class MainActivity extends Activity {
             InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL, null);
         warmup.setText("0.15");
         page.addView(advancedFields);
-        advanced.setOnClickListener(v -> advancedFields.setVisibility(
-            advancedFields.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+        advanced.setOnClickListener(v -> {
+            boolean open = advancedFields.getVisibility() != View.VISIBLE;
+            advancedFields.setVisibility(open ? View.VISIBLE : View.GONE);
+            advanced.setText(open ? "Advanced ▾" : "Advanced ▸");
+        });
 
         LinearLayout buttons = new LinearLayout(this);
-        runButton = new Button(this);
-        runButton.setText("Run");
+        runButton = button(buttons, "Run");
         runButton.setOnClickListener(v -> run());
-        stopButton = new Button(this);
-        stopButton.setText("Stop");
+        stopButton = button(buttons, "Stop");
         stopButton.setVisibility(View.GONE);
         stopButton.setOnClickListener(v -> stop());
-        Button pastButton = new Button(this, null, android.R.attr.borderlessButtonStyle);
-        pastButton.setText("Past results");
-        pastButton.setOnClickListener(v -> showPast());
-        buttons.addView(runButton);
-        buttons.addView(stopButton);
-        buttons.addView(pastButton);
+        button(buttons, "Past results").setOnClickListener(v -> showPast());
         page.addView(buttons, spaced());
 
         estimate = text(14, false);
@@ -274,8 +272,8 @@ public final class MainActivity extends Activity {
         progress.setVisibility(View.GONE);
         page.addView(progress);
         status = text(14, false);
-        status.setText("Keep the screen on this app while it measures: Android moves an "
-            + "app in the background to fewer, slower cores.");
+        status.setText("Stay in the app while it measures. "
+            + "In the background it may get slower cores.");
         page.addView(status);
         // What may have held this run's numbers down, in words.
         warning = text(14, false);
@@ -283,36 +281,24 @@ public final class MainActivity extends Activity {
         warning.setVisibility(View.GONE);
         page.addView(warning);
         // After an upload: the run's page on the hub, where it is compared.
-        compareButton = new Button(this, null, android.R.attr.borderlessButtonStyle);
-        compareButton.setText("See how it compares");
-        compareButton.setAllCaps(false);
-        compareButton.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        LinearLayout hubButtons = new LinearLayout(this);
+        compareButton = button(hubButtons, "See how it compares");
         compareButton.setVisibility(View.GONE);
-        page.addView(compareButton);
-        withdrawButton = new Button(this, null, android.R.attr.borderlessButtonStyle);
-        withdrawButton.setText("Withdraw from the hub");
-        withdrawButton.setAllCaps(false);
-        withdrawButton.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        withdrawButton = button(hubButtons, "Withdraw");
         withdrawButton.setVisibility(View.GONE);
-        page.addView(withdrawButton);
+        page.addView(hubButtons);
 
         results = column();
         page.addView(results, spaced());
 
         LinearLayout actions = new LinearLayout(this);
-        logButton = new Button(this, null, android.R.attr.borderlessButtonStyle);
-        logButton.setText("Log");
+        logButton = button(actions, "Log");
         logButton.setOnClickListener(v -> log.setVisibility(
             log.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
-        saveButton = new Button(this, null, android.R.attr.borderlessButtonStyle);
-        saveButton.setText("Save JSON");
+        saveButton = button(actions, "Save JSON");
         saveButton.setOnClickListener(v -> saveAs());
-        shareButton = new Button(this, null, android.R.attr.borderlessButtonStyle);
-        shareButton.setText("Share");
+        shareButton = button(actions, "Share");
         shareButton.setOnClickListener(v -> share());
-        actions.addView(logButton);
-        actions.addView(saveButton);
-        actions.addView(shareButton);
         saveButton.setEnabled(false);
         shareButton.setEnabled(false);
         page.addView(actions);
@@ -345,8 +331,7 @@ public final class MainActivity extends Activity {
         super.onPause();
         if (proc != null && !leftDuringRun) {
             leftDuringRun = true;
-            appendLog("\nthe app left the screen during the run: Android may have moved "
-                + "it to fewer, slower cores, or paused it, so these numbers may be low\n");
+            appendLog("\nthe app left the screen during the run; the numbers may be low\n");
         }
     }
 
@@ -354,6 +339,15 @@ public final class MainActivity extends Activity {
     protected void onDestroy() {
         super.onDestroy();
         if (proc != null) proc.destroyForcibly();
+        stopService(new Intent(this, RunService.class));
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int request, String[] permissions, int[] granted) {
+        super.onRequestPermissionsResult(request, permissions, granted);
+        // Granted or not, the run goes ahead: the permission only shows the
+        // notification while it measures.
+        if (request == NOTIFY_REQUEST) checkThenStart();
     }
 
     // -- the command line ------------------------------------------------
@@ -484,12 +478,8 @@ public final class MainActivity extends Activity {
             cooldown.getChildAt(i).setEnabled(applies);
         }
         cooldownNote.setText(applies
-            ? "Phones slow down as they heat. A rest before the per-core sweep, and "
-              + "before each variant, lets the phone start each one about as cool as "
-              + "the first, so no part of the result is measured throttled by the "
-              + "part before it."
-            : "Only between runs: tick Both, or all four variants, for there to be "
-              + "something to rest between.");
+            ? "A rest between runs, so each starts on a cool phone."
+            : "Needs Both or all four variants.");
         List<String> argv = argv();
         command.setText("cpcpub " + TextUtils.join(" ", argv.subList(1, argv.size())));
         double s = estimateSeconds();
@@ -516,6 +506,22 @@ public final class MainActivity extends Activity {
             .putString("notes", notes.getText().toString())
             .apply();
 
+        // The notification that says a run is going, for when the app is
+        // left: asked for once, before the first run, rather than mid-run,
+        // where the dialog would count as leaving the screen.
+        if (Build.VERSION.SDK_INT >= 33 && !prefs.getBoolean("askedNotify", false)
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+            prefs.edit().putBoolean("askedNotify", true).apply();
+            requestPermissions(new String[] {android.Manifest.permission.POST_NOTIFICATIONS},
+                NOTIFY_REQUEST);
+            return;
+        }
+        checkThenStart();
+    }
+
+    private void checkThenStart() {
+        if (proc != null || uploading) return;
         // Whatever would hold the numbers down, said before the run rather
         // than found out after it; the run is still the user's to start.
         List<String> why = beforeRun();
@@ -524,9 +530,8 @@ public final class MainActivity extends Activity {
             return;
         }
         new AlertDialog.Builder(this)
-            .setTitle("The result may come out low")
-            .setMessage(TextUtils.join("\n\n", why) + "\n\nA phone that is warm or held "
-                + "back scores lower than it would cool and at full speed.")
+            .setTitle("Results may be low")
+            .setMessage(TextUtils.join("\n", why))
             .setPositiveButton("Run anyway", (d, w) -> start())
             .setNegativeButton("Not now", null)
             .show();
@@ -536,24 +541,19 @@ public final class MainActivity extends Activity {
     private List<String> beforeRun() {
         List<String> why = new ArrayList<>();
         if (power.isPowerSaveMode()) {
-            why.add("Battery saver is on. It holds the fast cores back; turn it off "
-                + "for the run.");
+            why.add("Battery saver is on.");
         }
         int thermal = power.getCurrentThermalStatus();
         if (thermal >= PowerManager.THERMAL_STATUS_LIGHT) {
-            why.add("Android says the phone is " + thermalName(thermal) + " already, to "
-                + "cool down. Let it rest first.");
+            why.add("The phone is " + thermalName(thermal) + ".");
         }
         float battery = batteryTemp();
         if (battery >= WARM_BATTERY_C) {
-            why.add(String.format(Locale.getDefault(), "The battery is at %.0f °C, so "
-                + "the phone is warm. Let it cool, and off the charger if it is on one.",
-                battery));
+            why.add(String.format(Locale.getDefault(), "The battery is at %.0f °C.", battery));
         }
         long since = System.currentTimeMillis() - prefs.getLong("lastRunEnd", 0);
         if (since >= 0 && since < RECENT_RUN_MS) {
-            why.add("The last run ended " + since / 1000 + " s ago. Give the phone a few "
-                + "minutes to cool.");
+            why.add("The last run ended " + since / 1000 + " s ago.");
         }
         return why;
     }
@@ -594,6 +594,13 @@ public final class MainActivity extends Activity {
         stopButton.setVisibility(View.VISIBLE);
         progress.setVisibility(View.VISIBLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        try {
+            startForegroundService(new Intent(this, RunService.class));
+        } catch (RuntimeException e) {
+            // Refused (a phone that limits it, say): the run goes on without it,
+            // and leaving the app is then flagged as it always was.
+            appendLog("could not keep the run going in the background: " + e.getMessage() + "\n");
+        }
         main.post(tick);
 
         Process p = proc;
@@ -672,6 +679,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(tick);
         afterRun();
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        stopService(new Intent(this, RunService.class));
         progress.setVisibility(View.GONE);
         stopButton.setVisibility(View.GONE);
         runButton.setEnabled(true);
@@ -684,19 +692,18 @@ public final class MainActivity extends Activity {
                 return;
             }
             status.setText(exit == 0 ? "Finished, but produced no result."
-                : "The benchmark stopped with an error after " + elapsed
-                    + " s -- the log says why.");
+                : "Failed after " + elapsed + " s; see the log.");
             log.setVisibility(View.VISIBLE);
             return;
         }
         lastRaw = raw;
         lastName = "cpcpub-" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT)
             .format(new Date()) + ".json";
-        String saved = keep(raw);
+        keep(raw);
         showResults(docs, 0);
         saveButton.setEnabled(true);
         shareButton.setEnabled(true);
-        status.setText("Done in " + elapsed + " s" + (saved != null ? "; kept as " + saved : ""));
+        status.setText("Done in " + elapsed + " s.");
         if (exit != 0) log.setVisibility(View.VISIBLE);
         // The score is below the form; bring it up rather than leave it to be
         // scrolled to.
@@ -737,20 +744,13 @@ public final class MainActivity extends Activity {
             batteryAtStart, end, thermalName(worstThermal)));
 
         List<String> why = new ArrayList<>();
-        if (leftDuringRun) {
-            why.add("The app left the screen during the run. Android may have moved it to "
-                + "slower cores or paused it.");
-        }
+        if (leftDuringRun) why.add("the app left the screen");
         if (worstThermal >= PowerManager.THERMAL_STATUS_LIGHT) {
-            why.add("Android said the phone was " + thermalName(worstThermal) + " during "
-                + "the run, to cool down. A longer cool-down, a cooler room, or taking the "
-                + "case off helps.");
+            why.add("the phone was " + thermalName(worstThermal));
         }
-        if (saverDuringRun) {
-            why.add("Battery saver was on, which holds the fast cores back.");
-        }
+        if (saverDuringRun) why.add("battery saver was on");
         if (why.isEmpty()) return;
-        warning.setText("These numbers are likely low. " + TextUtils.join(" ", why));
+        warning.setText("Likely low: " + TextUtils.join(", ", why) + ".");
         warning.setVisibility(View.VISIBLE);
     }
 
@@ -782,18 +782,17 @@ public final class MainActivity extends Activity {
     }
 
     /** Every result is kept in the app's own folder, as the desktop saves to a folder. */
-    private String keep(String raw) {
+    private void keep(String raw) {
         File dir = getExternalFilesDir("results");
-        if (dir == null) return null;
+        if (dir == null) return;
         File f = new File(dir, lastName);
         try (OutputStream out = new FileOutputStream(f)) {
             out.write(raw.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             appendLog("\ncould not write " + f + ": " + e.getMessage() + "\n");
-            return null;
+            return;
         }
         appendLog("\nsaved: " + f + "\n");
-        return "Android/data/" + getPackageName() + "/files/results/" + lastName;
     }
 
     // -- uploading -------------------------------------------------------
@@ -854,10 +853,9 @@ public final class MainActivity extends Activity {
                 uploading = false;
                 runButton.setEnabled(true);
                 if (n == docs.size()) {
-                    status.setText("Uploaded. It can be withdrawn later from Past results.");
+                    status.setText("Uploaded.");
                 } else {
-                    status.setText("The upload failed -- the log says why. The result "
-                        + "is kept on the phone.");
+                    status.setText("Upload failed; see the log.");
                     log.setVisibility(View.VISIBLE);
                 }
                 if (first != null) {
@@ -941,8 +939,8 @@ public final class MainActivity extends Activity {
         int n = standing;
         withdrawButton.setOnClickListener(v -> new AlertDialog.Builder(this)
             .setTitle("Withdraw from the hub?")
-            .setMessage((n > 1 ? "All " + n + " uploads of this result come" : "The upload "
-                + "comes") + " off the hub for good. The result stays on the phone.")
+            .setMessage((n > 1 ? "All " + n + " uploads come off the hub. " : "")
+                + "The result stays on the phone.")
             .setPositiveButton("Withdraw", (d, w) -> withdraw(name))
             .setNegativeButton(android.R.string.cancel, null)
             .show());
@@ -976,10 +974,10 @@ public final class MainActivity extends Activity {
             main.post(() -> {
                 withdrawButton.setEnabled(true);
                 if (f == 0) {
-                    status.setText("Withdrawn from the hub. The result stays on the phone.");
+                    status.setText("Withdrawn.");
                     compareButton.setVisibility(View.GONE);
                 } else {
-                    status.setText("Could not withdraw it -- the log says why.");
+                    status.setText("Withdraw failed; see the log.");
                     log.setVisibility(View.VISIBLE);
                 }
                 if (name.equals(lastName)) showWithdraw(name);
@@ -994,7 +992,7 @@ public final class MainActivity extends Activity {
         File dir = getExternalFilesDir("results");
         File[] files = dir == null ? null : dir.listFiles((d, n) -> n.endsWith(".json"));
         if (files == null || files.length == 0) {
-            explain("Past results", "No results yet: every run is kept here once it is done.");
+            explain("Past results", "No results yet.");
             return;
         }
         // The names carry the time they were made, so their order is the clock's.
@@ -1086,9 +1084,8 @@ public final class MainActivity extends Activity {
             compareButton.setVisibility(View.VISIBLE);
         }
         showWithdraw(lastName);
-        status.setText("The result from " + when(lastName) + (kept.length() == 0
-            ? ", not uploaded." : first != null && first.optBoolean("withdrawn")
-            ? ", withdrawn from the hub." : ", on the hub."));
+        status.setText(when(lastName) + (kept.length() == 0 ? ""
+            : first != null && first.optBoolean("withdrawn") ? " · withdrawn" : " · uploaded"));
         scroll.post(() -> scroll.smoothScrollTo(0, Math.max(0, status.getTop() - dp(8))));
     }
 
@@ -1170,8 +1167,8 @@ public final class MainActivity extends Activity {
         HorizontalScrollView wide = new HorizontalScrollView(this);
         wide.addView(table);
         results.addView(wide);
-        results.addView(note("Tap a heading for what it measures. The score and the "
-            + "columns in bold are what it is a geometric mean of."));
+        results.addView(note("Tap a heading for details. Score is the geometric mean "
+            + "of the bold columns."));
     }
 
     private void explain(String title, String text) {
@@ -1283,6 +1280,18 @@ public final class MainActivity extends Activity {
             return;
         }
         setModes(multi.isChecked(), perCore.isChecked());
+    }
+
+    /** A button that looks like one, in a row of them. */
+    private Button button(LinearLayout row, String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.setMarginEnd(dp(8));
+        row.addView(b, lp);
+        return b;
     }
 
     private CheckBox check(LinearLayout parent, String label, int indent) {
