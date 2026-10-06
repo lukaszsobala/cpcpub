@@ -1369,6 +1369,11 @@ class Window(Gtk.ApplicationWindow):
         # What the benchmark warned about during the run, one click away: the
         # log that holds it stays hidden after a run that went well.
         self.warn_btn = Gtk.Button(valign=Gtk.Align.CENTER)
+        warn_box = Gtk.Box(spacing=6)
+        warn_box.append(Gtk.Image(icon_name="dialog-warning-symbolic"))
+        self.warn_label = Gtk.Label()
+        warn_box.append(self.warn_label)
+        self.warn_btn.set_child(warn_box)
         self.warn_btn.set_visible(False)
         self.warn_btn.connect("clicked", self.on_show_warnings)
         status.insert_child_after(self.warn_btn, self.status)
@@ -1965,7 +1970,7 @@ class Window(Gtk.ApplicationWindow):
         self.show_hub_state()
         if self.warnings:
             n = len(self.warnings)
-            self.warn_btn.set_label(f"{n} warning{'s' if n > 1 else ''}")
+            self.warn_label.set_text(f"{n} warning{'s' if n > 1 else ''}")
             self.warn_btn.set_tooltip_text("What the benchmark warned about during the run.")
             self.warn_btn.set_visible(True)
         # The table stays in view when the run went well; the log comes up
