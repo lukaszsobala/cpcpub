@@ -17,10 +17,14 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 
 import gi
@@ -57,6 +61,11 @@ SETTINGS = os.path.join(GLib.get_user_config_dir(), "cpcpub", "gui.json")
 # the window's text fields, each with the variable that wins over it. Those
 # win for one session and are not written back in what was kept.
 KEPT_TEXT = (("hub", "CPCPUB_HUB"), ("token", "CPCPUB_TOKEN"), ("run_label", None))
+
+# The hub's reply to each upload, kept per result under the result's file name:
+# the delete token in it is shown once by the hub and is the only way to
+# withdraw an anonymous upload, so it is kept where only its owner can read it.
+RECEIPTS = os.path.join(GLib.get_user_config_dir(), "cpcpub", "uploads")
 
 
 def cpuinfo(key):
@@ -354,16 +363,135 @@ def save_settings(settings):
     reason it could not be written, or "" when it was."""
     if SMOKE:
         return ""
-    tmp = SETTINGS + ".tmp"
+    problem = write_private(SETTINGS, settings)
+    return f"could not keep the upload settings: {problem}" if problem else ""
+
+
+def write_private(path, data):
+    """Write `data` as JSON readable by its owner only, whole or not at all.
+    The reason it could not be written, or "" when it was."""
+    tmp = path + ".tmp"
     try:
-        os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(settings, fh, indent=2)
-        os.replace(tmp, SETTINGS)
+            json.dump(data, fh, indent=2)
+        os.replace(tmp, path)
     except OSError as exc:
-        return f"could not keep the upload settings in {SETTINGS}: {exc.strerror or exc}"
+        return f"could not write {path}: {exc.strerror or exc}"
     return ""
+
+
+def read_receipt(name):
+    """What the hub said to each upload of the result called `name`."""
+    try:
+        with open(os.path.join(RECEIPTS, os.path.basename(name)), encoding="utf-8") as fh:
+            kept = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    return [r for r in kept if isinstance(r, dict)] if isinstance(kept, list) else []
+
+
+def withdraw_upload(hub, run_id, token):
+    """Take one upload off its hub with its delete token: (done, what happened)."""
+    url = f"{hub.rstrip('/')}/api/runs/{urllib.parse.quote(str(run_id))}"
+    req = urllib.request.Request(url, method="DELETE", headers={"X-Delete-Token": token})
+    try:
+        with urllib.request.urlopen(req, timeout=30):
+            return True, f"withdrawn: run {run_id} from {hub}"
+    except urllib.error.HTTPError as exc:
+        said = exc.read().decode("utf-8", "replace").strip()[:300]
+        return False, f"could not withdraw run {run_id} from {hub}: HTTP {exc.code} {said}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"could not withdraw run {run_id} from {hub}: {getattr(exc, 'reason', exc)}"
+
+
+def crash_of(status):
+    """What killed the benchmark, as (words, whether it was an illegal
+    instruction), or None for an exit of its own. POSIX reports a signal as a
+    negative status; Windows reports an exception code as the exit code."""
+    if os.name == "nt":
+        code = status & 0xFFFFFFFF
+        known = {0xC000001D: "illegal instruction", 0xC0000005: "access violation",
+                 0xC00000FD: "stack overflow"}
+        return (known[code], code == 0xC000001D) if code in known else None
+    if status >= 0:
+        return None
+    try:
+        sig = signal.Signals(-status)
+    except ValueError:
+        return f"signal {-status}", False
+    what = signal.strsignal(sig)
+    return f"{sig.name}{', ' + what.lower() if what else ''}", sig == signal.SIGILL
+
+
+# Kinds of core: a per-core sweep of a phone or a hybrid PC is two or three
+# kinds of core over and over, and the table shows one averaged row per kind,
+# unfolding to the cores. Grouped as the results hub groups them (core_types()
+# in web/server.py): sorted by score, a step of more than KIND_GAP starts a new
+# kind; an Arm CPU line naming several designs names the kinds, and otherwise
+# they are large, medium and small.
+KIND_GAP = 1.15
+
+
+def core_kinds(records, cpu_models):
+    """[(name, records)] for a sweep's records, fastest kind first. Records
+    with no score are left out."""
+    cores = sorted((r for r in records if r.get("score")), key=lambda r: -r["score"])
+    groups = []
+    for r in cores:
+        if groups and groups[-1][-1]["score"] / r["score"] <= KIND_GAP:
+            groups[-1].append(r)
+        else:
+            groups.append([r])
+    line = re.sub(r"\s*\([^()]*\)$", "", cpu_models or "")
+    names = [n.strip() for n in line.split(" + ") if n.strip()]
+    names = names if len(names) > 1 else []
+    # Fewer designs named than steps found: one design at two clocks, as a
+    # phone's prime core is. Join the closest pair until the counts agree.
+    while names and len(groups) > len(names):
+        i = min(range(len(groups) - 1),
+                key=lambda k: groups[k][-1]["score"] / groups[k + 1][0]["score"])
+        groups[i:i + 2] = [groups[i] + groups[i + 1]]
+    if len(groups) == 1:
+        labels = ["all"]
+    elif names and len(names) == len(groups):
+        # The line lists designs in the order of their first CPU.
+        first = [min(r.get("cpu") or 0 for r in g) for g in groups]
+        labels = [""] * len(groups)
+        for name, k in zip(names, sorted(range(len(groups)), key=first.__getitem__)):
+            labels[k] = name
+    elif len(groups) == 2:
+        labels = ["large", "small"]
+    else:
+        labels = (["large"] + [f"medium {i}" if len(groups) > 3 else "medium"
+                               for i in range(1, len(groups) - 1)] + ["small"])
+    return list(zip(labels, groups))
+
+
+def cpu_list(cpus):
+    """[4, 5, 6, 7, 9] -> "4-7, 9", as the kernel writes a CPU list."""
+    out, cpus = [], sorted(cpus)
+    i = 0
+    while i < len(cpus):
+        j = i
+        while j + 1 < len(cpus) and cpus[j + 1] == cpus[j] + 1:
+            j += 1
+        out.append(f"{cpus[i]}-{cpus[j]}" if j > i else str(cpus[i]))
+        i = j + 1
+    return ", ".join(out)
+
+
+def mean_record(records):
+    """One record holding the mean of every column over `records`."""
+    out = {}
+    for key, _, _ in COLUMNS:
+        vals = [r[key] for r in records if isinstance(r.get(key), (int, float))]
+        out[key] = sum(vals) / len(vals) if vals else None
+    srcs = {r.get("mhz_src") for r in records}
+    out["mhz_src"] = srcs.pop() if len(srcs) == 1 else None
+    out["cpu"] = min((r.get("cpu") or 0) for r in records)
+    return out
 
 
 def quote_command(argv):
@@ -575,12 +703,46 @@ def cell_tip(key):
 
 
 class Scope(GObject.Object):
-    """One row of a results table: a measured scope and its record."""
+    """One row of a results table: a measured scope and its record. A kind of
+    core is a row too, holding the mean of its cores, which are its children."""
 
-    def __init__(self, name, rec):
+    def __init__(self, name, rec, tip=None, children=None):
         super().__init__()
         self.name = name
         self.rec = rec
+        self.tip = tip or explain_scope(name)
+        self.children = children or []
+
+
+def table_rows(doc):
+    """A document's rows for the table: the total, then each kind of core as
+    one averaged row over its cores; a kind of one is just that core."""
+    scopes = scopes_of(doc)
+    sweep = [rec for name, rec in scopes if name.startswith("cpu")]
+    if len(sweep) < 2:
+        return [Scope(name, rec) for name, rec in scopes]
+    rows = [Scope(name, rec) for name, rec in scopes if not name.startswith("cpu")]
+    kinds = core_kinds(sweep, doc.get("system", {}).get("cpu_models"))
+    kinded = set()
+    for label, recs in kinds:
+        kinded.update(id(r) for r in recs)
+        cores = []
+        for r in sorted(recs, key=lambda r: r.get("cpu") or 0):
+            name = f"cpu{r.get('cpu')}"
+            tip = explain_scope(name)
+            if label != "all":
+                tip += f" One of the {label} cores."
+            cores.append(Scope(name, r, tip=tip))
+        if len(recs) == 1:
+            rows += cores
+            continue
+        where = cpu_list(r.get("cpu") or 0 for r in recs)
+        name = f"all {len(recs)} cores" if label == "all" else f"{label} ×{len(recs)}"
+        rows.append(Scope(name, mean_record(recs), children=cores,
+                          tip=f"The mean of {len(recs)} cores of one kind: CPUs {where}. "
+                              f"Expand the row for each."))
+    rows += [Scope(f"cpu{r.get('cpu')}", r) for r in sweep if id(r) not in kinded]
+    return rows
 
 
 class ResultsView(Gtk.Box):
@@ -680,19 +842,32 @@ class ResultsView(Gtk.Box):
 
         scroll = Gtk.ScrolledWindow(vexpand=True)
         scroll.set_margin_top(6)
-        scroll.set_child(self.table(scopes))
+        scroll.set_child(self.table(table_rows(doc)))
         scroll.add_css_class("frame")
         box.append(scroll)
         return box
 
-    def table(self, scopes):
+    def table(self, rows):
         store = Gio.ListStore(item_type=Scope)
-        for name, rec in scopes:
-            store.append(Scope(name, rec))
+        for row in rows:
+            store.append(row)
+
+        def children(scope):
+            if not scope.children:
+                return None
+            kids = Gio.ListStore(item_type=Scope)
+            for kid in scope.children:
+                kids.append(kid)
+            return kids
+
+        # A tree, folded: a kind of core unfolds to its cores.
+        tree = Gtk.TreeListModel.new(store, False, False, children)
         view = Gtk.ColumnView(show_column_separators=True)
         view.add_css_class("data-table")  # compact rows: a table, not a list
-        # The view's sorter follows whichever heading was clicked last.
-        model = Gtk.SortListModel(model=store, sorter=view.get_sorter())
+        # The view's sorter follows whichever heading was clicked last, and
+        # sorts each level of the tree on its own.
+        model = Gtk.SortListModel(model=tree,
+                                  sorter=Gtk.TreeListRowSorter.new(view.get_sorter()))
         # The model after the flags: given at construction it can arrive first,
         # and an autoselecting model highlights the top row on its own.
         selection = Gtk.SingleSelection(autoselect=False, can_unselect=True)
@@ -700,8 +875,8 @@ class ResultsView(Gtk.Box):
         view.set_model(selection)
 
         view.append_column(self.column(
-            "", lambda s: s.name, lambda s: explain_scope(s.name),
-            lambda a, b: compare(scope_order(a), scope_order(b)),
+            "", lambda s: s.name, lambda s: s.tip,
+            lambda a, b: compare(scope_order(a), scope_order(b)), tree=True,
         ))
         for key, name, unit in COLUMNS:
             view.append_column(self.column(
@@ -740,10 +915,10 @@ class ResultsView(Gtk.Box):
                     lab.add_css_class("heading")
             title = title.get_next_sibling()
 
-    def column(self, title, text_of, tip_of, cmp, numeric=False, bold=False):
+    def column(self, title, text_of, tip_of, cmp, numeric=False, bold=False, tree=False):
         """A column whose cells are `text_of(scope)`, explained on hover by
         `tip_of(scope)` and sorted by `cmp`. `bold` marks the score and the
-        parts it is made of."""
+        parts it is made of; `tree` is the column with the fold arrows."""
         factory = Gtk.SignalListItemFactory()
 
         def setup(_factory, item):
@@ -752,10 +927,16 @@ class ResultsView(Gtk.Box):
                 lab.add_css_class("numeric")  # tabular figures: digits line up
             if bold:
                 lab.add_css_class("heading")
-            item.set_child(lab)
+            item.set_child(Gtk.TreeExpander(child=lab) if tree else lab)
 
         def bind(_factory, item):
-            scope, lab = item.get_item(), item.get_child()
+            row, cell = item.get_item(), item.get_child()
+            scope = row.get_item()
+            if tree:
+                cell.set_list_row(row)
+                lab = cell.get_child()
+            else:
+                lab = cell
             lab.set_text(text_of(scope))
             lab.set_tooltip_text(tip_of(scope))
             # Bold in the numbers means "part of the score", so the total is
@@ -847,6 +1028,13 @@ class Window(Gtk.ApplicationWindow):
         self.cool_until = 0.0   # when the benchmark's current rest ends
         self.command_line = ""
         self.token_in_env = False
+        self.warnings = []      # what the benchmark warned about during the run
+        self.result_name = ""   # the file name of the result on show, for its receipt
+        self.closing = False    # the close was asked for and confirmed
+        self.probe_gen = 0      # bumped per question to the binary; see probe_binary
+        self.probe_timer = 0
+        self.probing = False
+        self.binary_hub = ""    # the hub the binary uploads to by default
 
         header = Gtk.HeaderBar()
         self.set_titlebar(header)
@@ -858,6 +1046,10 @@ class Window(Gtk.ApplicationWindow):
         )
         self.output_btn.connect("toggled", self.on_output_toggled)
         header.pack_start(self.output_btn)
+        open_btn = Gtk.Button(label="Open…")
+        open_btn.set_tooltip_text("Show a result saved earlier.")
+        open_btn.connect("clicked", self.on_open)
+        header.pack_start(open_btn)
         self.run_btn = Gtk.Button(label="Run")
         self.run_btn.add_css_class("suggested-action")
         self.run_btn.connect("clicked", self.on_run)
@@ -883,8 +1075,10 @@ class Window(Gtk.ApplicationWindow):
         paned.set_shrink_end_child(False)
 
         # Both groups tick their boxes only now: each tick rewrites the
-        # command line, which is in the footer built after the form.
-        self.reload_variants()
+        # command line, which is in the footer built after the form. The
+        # variants arrive when the binary has said which it carries.
+        self.variant_group.set_checks([], False)
+        self.probe_binary(now=True)
         self.mode_group.set_checks([self.mode_threads, self.mode_percore], every=True)
         self.advanced.connect("notify::expanded", lambda *_: self.fit_form())
         self.restore_settings()
@@ -1094,7 +1288,7 @@ class Window(Gtk.ApplicationWindow):
         self.binary.set_text(best_build(find_binary()))
         self.binary.connect(
             "changed",
-            lambda *_: (self.reload_variants(), self.update_command(),
+            lambda *_: (self.probe_binary(), self.update_command(),
                         self.update_binary_tip()),
         )
         self.update_binary_tip()
@@ -1172,6 +1366,17 @@ class Window(Gtk.ApplicationWindow):
             "clicked", lambda *_: Gtk.UriLauncher(uri=self.hub_page).launch(self, None, None),
         )
         status.append(self.hub_link)
+        # What the benchmark warned about during the run, one click away: the
+        # log that holds it stays hidden after a run that went well.
+        self.warn_btn = Gtk.Button(valign=Gtk.Align.CENTER)
+        self.warn_btn.set_visible(False)
+        self.warn_btn.connect("clicked", self.on_show_warnings)
+        status.insert_child_after(self.warn_btn, self.status)
+        self.withdraw_btn = Gtk.Button(label="Withdraw", valign=Gtk.Align.CENTER)
+        self.withdraw_btn.set_tooltip_text("Take the upload off the hub. The result stays saved.")
+        self.withdraw_btn.set_visible(False)
+        self.withdraw_btn.connect("clicked", self.on_withdraw)
+        status.insert_child_after(self.withdraw_btn, self.warn_btn)
         box.append(status)
         return box
 
@@ -1210,14 +1415,46 @@ class Window(Gtk.ApplicationWindow):
             )
         self.binary.set_tooltip_text(tip)
 
-    def reload_variants(self):
+    def probe_binary(self, now=False):
+        """Ask the binary which variants it carries and where it uploads, on a
+        thread: each question starts it, which can take seconds on a Windows
+        that scans a program the first time it runs, and the window must not
+        stop for it. A path being typed is asked about once typing pauses."""
+        if self.probe_timer:
+            GLib.source_remove(self.probe_timer)
+            self.probe_timer = 0
+        self.probing = True
+        if now:
+            self.start_probe()
+        else:
+            self.probe_timer = GLib.timeout_add(400, self.start_probe)
+
+    def start_probe(self):
+        self.probe_timer = 0
+        self.probe_gen += 1
+        gen, binary = self.probe_gen, self.binary.get_text().strip()
+
+        def ask():
+            found = (list_variants(binary), default_hub(binary))
+            GLib.idle_add(self.on_main, self.on_probed, gen, *found)
+        threading.Thread(target=ask, daemon=True).start()
+        return GLib.SOURCE_REMOVE
+
+    def on_probed(self, gen, variants, hub):
+        if gen != self.probe_gen:
+            return  # an answer about a path the field no longer holds
+        self.probing = False
+        self.binary_hub = hub
+        self.reload_variants(variants)
+
+    def reload_variants(self, variants):
         child = self.variant_list.get_first_child()
         while child is not None:
             nxt = child.get_next_sibling()
             self.variant_list.remove(child)
             child = nxt
         self.variant_checks = []
-        for name, _flags, distinct in list_variants(self.binary.get_text().strip()):
+        for name, _flags, distinct in variants:
             check = Gtk.CheckButton(label=name)
             # Which variants the toggles actually change on this target is the
             # binary's answer, not ours; a target with no vector unit carries
@@ -1235,8 +1472,8 @@ class Window(Gtk.ApplicationWindow):
         self.variant_group.set_checks(
             [check for _, check in self.variant_checks], self.all_variants.get_active(),
         )
-        hub = default_hub(self.binary.get_text().strip())
-        self.hub.set_placeholder_text(f"{hub} (this build's default)" if hub
+        self.hub.set_placeholder_text(f"{self.binary_hub} (this build's default)"
+                                      if self.binary_hub
                                       else "required: this build has no default hub")
 
     def fit_form(self):
@@ -1290,6 +1527,29 @@ class Window(Gtk.ApplicationWindow):
                 self.kept = settings
 
     def on_close(self, *_):
+        if self.proc is not None and not self.closing:
+            # The benchmark goes with the window, and what it measured so far
+            # with it: one click should not cost a ten-minute run.
+            dialog = Gtk.AlertDialog(
+                message="A run is still going",
+                detail="Closing the window stops it, and what it has measured so "
+                       "far is lost.",
+                buttons=["Keep running", "Stop and close"],
+                cancel_button=0, default_button=0)
+
+            def chosen(dlg, res):
+                try:
+                    if dlg.choose_finish(res) != 1:
+                        return
+                except GLib.Error:
+                    return
+                self.closing = True
+                if self.proc is not None:
+                    self.stopped = True
+                    self.proc.kill()
+                self.close()
+            dialog.choose(self, None, chosen)
+            return True  # not yet
         self.keep_settings()
         return False  # and close
 
@@ -1480,16 +1740,32 @@ class Window(Gtk.ApplicationWindow):
         if not os.path.isdir(outdir):
             self.fail(f"Output directory {outdir!r} does not exist.")
             return
-        if self.do_submit.get_active() and not self.hub.get_text().strip():
-            # A released build has a default hub baked in; a tree you built
-            # yourself has none, and would fail after measuring rather than now.
-            self.log("no hub URL given: relying on the address baked into this build\n")
         hub = ""
         if self.do_submit.get_active():
             # Where the upload will go: the field, the environment, then the
             # binary's own default, the order the binary itself takes them in.
             hub = (self.hub.get_text().strip() or os.environ.get("CPCPUB_HUB", "")
-                   or default_hub(binary))
+                   or (default_hub(binary) if self.probing else self.binary_hub))
+            if not hub:
+                # A released build has a hub baked in; one built from the source
+                # tree has none, and would only find out after measuring.
+                dialog = Gtk.AlertDialog(
+                    message="No hub to upload to",
+                    detail="This build of the benchmark has no hub address built "
+                           "in. Enter one under Hub URL, or run without uploading.",
+                    buttons=["Cancel", "Run without uploading"],
+                    cancel_button=0, default_button=1)
+
+                def chosen(dlg, res):
+                    try:
+                        if dlg.choose_finish(res) != 1:
+                            return
+                    except GLib.Error:
+                        return
+                    self.do_submit.set_active(False)
+                    self.on_run(None)
+                dialog.choose(self, None, chosen)
+                return
             # The benchmark hands an https upload to curl, which the packages
             # only recommend. A newer benchmark refuses before measuring when
             # it is missing; this says so for any of them, and in a window
@@ -1527,6 +1803,9 @@ class Window(Gtk.ApplicationWindow):
         self.stopped = False
         self.cool_until = 0.0
         self.hub_link.set_visible(False)
+        self.withdraw_btn.set_visible(False)
+        self.warn_btn.set_visible(False)
+        self.warnings = []
         self.stdout_buf = []
         self.exit_status = -1
         self.pending_streams = 3  # two pipes at EOF, plus the reaped process
@@ -1574,9 +1853,8 @@ class Window(Gtk.ApplicationWindow):
 
     def reap(self, proc):
         """On a thread of its own: wait for the process to exit."""
-        status = proc.wait()
-        # Negative is a signal on POSIX: not an exit, and not a status.
-        GLib.idle_add(self.on_main, self.on_finished, status if status >= 0 else -1)
+        # Negative is a signal on POSIX, which crash_of() names.
+        GLib.idle_add(self.on_main, self.on_finished, proc.wait())
 
     @staticmethod
     def on_main(func, *args):
@@ -1590,6 +1868,8 @@ class Window(Gtk.ApplicationWindow):
 
     def on_stderr_line(self, line):
         self.log(line + "\n")
+        if line.startswith(("WARNING:", "NOTE:")):
+            self.warnings.append(line)
         cooling = re.match(r"cooling down for ([0-9.]+) s", line)
         if cooling:
             self.cool_until = time.monotonic() + float(cooling.group(1))
@@ -1639,6 +1919,10 @@ class Window(Gtk.ApplicationWindow):
             except ValueError as exc:
                 self.log(f"\nthe result document did not parse: {exc}\n")
 
+        # Local time, and the run itself carries no clock -- this name is for
+        # whoever is looking at the directory afterwards.
+        stamp = datetime.now(tz=None).astimezone().strftime("%Y%m%d-%H%M%S")
+        self.result_name = f"cpcpub-{stamp}.json"
         if docs:
             self.results.set_docs(docs)
             self.set_text(self.report_view, render(docs))
@@ -1649,8 +1933,19 @@ class Window(Gtk.ApplicationWindow):
 
         where = f", saved to {saved}" if saved else ""
         uploaded = bool(self.submitting and self.uploads)
+        if uploaded:
+            self.keep_receipt()
+        crash = None if self.stopped else crash_of(self.exit_status)
         if self.stopped:
             self.status.set_text(f"Stopped after {elapsed} s.")
+        elif crash:
+            what, illegal = crash
+            text = f"The benchmark crashed ({what}) after {elapsed} s."
+            if illegal and os.path.basename(self.binary.get_text().strip()) != "cpcpub" + EXE:
+                text += (" This build uses instructions this processor does not have: "
+                         "pick the plain cpcpub under Advanced.")
+            self.status.set_text(text)
+            self.log(f"\n{text}\n")
         elif self.exit_status == 0 and docs:
             done = "measured and uploaded" if uploaded else "Done"
             self.status.set_text(f"{done.capitalize()} in {elapsed} s{where}.")
@@ -1667,8 +1962,12 @@ class Window(Gtk.ApplicationWindow):
             self.status.set_text(
                 f"The benchmark stopped with an error after {elapsed} s -- the log says why."
             )
-        if uploaded:
-            self.show_upload()
+        self.show_hub_state()
+        if self.warnings:
+            n = len(self.warnings)
+            self.warn_btn.set_label(f"{n} warning{'s' if n > 1 else ''}")
+            self.warn_btn.set_tooltip_text("What the benchmark warned about during the run.")
+            self.warn_btn.set_visible(True)
         # The table stays in view when the run went well; the log comes up
         # when it holds the reason something did not.
         if not self.stopped and (self.exit_status != 0 or not docs):
@@ -1676,31 +1975,143 @@ class Window(Gtk.ApplicationWindow):
         if SMOKE:
             self.smoke_report(docs=len(docs or []), saved=saved)
 
-    def show_upload(self):
-        """A link to the uploaded result on the hub, where it is compared with
-        everyone else's. A --variants run uploads one run per variant; the
-        first is the baseline's."""
-        first = self.uploads[0]
-        page = str(first.get("url") or "")
-        if page.startswith("/"):
-            page = self.upload_hub.rstrip("/") + page
-        if page.startswith(("http://", "https://")):
-            self.hub_page = page
-            self.hub_link.set_visible(True)
-        tip = f"Opens {page}." if page else ""
-        tokens = [str(r["delete_token"]) for r in self.uploads if r.get("delete_token")]
-        if tokens:
-            # Shown once by the hub and never again; the log keeps it too.
-            tip += ("\n\nTo withdraw the upload later you need its delete token, "
-                    "which is in Output > Log: " + ", ".join(tokens))
-        self.hub_link.set_tooltip_text(tip.strip())
+    def keep_receipt(self):
+        """Keep what the hub said to each upload under the result's name, for
+        its page and its delete token: the hub shows the token once, and an
+        anonymous upload cannot be withdrawn without it."""
+        kept = []
+        for reply in self.uploads:
+            page = str(reply.get("url") or "")
+            if page.startswith("/"):
+                page = self.upload_hub.rstrip("/") + page
+            kept.append({"hub": self.upload_hub, "id": reply.get("id"),
+                         "delete_token": reply.get("delete_token") or "",
+                         "page": page if page.startswith(("http://", "https://")) else ""})
+        problem = write_private(os.path.join(RECEIPTS, self.result_name), kept)
+        if problem:
+            self.log(f"\ncould not keep the upload's delete token: {problem}\n")
+
+    def show_hub_state(self):
+        """The link to the result on the hub and the button to withdraw it,
+        for the result on show, from what was kept about its uploads. A
+        --variants run uploads one run per variant; the first is the
+        baseline's."""
+        kept = read_receipt(self.result_name) if self.result_name else []
+        standing = [r for r in kept if not r.get("withdrawn")]
+        page = standing[0].get("page", "") if standing else ""
+        self.hub_page = page
+        self.hub_link.set_visible(bool(page))
+        self.hub_link.set_tooltip_text(f"Opens {page}." if page else "")
+        self.withdraw_btn.set_visible(any(r.get("delete_token") for r in standing))
+
+    def on_withdraw(self, _button):
+        name = self.result_name
+        standing = [r for r in read_receipt(name)
+                    if not r.get("withdrawn") and r.get("delete_token")]
+        if not standing:
+            return
+        n = len(standing)
+        dialog = Gtk.AlertDialog(
+            message="Withdraw from the hub?",
+            detail=(f"All {n} uploads come off the hub. " if n > 1 else "")
+                   + "The result stays saved.",
+            buttons=["Cancel", "Withdraw"], cancel_button=0, default_button=0)
+
+        def chosen(dlg, res):
+            try:
+                if dlg.choose_finish(res) != 1:
+                    return
+            except GLib.Error:
+                return
+            self.withdraw_btn.set_sensitive(False)
+            self.status.set_text("Withdrawing…")
+            threading.Thread(target=self.withdraw_all, args=(name,), daemon=True).start()
+        dialog.choose(self, None, chosen)
+
+    def withdraw_all(self, name):
+        """On a thread: withdraw every standing upload of `name`, and say so."""
+        kept = read_receipt(name)
+        failed = 0
+        for r in kept:
+            if r.get("withdrawn") or not r.get("delete_token"):
+                continue
+            done, said = withdraw_upload(r.get("hub", ""), r.get("id"), r["delete_token"])
+            GLib.idle_add(self.on_main, self.log, said + "\n")
+            if done:
+                r["withdrawn"] = True
+            else:
+                failed += 1
+        problem = write_private(os.path.join(RECEIPTS, name), kept)
+        GLib.idle_add(self.on_main, self.on_withdrawn, name, failed, problem)
+
+    def on_withdrawn(self, name, failed, problem):
+        self.withdraw_btn.set_sensitive(True)
+        if problem:
+            self.log(problem + "\n")
+        if failed:
+            self.status.set_text("Withdraw failed -- the log says why.")
+            self.show_output(self.log_view)
+        else:
+            self.status.set_text("Withdrawn. The result stays saved.")
+        if name == self.result_name:
+            self.show_hub_state()
+
+    def on_show_warnings(self, _button):
+        Gtk.AlertDialog(message="The benchmark warned",
+                        detail="\n\n".join(self.warnings)).show(self)
+
+    def on_open(self, _button):
+        if self.proc is not None:
+            self.status.set_text("A run is going; open a result once it is done.")
+            return
+        dialog = Gtk.FileDialog(title="Open a saved result")
+        folder = self.outdir.get_text().strip()
+        if os.path.isdir(folder):
+            dialog.set_initial_folder(Gio.File.new_for_path(folder))
+        only = Gtk.FileFilter(name="cpcpub results")
+        only.add_pattern("*.json")
+        filters = Gio.ListStore(item_type=Gtk.FileFilter)
+        filters.append(only)
+        dialog.set_filters(filters)
+
+        def done(dlg, res):
+            try:
+                f = dlg.open_finish(res)
+            except GLib.Error:
+                return  # cancelled
+            if f and f.get_path():
+                self.open_result(f.get_path())
+        dialog.open(self, None, done)
+
+    def open_result(self, path):
+        """Show a result saved earlier, with its link and Withdraw if it was
+        uploaded from this window."""
+        name = os.path.basename(path)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                raw = fh.read()
+            parsed = json.loads(raw)
+        except (OSError, ValueError) as exc:
+            self.status.set_text(f"Could not read {name}: {getattr(exc, 'strerror', None) or exc}")
+            return
+        docs = parsed if isinstance(parsed, list) else [parsed]
+        if not docs or not all(isinstance(d, dict) and d.get("schema") for d in docs):
+            self.status.set_text(f"{name} is not a cpcpub result.")
+            return
+        self.results.set_docs(docs)
+        self.set_text(self.report_view, render(docs))
+        self.set_text(self.json_view, raw)
+        self.output_btn.set_active(False)
+        self.warn_btn.set_visible(False)
+        self.result_name = name
+        kept = read_receipt(name)
+        state = ("" if not kept else " · withdrawn from the hub"
+                 if all(r.get("withdrawn") for r in kept) else " · on the hub")
+        self.status.set_text(f"{name}{state}")
+        self.show_hub_state()
 
     def save(self, raw):
-        # Local time, and the run itself carries no clock -- this name is for
-        # whoever is looking at the directory afterwards.
-        stamp = datetime.now(tz=None).astimezone().strftime("%Y%m%d-%H%M%S")
-        name = f"cpcpub-{stamp}.json"
-        path = os.path.join(self.outdir.get_text().strip(), name)
+        path = os.path.join(self.outdir.get_text().strip(), self.result_name)
         try:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(raw if raw.endswith("\n") else raw + "\n")
@@ -1720,6 +2131,8 @@ class Window(Gtk.ApplicationWindow):
 
     def smoke_run(self):
         """The shortest run the form can describe, started as if by hand."""
+        if self.probing:
+            return GLib.SOURCE_CONTINUE  # the variants are not in yet
         self.mode_full.set_active(False)        # leaves the multi-threaded run
         self.threads.set_text("1")
         self.cpus.set_text("0")
