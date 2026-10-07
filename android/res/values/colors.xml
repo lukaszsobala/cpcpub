@@ -2,4 +2,7 @@
 <resources>
     <!-- The adaptive icon's background: the hub's page colour. -->
     <color name="ic_launcher_background">#FBFBFA</color>
+    <!-- The header across the top and the status bar above it: the hub's
+         accent, the icon's own green. -->
+    <color name="header">#2F6F4F</color>
 </resources>

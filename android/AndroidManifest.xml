@@ -35,7 +35,7 @@
         android:extractNativeLibs="true"
         android:allowBackup="false"
         android:usesCleartextTraffic="true"
-        android:theme="@android:style/Theme.DeviceDefault.DayNight">
+        android:theme="@style/App">
         <activity
             android:name=".MainActivity"
             android:exported="true"

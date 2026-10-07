@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The system theme without its title bar: the app draws its own header,
+         and the status bar takes the header's colour with light icons. On
+         Android 15 the app draws under the status bar and the header reaches
+         up behind it instead. -->
+    <style name="App" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:statusBarColor">@color/header</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
