@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- A darker green at night, so the header does not glare over a dark page. -->
+    <color name="header">#1F4A35</color>
+</resources>

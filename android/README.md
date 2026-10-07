@@ -2,15 +2,17 @@
 
 An app for the release's static Android binary. Like the desktop window, it
 measures nothing itself. It builds the command line, runs the benchmark, and
-reads back what it prints. You choose:
+reads back what it prints. The command itself is not shown, only written at
+the top of the log. You choose:
 
 - the run: multi-threaded, per-core, or Both, which ticks the two;
 - the variants: the baseline, or all four compared;
 - a cool-down between runs, 30 s unless you pick otherwise;
-- the hub fields, with the label set to the phone's own name until you change
-  it (`Build.MANUFACTURER`, `Build.MODEL`, and the chip, `Build.SOC_MODEL`, on
-  Android 12 and later);
-- the timing settings.
+- the upload fields, with the label set to the phone's own name until you
+  change it (`Build.MANUFACTURER`, `Build.MODEL`, and the chip,
+  `Build.SOC_MODEL`, on Android 12 and later);
+- under **Advanced**, the timing settings and the hub URL. The URL is blank
+  for the hub the release was built with, which its hint shows.
 
 The result appears as a table. Tap a heading for what that column means; the
 score and the columns it is a geometric mean of are in bold. Every result is
@@ -98,11 +100,9 @@ variant after the first, would be measured on a throttled phone. So the app
 passes `--cooldown`, which rests before each multi-threaded run and per-core
 sweep after the first. It offers Off, 30 s, 1 min and 2 min, starts on 30 s,
 and greys the choice out when there is only one run to make. While the
-benchmark rests, the status line counts the rest down. A binary from before
-`--cooldown` would refuse the flag, so the app reads the binary's help once.
-If the flag isn't there, the choice stays on screen, greyed out, with a note
-that the benchmark is too old for it. The CI build's APK is such a case until
-v0.4.0 is released, because CI packs the latest released benchmark, v0.3.6.
+benchmark rests, the status line counts the rest down. The flag is new in
+v0.4.0, the first release the app ships with; an APK built around an older
+binary fails the run with the benchmark's own complaint.
 
 The token field has a Show/Hide button, to check a pasted token.
 

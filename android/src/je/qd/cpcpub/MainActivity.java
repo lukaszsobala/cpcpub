@@ -27,6 +27,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.RadioButton;
@@ -97,9 +98,7 @@ public final class MainActivity extends Activity {
     private boolean syncingModes;  // set while the code, not the user, ticks them
     private RadioGroup variants;
     private RadioGroup cooldown;
-    private TextView cooldownHeading;
     private TextView cooldownNote;
-    private boolean canCoolDown = true;  // until the binary says otherwise
     private CheckBox upload;
     private LinearLayout uploadFields;
     private LinearLayout advancedFields;
@@ -116,7 +115,6 @@ public final class MainActivity extends Activity {
     private Button stopButton;
     private ProgressBar progress;
     private TextView estimate;
-    private TextView command;
     private TextView status;
     private Button compareButton;
     private Button withdrawButton;
@@ -151,20 +149,29 @@ public final class MainActivity extends Activity {
         prefs = getSharedPreferences("form", MODE_PRIVATE);
         power = getSystemService(PowerManager.class);
 
+        LinearLayout root = column();
+        View header = header();
+        root.addView(header);
         scroll = new ScrollView(this);
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
         page.setPadding(pad, dp(8), pad, pad);
         scroll.addView(page);
-        setContentView(scroll);
+        root.addView(scroll, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        setContentView(root);
         // Android 15 draws an app under the status and navigation bars unless
         // the app moves out of their way; earlier versions report no insets.
+        // The header reaches up behind the status bar, in its colour.
         if (Build.VERSION.SDK_INT >= 30) {
-            scroll.setOnApplyWindowInsetsListener((v, insets) -> {
+            int headerTop = header.getPaddingTop();
+            root.setOnApplyWindowInsetsListener((v, insets) -> {
                 Insets bars = insets.getInsets(
                     WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
-                v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                header.setPadding(bars.left + pad, bars.top + headerTop,
+                    bars.right + pad, header.getPaddingBottom());
+                scroll.setPadding(bars.left, 0, bars.right, bars.bottom);
                 return WindowInsets.CONSUMED;
             });
         }
@@ -193,20 +200,17 @@ public final class MainActivity extends Activity {
         page.addView(note("Compare baseline across architectures, "
             + "others only within the same architecture."));
 
-        cooldownHeading = heading("Cool-down");
-        page.addView(cooldownHeading);
+        page.addView(heading("Cool-down"));
         cooldown = radios(page, COOLDOWN_NAMES, prefs.getInt("cooldown", COOLDOWN_DEFAULT));
         cooldown.setOrientation(LinearLayout.HORIZONTAL);
         cooldownNote = note("");
         page.addView(cooldownNote);
 
         upload = new CheckBox(this);
-        upload.setText("Upload the result to a hub");
+        upload.setText("Upload results");
         upload.setChecked(prefs.getBoolean("upload", false));
         page.addView(upload, spaced());
         uploadFields = column();
-        hub = field(uploadFields, "Hub URL", getString(R.string.hub_url),
-            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI, "hub");
         token = field(uploadFields, "Token (optional, from the hub's Account tab)", "",
             InputType.TYPE_CLASS_TEXT
             | InputType.TYPE_TEXT_VARIATION_PASSWORD, "token");
@@ -246,6 +250,9 @@ public final class MainActivity extends Activity {
         warmup = field(advancedFields, "Warm-up seconds", "",
             InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL, null);
         warmup.setText("0.15");
+        // Blank is the hub the release was built with, shown as the hint.
+        hub = field(advancedFields, "Hub URL", getString(R.string.hub_url),
+            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI, "hub");
         page.addView(advancedFields);
         advanced.setOnClickListener(v -> {
             boolean open = advancedFields.getVisibility() != View.VISIBLE;
@@ -264,10 +271,6 @@ public final class MainActivity extends Activity {
 
         estimate = text(14, false);
         page.addView(estimate);
-        command = text(12, false);
-        command.setTypeface(Typeface.MONOSPACE);
-        command.setTextIsSelectable(true);
-        page.addView(command);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(1000);
         progress.setVisibility(View.GONE);
@@ -324,7 +327,6 @@ public final class MainActivity extends Activity {
         variants.setOnCheckedChangeListener((g, id) -> updateCommand());
         cooldown.setOnCheckedChangeListener((g, id) -> updateCommand());
         updateCommand();
-        checkCooldown();
     }
 
     @Override
@@ -411,36 +413,7 @@ public final class MainActivity extends Activity {
         return perPass * passes * times + rests() * cooldownSeconds();
     }
 
-    /** A binary from before --cooldown refuses the flag outright; ask its help
-     *  text once, off the main thread, and grey the choice out if it is not
-     *  there rather than offer one that fails the run. It stays in view with
-     *  the reason under it: a choice that silently vanishes reads as a bug. */
-    private void checkCooldown() {
-        new Thread(() -> {
-            boolean has = true;
-            try {
-                Process p = new ProcessBuilder(binary(), "--help").redirectErrorStream(true).start();
-                p.getOutputStream().close();
-                StringBuilder help = new StringBuilder();
-                try (BufferedReader r = new BufferedReader(new InputStreamReader(
-                        p.getInputStream(), StandardCharsets.UTF_8))) {
-                    for (String line; (line = r.readLine()) != null; ) help.append(line).append('\n');
-                }
-                p.waitFor();
-                has = help.indexOf("--cooldown") >= 0;
-            } catch (IOException | InterruptedException e) {
-                // Leave the choice up: the run will say what is wrong.
-            }
-            if (has) return;
-            main.post(() -> {
-                canCoolDown = false;
-                updateCommand();
-            });
-        }).start();
-    }
-
     private int cooldownSeconds() {
-        if (!canCoolDown) return 0;
         int i = choice(cooldown);
         return i >= 0 && i < COOLDOWNS.length ? COOLDOWNS[i] : 0;
     }
@@ -472,17 +445,13 @@ public final class MainActivity extends Activity {
     private void updateCommand() {
         // A run of one batch has nothing to rest between: the choice is shown
         // greyed rather than taken away, with the reason under it.
-        boolean applies = canCoolDown && rests() > 0;
+        boolean applies = rests() > 0;
         for (int i = 0; i < cooldown.getChildCount(); i++) {
             cooldown.getChildAt(i).setEnabled(applies);
         }
-        cooldownNote.setText(!canCoolDown
-            ? "The benchmark in this build is too old for a cool-down."
-            : applies
+        cooldownNote.setText(applies
             ? "A rest between runs, so each starts on a cool phone."
             : "Needs Both or all four variants.");
-        List<String> argv = argv();
-        command.setText("cpcpub " + TextUtils.join(" ", argv.subList(1, argv.size())));
         double s = estimateSeconds();
         estimate.setText("Estimated run time: " + (s < 90 ? Math.round(s) + " s"
             : String.format(Locale.getDefault(), "%.1f min", s / 60)));
@@ -572,7 +541,8 @@ public final class MainActivity extends Activity {
             status.setText("Could not start the benchmark: " + e.getMessage());
             return;
         }
-        log.setText("$ " + command.getText() + "\n\n");
+        // The command, for the log only: what ran, should a number look odd.
+        log.setText("$ cpcpub " + TextUtils.join(" ", argv.subList(1, argv.size())) + "\n\n");
         results.removeAllViews();
         saveButton.setEnabled(false);
         shareButton.setEnabled(false);
@@ -1216,6 +1186,33 @@ public final class MainActivity extends Activity {
 
     private void appendLog(String s) {
         log.append(s);
+    }
+
+    /** The bar across the top: the icon, the name and what it is, on the
+     *  hub's green, which also fills in behind the status bar. */
+    private View header() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setBackgroundColor(getColor(R.color.header));
+        bar.setPadding(dp(16), dp(12), dp(16), dp(12));
+        bar.setElevation(dp(4));
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(R.mipmap.ic_launcher);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(40), dp(40));
+        lp.setMarginEnd(dp(14));
+        bar.addView(icon, lp);
+        LinearLayout words = column();
+        TextView name = text(20, true);
+        name.setText("cpcpub");
+        name.setTextColor(0xFFFFFFFF);
+        name.setLetterSpacing(0.02f);
+        words.addView(name);
+        TextView what = text(13, false);
+        what.setText("Cross-platform CPU benchmark");
+        what.setTextColor(0xCCFFFFFF);
+        words.addView(what);
+        bar.addView(words);
+        return bar;
     }
 
     private int dp(int v) {
