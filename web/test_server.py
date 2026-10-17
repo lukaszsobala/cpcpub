@@ -2042,7 +2042,7 @@ class PasswordTest(unittest.TestCase):
         self.assertTrue(limiter.allow("10.0.0.1"))
 
     def test_an_address_is_forgotten_after_its_window(self):
-        # What the privacy page says: an address is held no longer than the
+        # What PRIVACY.md says: an address is held no longer than the
         # limit needs it, whether or not it ever comes back.
         limiter = srv.RateLimiter(2, 60.0)
         clock = [1000.0]

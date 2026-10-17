@@ -1894,7 +1894,7 @@ class RateLimiter:
     """Hits per key -- a client's address, mostly -- over a sliding window.
 
     A key with no hit inside the window is forgotten within one more window:
-    the privacy page promises that an address is held for the limit's sake no
+    the privacy policy (PRIVACY.md) promises that an address is held for the limit's sake no
     longer than that, and that it is never written anywhere.
     """
 
