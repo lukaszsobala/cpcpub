@@ -869,22 +869,12 @@ def _size_names(n: int) -> list[str]:
                         for i in range(1, n - 1)] + ["small"]
 
 
-def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
-    """The kinds of core in one run, fastest first.
-
-    Each is {"scope", "name", "ids", "cpus"}. Per-core records are grouped by
-    score. The multi-threaded run's threads follow the kind of the CPU each was
-    pinned to, or are one group where that is not known. A scope with fewer
-    than two records is not grouped.
-    """
-    def cpu_of(r):
-        c = r.get("cpu")
-        return c if isinstance(c, int) and c >= 0 else None
-
-    cores = sorted((r for r in records if r.get("scope") == "cpu" and r.get("score")),
-                   key=lambda r: -r["score"])
+def _kinds(recs: list[dict], cpu_models: str | None,
+           alike: str) -> tuple[list[str], list[list[dict]]]:
+    """Records grouped into kinds of core by score, fastest first, and a name
+    for each: a design the CPU line names, a size, or `alike` for one kind."""
     groups: list[list[dict]] = []
-    for r in cores:
+    for r in sorted(recs, key=lambda r: -r["score"]):
         if groups and groups[-1][-1]["score"] / r["score"] <= CORE_TYPE_GAP:
             groups[-1].append(r)
         else:
@@ -898,28 +888,52 @@ def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
                 key=lambda k: groups[k][-1]["score"] / groups[k + 1][0]["score"])
         groups[i:i + 2] = [groups[i] + groups[i + 1]]
     if len(groups) == 1:
-        labels = ["all cores"]
-    elif names and len(names) == len(groups):
+        return [alike], groups
+    if names and len(names) == len(groups):
         # The line lists designs in the order of their first CPU, so the group
         # holding the lowest-numbered CPU is the first name.
-        first = [min((c for r in g if (c := cpu_of(r)) is not None), default=1 << 30)
-                 for g in groups]
+        def first(g):
+            return min((c for r in g if isinstance(c := r.get("cpu"), int) and c >= 0),
+                       default=1 << 30)
         labels = [""] * len(groups)
-        for name, k in zip(names, sorted(range(len(groups)), key=first.__getitem__)):
+        for name, k in zip(names, sorted(range(len(groups)),
+                                         key=lambda k: first(groups[k]))):
             labels[k] = name
-    else:
-        labels = _size_names(len(groups))
+        return labels, groups
+    return _size_names(len(groups)), groups
 
+
+def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
+    """The kinds of core in one run, fastest first.
+
+    Each is {"scope", "name", "ids", "cpus"}. Per-core records are grouped by
+    score. The multi-threaded run's threads follow the kind of the CPU each was
+    pinned to. A run without a per-core sweep groups its pinned threads by
+    their own scores instead, as a phone's prime pair stands out from the rest
+    while all eight run at once. Threads are otherwise one group. A scope with
+    fewer than two records is not grouped.
+    """
+    def cpu_of(r):
+        c = r.get("cpu")
+        return c if isinstance(c, int) and c >= 0 else None
+
+    cores = [r for r in records if r.get("scope") == "cpu" and r.get("score")]
+    threads = [r for r in records if r.get("scope") == "thread"]
     out = []
     if len(cores) > 1:
+        labels, groups = _kinds(cores, cpu_models, "all cores")
         for label, g in zip(labels, groups):
             out.append({"scope": "cpu", "name": label, "ids": [r["id"] for r in g],
                         "cpus": sorted(c for c in map(cpu_of, g) if c is not None)})
+    elif (len(threads) > 1
+          and all(t.get("score") and cpu_of(t) is not None for t in threads)):
+        labels, groups = _kinds(threads, cpu_models, "all threads")
+    else:
+        labels, groups = [], []
 
-    threads = [r for r in records if r.get("scope") == "thread"]
     if len(threads) > 1:
         kind = {cpu_of(r): label for label, g in zip(labels, groups) for r in g
-                if cpu_of(r) is not None} if len(cores) > 1 else {}
+                if cpu_of(r) is not None}
         if all(cpu_of(t) in kind for t in threads):
             for label in labels:
                 mine = [t for t in threads if kind[cpu_of(t)] == label]

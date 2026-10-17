@@ -1004,6 +1004,28 @@ class CoreTypesTest(unittest.TestCase):
                          [("cpu", "large", [1]), ("cpu", "small", [0]),
                           ("thread", "all threads", [])])
 
+    @staticmethod
+    def thread_kinds(scores, cpus=None, cpu_models="Qualcomm Oryon"):
+        recs = [{"id": i, "scope": "thread", "cpu": c, "score": s}
+                for i, (s, c) in enumerate(zip(scores, cpus or range(len(scores))))]
+        return [(t["scope"], t["name"], t["cpus"])
+                for t in srv.core_types(recs, cpu_models)]
+
+    def test_threads_alone_are_grouped_by_their_own_scores(self):
+        # A Snapdragon 8 Elite measured multi-threaded only: one design, the
+        # prime pair a step above the six.
+        self.assertEqual(
+            self.thread_kinds([9767, 9974, 9942, 9847, 9843, 9770, 14238, 14755]),
+            [("thread", "large", [6, 7]), ("thread", "small", [0, 1, 2, 3, 4, 5])])
+
+    def test_alike_threads_alone_are_one_group(self):
+        self.assertEqual(self.thread_kinds([9800, 10100, 9900, 10000]),
+                         [("thread", "all threads", [0, 1, 2, 3])])
+
+    def test_unpinned_threads_alone_are_one_group(self):
+        self.assertEqual(self.thread_kinds([9800, 14500], cpus=(-1, -1)),
+                         [("thread", "all threads", [])])
+
 
 class Browser:
     """One client with its own cookie jar, as a browser has.
