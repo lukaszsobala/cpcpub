@@ -760,15 +760,28 @@ class HubTest(unittest.TestCase):
         _, runs = self.req("/api/cores?scope=cpu&cpu=Soc+CPU+X+%2B+Soc+CPU+Y")
         self.assertEqual(len(runs["cores"]), 2)
 
-    def test_one_core_design_keeps_its_board(self):
-        # "Cortex-A53" is a core in many chips: two boards are not peers.
-        ids = [self.hybrid(f"One Core ({b})", [s])["id"]
+    def test_a_chip_name_keeps_its_board(self):
+        # A line naming no core design: the board is all that tells chips apart.
+        ids = [self.hybrid(f"One Chip ({b})", [s])["id"]
                for b, s in (("Board P", 10000), ("Board Q", 12000))]
-        _, page = self.req("/api/cores?scope=cpu&q=One+Core&limit=50")
+        _, page = self.req("/api/cores?scope=cpu&q=One+Chip&limit=50")
         self.assertTrue(all(r.get("cpu_fit") is None for r in page["cores"]
                             if r["run_id"] in ids))
-        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=One+Core")
+        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=One+Chip")
         self.assertEqual(len(page["groups"]), 2)
+
+    def test_one_arm_design_is_one_cpu_across_boards(self):
+        for b in ("Arm Board P", "Arm Board Q"):
+            doc = document()
+            doc["system"].update(cpu_models=f"Cortex-A35 ({b})", cpus=4)
+            self.upload(doc)
+        doc["system"].update(cpu_models="Cortex-A35 (Arm Board R)", cpus=2)
+        self.upload(doc)
+        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=Arm+Board")
+        self.assertEqual(sorted((g["cpu_models"], g["cpu_layout"], g["runs"])
+                                for g in page["groups"]),
+                         [("Cortex-A35", "4x Cortex-A35", 2),
+                          ("Cortex-A35 (Arm Board R)", "2x Cortex-A35", 1)])
 
     def test_a_run_carries_its_guessed_layout(self):
         doc = document()

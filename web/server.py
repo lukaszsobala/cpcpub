@@ -1003,17 +1003,18 @@ LAYOUT_SQL = "COALESCE(r.cpu_layout, r.cpu_layout_guess)"
 
 
 def cpu_family(cpu_models: str) -> str:
-    """The CPU line without the board it was measured on, where that leaves a chip.
+    """The CPU line without the board it was measured on, where the rest is cores.
 
     The benchmark appends the platform's name in parentheses ("Cortex-A55 +
-    Cortex-A76 (Radxa ROCK 5B)"), which tells two boards on one SoC apart in a
-    run's own title but must not tell their processors apart. Only a line
-    naming several designs loses it: with the core counts beside it, which
-    peer_key() also reads, that is close to naming the SoC. A single design is
-    a core and not a chip -- "Cortex-A53" is a dozen SoCs at as many clocks --
-    so there the board is what tells the chips apart, and stays.
+    Cortex-A76 (Radxa ROCK 5B)"), which tells two boards apart in a run's own
+    title but must not tell their processors apart. It is set aside where the
+    line names core designs -- several, or one of Arm's -- since then the
+    core counts, which peer_key() also reads, say the rest: four Cortex-A53s
+    are four Cortex-A53s on any board. A line that names a chip or a board
+    keeps all of it.
     """
-    return bare_line(cpu_models) if named_designs(cpu_models) else cpu_models
+    bare = bare_line(cpu_models)
+    return bare if named_designs(cpu_models) or ARM_DESIGN_RE.match(bare) else cpu_models
 
 
 # The merge list: CPU lines that are another CPU under a different name. A

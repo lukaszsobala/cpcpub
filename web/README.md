@@ -163,9 +163,10 @@ stands for an upload — per GHz that is its most efficient core, not its fastes
 **The same CPU.** Runs are peers when they are the same CPU with the same
 core layout, target, vectorize and FMA, and for the whole-machine and
 per-thread scopes the same thread count. The CPU is the `cpu_models` line,
-with the board in parentheses at its end set aside where the line names
-several core designs -- two boards on one big.LITTLE SoC are one CPU, while
-one design alone is a core in many chips and keeps its board. The layout
+with the board in parentheses at its end set aside where the line names core
+designs -- several, or one of Arm's -- since the core counts then say the
+rest: two boards on one big.LITTLE SoC are one CPU, and so are two boards with
+four Cortex-A53s. A line that names a chip or a board keeps all of it. The layout
 ("4x Cortex-A55 + 4x Cortex-A76") is `system.cpu_layout` where the run reported
 it; otherwise the hub counts it, from `system.cpus` for a line of one Arm core
 design and from the per-core scores for several, where those settle it.
