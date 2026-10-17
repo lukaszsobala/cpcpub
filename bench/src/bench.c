@@ -919,6 +919,62 @@ static int parse_cpu_list(const char *spec, int *out, int max_out) {
     return n;
 }
 
+// The CPUs the kernel lists in one of its sysfs CPU-list files ("present",
+// "online"). Returns the count, or -1 where the file is not there to read.
+static int read_cpu_list_file(const char *name, int *out, int max_out) {
+#if !defined(_WIN32) && !defined(__APPLE__)
+    char path[96], spec[1024];
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/%s", name);
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char *got = fgets(spec, (int)sizeof(spec), f);
+    fclose(f);
+    if (!got) return -1;
+    spec[strcspn(spec, "\r\n")] = '\0';
+    return parse_cpu_list(spec, out, max_out);
+#else
+    (void)name; (void)out; (void)max_out;
+    return -1;
+#endif
+}
+
+// The CPUs this machine has but has switched off: present and not online.
+// Not the kernel's own "offline" file, which also lists every CPU the
+// firmware left room for and never fitted -- a VM's 0-255. Returns the count,
+// 0 where the machine will not say.
+static int offline_cpus(int *out, int max_out) {
+    int present[1024], online[1024];
+    const int np = read_cpu_list_file("present", present, ARRAY_LEN(present));
+    const int no = read_cpu_list_file("online", online, ARRAY_LEN(online));
+    if (np <= 0 || no <= 0) return 0;
+    int n = 0;
+    for (int i = 0; i < np; ++i) {
+        int up = 0;
+        for (int j = 0; j < no && !up; ++j) up = online[j] == present[i];
+        if (!up && n < max_out) out[n++] = present[i];
+    }
+    return n;
+}
+
+// The most CPUs seen offline at any check in this run: the result document
+// reports it, and a hub keeps such a run out of what it compares.
+static int g_cpus_offline = 0;
+
+// A machine with CPUs switched off is not the machine its name says: a
+// big.LITTLE board with its big cluster down measures as a little one, and
+// its whole-machine figures are short by the CPUs that sat out.
+static void warn_if_cpus_offline(void) {
+    int ids[1024];
+    const int n = offline_cpus(ids, ARRAY_LEN(ids));
+    if (n > g_cpus_offline) g_cpus_offline = n;
+    if (n == 0) return;
+    fprintf(msg(), "WARNING: %d CPU%s offline (", n, n > 1 ? "s are" : " is");
+    for (int i = 0; i < n; ++i) fprintf(msg(), "%s%d", i ? "," : "", ids[i]);
+    fprintf(msg(), "); the run measures only the online ones, and a results "
+                   "hub keeps it out of its comparisons. Bring them online "
+                   "(/sys/devices/system/cpu/cpuN/online) and run again.\n");
+}
+
 static const char *arch_string(void) {
 #if defined(__x86_64__) || defined(_M_X64)
     return "x86_64";
@@ -979,6 +1035,40 @@ static void models_add(char *out, size_t outsz, const char *name) {
     snprintf(out + used, outsz - used, "%s%s", used ? " + " : "", name);
 }
 #endif  // CPCPUB_PROC_CPUINFO
+
+#if defined(CPCPUB_PROC_CPUINFO) && defined(__aarch64__)
+// How many logical CPUs each distinct core name was read from, in the order of
+// each name's first CPU -- the same order models_add() gives the names, so the
+// two lists line up.
+typedef struct {
+    char name[8][96];
+    int  count[8];
+    int  n;
+} core_tally_t;
+
+static void tally_add(core_tally_t *t, const char *name) {
+    if (!name[0]) return;
+    for (int i = 0; i < t->n; ++i) {
+        if (strcmp(t->name[i], name) == 0) { t->count[i]++; return; }
+    }
+    if (t->n >= ARRAY_LEN(t->name)) return;
+    snprintf(t->name[t->n], sizeof(t->name[0]), "%s", name);
+    t->count[t->n++] = 1;
+}
+
+// "2x Cortex-A76 + 6x Cortex-A55", or nothing for a machine of one kind of
+// core: there the thread count already says everything the counts would.
+static void tally_layout(const core_tally_t *t, char *out, size_t outsz) {
+    out[0] = '\0';
+    if (t->n < 2) return;
+    size_t used = 0;
+    for (int i = 0; i < t->n && used + 1 < outsz; ++i) {
+        used += (size_t)snprintf(out + used, outsz - used, "%s%dx %s",
+                                 i ? " + " : "", t->count[i], t->name[i]);
+        if (used >= outsz) { out[0] = '\0'; return; }
+    }
+}
+#endif  // CPCPUB_PROC_CPUINFO && __aarch64__
 
 #if defined(CPCPUB_PROC_CPUINFO) && defined(__aarch64__)
 // Arm parts carry no brand string: there is no CPUID leaf to hold one and no
@@ -1152,7 +1242,7 @@ static void midr_name(unsigned impl, unsigned part, char *out, size_t outsz) {
 // Every *present* CPU is read, not just the online ones: on a big.LITTLE part
 // with a cluster offline, the offline cluster is still half of what this
 // machine is, and the file is readable either way.
-static void midr_from_sysfs(char *out, size_t outsz) {
+static void midr_from_sysfs(char *out, size_t outsz, core_tally_t *tally) {
     out[0] = '\0';
 
     // "0-7", the kernel's own list of the CPUs that exist. Falling back to a
@@ -1195,6 +1285,7 @@ static void midr_from_sysfs(char *out, size_t outsz) {
         midr_name((unsigned)((v >> 24) & 0xff), (unsigned)((v >> 4) & 0xfff),
                   name, sizeof(name));
         models_add(out, outsz, name);
+        tally_add(tally, name);
     }
 }
 #endif  // CPCPUB_PROC_CPUINFO && __aarch64__
@@ -1261,7 +1352,8 @@ static void dt_model(char *out, size_t outsz) {
 
 // Distinct CPU model names (more than one on big.LITTLE), and the board they
 // are on where the machine will say.
-static void detect_cpu_models(char *out, size_t outsz) {
+static void detect_cpu_models(char *out, size_t outsz, char *layout, size_t layoutsz) {
+    if (layout && layoutsz) layout[0] = '\0';
     if (!out || outsz == 0) return;
     out[0] = '\0';
 #if defined(_WIN32)
@@ -1313,6 +1405,8 @@ static void detect_cpu_models(char *out, size_t outsz) {
     // whose /proc/cpuinfo could not be opened at all.
     char midrs[320];
     midrs[0] = '\0';
+    core_tally_t tally;
+    memset(&tally, 0, sizeof tally);
 #endif
 
     FILE *f = fopen("/proc/cpuinfo", "r");
@@ -1378,6 +1472,7 @@ static void detect_cpu_models(char *out, size_t outsz) {
                 midr_name(impl, (unsigned)strtoul(val, NULL, 0),
                           name, sizeof(name));
                 models_add(midrs, sizeof(midrs), name);
+                tally_add(&tally, name);
             }
 #endif
         }
@@ -1389,7 +1484,8 @@ static void detect_cpu_models(char *out, size_t outsz) {
     // there at all -- the register file still has it. Only consulted as a
     // fallback: the two report the same numbers, and /proc/cpuinfo is one file
     // rather than one per CPU.
-    if (!midrs[0]) midr_from_sysfs(midrs, sizeof(midrs));
+    if (!midrs[0]) midr_from_sysfs(midrs, sizeof(midrs), &tally);
+    if (layout && layoutsz) tally_layout(&tally, layout, layoutsz);
     if (!models[0]) snprintf(models, sizeof(models), "%s", midrs);
 #endif
 
@@ -1510,7 +1606,7 @@ static void print_platform(void) {
                 si.sysname, si.release, si.machine, get_cpu_count());
     }
     char models[512];
-    detect_cpu_models(models, sizeof(models));
+    detect_cpu_models(models, sizeof(models), NULL, 0);
     if (models[0]) fprintf(o, "cpu: %s\n", models);
 }
 
@@ -2102,9 +2198,9 @@ static void json_result(const result_t *r, const char *scope, const char *indent
 // caller adds the result arrays and calls json_close().
 static void json_open(const char *mode, const run_opts_t *o, int threads,
                       int pin, size_t mem_sweep) {
-    char cc[64], models[512];
+    char cc[64], models[512], layout[256];
     compiler_string(cc, sizeof(cc));
-    detect_cpu_models(models, sizeof(models));
+    detect_cpu_models(models, sizeof(models), layout, sizeof(layout));
 
     jout("{\n  \"schema\": \"cpu-bench/1\"");
     j_str("mode", mode);
@@ -2131,6 +2227,13 @@ static void json_open(const char *mode, const run_opts_t *o, int threads,
         j_str("machine", si.machine);
     }
     if (models[0]) j_str("cpu_models", models);
+    if (layout[0]) j_str("cpu_layout", layout);
+    // Checked again here, at the end of the measuring: a phone's kernel can
+    // take a core down mid-run as well as before it.
+    int off_ids[1024];
+    const int off = offline_cpus(off_ids, ARRAY_LEN(off_ids));
+    if (off > g_cpus_offline) g_cpus_offline = off;
+    if (g_cpus_offline > 0) jout(", \"cpus_offline\": %d", g_cpus_offline);
     jout(" }");
 
     jout(",\n  \"config\": { \"threads\": %d, \"seconds_per_phase\": %g,"
@@ -3045,11 +3148,17 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    // Default CPU list: 0..threads-1, or every online CPU in --per-core mode.
+    // Default CPU list: the first `threads` online CPUs, or every online CPU
+    // in --per-core mode. From the kernel's online list where it has one: with
+    // a CPU switched off, 0..n-1 would name it and leave out the last one.
     if (n_cpus == 0) {
         const int online = get_cpu_count();
         const int want = (per_core || full || disp_sweep) ? online : threads;
-        for (int i = 0; i < want && i < ARRAY_LEN(cpu_list); ++i) cpu_list[i] = i;
+        int ids[1024];
+        const int have = read_cpu_list_file("online", ids, ARRAY_LEN(ids));
+        for (int i = 0; i < want && i < ARRAY_LEN(cpu_list); ++i) {
+            cpu_list[i] = have > 0 ? ids[i % have] : i;
+        }
         n_cpus = want < ARRAY_LEN(cpu_list) ? want : ARRAY_LEN(cpu_list);
     }
     set_clock_mode(use_clock_raw);
@@ -3100,6 +3209,7 @@ int main(int argc, char **argv) {
     };
 
     warn_if_loaded(threads);
+    warn_if_cpus_offline();
     warn_if_working_set_small(per_core ? mem_pc : mem_mt, threads, per_core);
 
     // -----------------------------------------------------------------------

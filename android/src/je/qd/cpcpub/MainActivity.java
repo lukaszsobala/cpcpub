@@ -672,6 +672,7 @@ public final class MainActivity extends Activity {
             .format(new Date()) + ".json";
         keep(raw);
         showResults(docs, 0);
+        warnIfCpusOffline(docs);
         saveButton.setEnabled(true);
         shareButton.setEnabled(true);
         status.setText("Done in " + elapsed + " s.");
@@ -722,6 +723,23 @@ public final class MainActivity extends Activity {
         if (saverDuringRun) why.add("battery saver was on");
         if (why.isEmpty()) return;
         warning.setText("Likely low: " + TextUtils.join(", ", why) + ".");
+        warning.setVisibility(View.VISIBLE);
+    }
+
+    /** CPUs the kernel had switched off: the run measured less than the phone, and
+     *  the hub will not compare it. Added to whatever afterRun() already said. */
+    private void warnIfCpusOffline(List<JSONObject> docs) {
+        int offline = 0;
+        for (JSONObject doc : docs) {
+            JSONObject sys = doc.optJSONObject("system");
+            if (sys != null) offline = Math.max(offline, sys.optInt("cpus_offline", 0));
+        }
+        if (offline == 0) return;
+        String says = offline + (offline > 1 ? " CPUs were" : " CPU was")
+            + " offline, so the run measured less than the whole phone and the hub"
+            + " will not compare it with others.";
+        CharSequence before = warning.getVisibility() == View.VISIBLE ? warning.getText() : "";
+        warning.setText(before.length() > 0 ? before + "\n" + says : says);
         warning.setVisibility(View.VISIBLE);
     }
 
