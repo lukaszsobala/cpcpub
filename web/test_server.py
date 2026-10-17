@@ -709,6 +709,26 @@ class HubTest(unittest.TestCase):
         _, runs = self.req("/api/cores?scope=cpu&cpu=Soc+CPU+X+%2B+Soc+CPU+Y")
         self.assertEqual(len(runs["cores"]), 2)
 
+    def test_one_core_design_keeps_its_board(self):
+        # "Cortex-A53" is a core in many chips: two boards are not peers.
+        ids = [self.hybrid(f"One Core ({b})", [s])["id"]
+               for b, s in (("Board P", 10000), ("Board Q", 12000))]
+        _, page = self.req("/api/cores?scope=cpu&q=One+Core&limit=50")
+        self.assertTrue(all(r.get("cpu_fit") is None for r in page["cores"]
+                            if r["run_id"] in ids))
+        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=One+Core")
+        self.assertEqual(len(page["groups"]), 2)
+
+    def test_a_run_carries_its_guessed_layout(self):
+        doc = document()
+        doc["system"]["cpu_models"] = "Shw A + Shw B (Shw Board)"
+        doc["cores"] = [core(cpu=i, score=20000.0 if i < 2 else 8000.0) for i in range(8)]
+        rid = self.upload(doc)["id"]
+        _, run = self.req(f"/api/runs/{rid}")
+        self.assertEqual(run["cpu_layout"], "2x Shw A + 6x Shw B")
+        _, page = self.req("/api/cores?scope=cpu&q=Shw+A")
+        self.assertEqual(page["cores"][0]["cpu_layout"], "2x Shw A + 6x Shw B")
+
     def test_core_counts_split_a_soc(self):
         for layout, s in (("2x Lay A + 6x Lay B", 10000), ("4x Lay A + 4x Lay B", 11000),
                           ("4x Lay A + 4x Lay B", 12000)):

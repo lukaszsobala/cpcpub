@@ -161,8 +161,9 @@ rows that happened to be on it. With `group=run` it also decides which record
 stands for an upload — per GHz that is its most efficient core, not its fastest.
 
 **The same CPU.** Runs are peers when they name the same `cpu_models`
-(the board in parentheses at its end aside, so two boards on one SoC are one
-CPU) and the same core layout, target, vectorize and FMA, and for the
+(the board in parentheses at its end set aside where the line names several
+core designs, so two boards on one big.LITTLE SoC are one CPU -- one design
+alone is a core in many chips, and keeps its board) and the same core layout, target, vectorize and FMA, and for the
 whole-machine and per-thread scopes the same thread count. A run measured with
 CPUs switched off (`system.cpus_offline`) is no one's peer: it is listed, but
 left out of every comparison, of `group=cpu` and of `/rank`'s populations. A board row's

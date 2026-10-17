@@ -387,6 +387,19 @@ function fillSystems(counts) {
   if (sel.value !== chosen) sel.value = "";
 }
 
+// A CPU line with how many of each core it has, where the run's layout names
+// the same designs in the same order: "4× Cortex-A55 + 4× Cortex-A76 (Radxa
+// ROCK 5B)". Anything that does not line up is left as the line was.
+function withCounts(line, layout) {
+  if (!layout) return line;
+  const board = line.match(/\s*\([^()]*\)$/);
+  const names = (board ? line.slice(0, board.index) : line).split(" + ");
+  const parts = layout.split(" + ").map((p) => p.match(/^(\d+)x (.+)$/));
+  if (parts.length !== names.length ||
+      parts.some((p, i) => !p || p[2] !== names[i])) return line;
+  return parts.map((p) => `${p[1]}× ${p[2]}`).join(" + ") + (board ? board[0] : "");
+}
+
 // What to call a machine whose run never said. uname's `machine` is the
 // instruction set, not a CPU: printing it bare made a row read as a box called
 // "aarch64", which is both untrue and already the target column's job. Runs
@@ -394,7 +407,7 @@ function fillSystems(counts) {
 // permanently in that state — nothing can go back and name them — so the label
 // says what it knows and admits the rest.
 function machineName(row, unknown = "unknown CPU") {
-  if (row.cpu_models) return row.cpu_models;
+  if (row.cpu_models) return withCounts(row.cpu_models, row.cpu_layout);
   return row.machine ? `unnamed ${row.machine} CPU` : unknown;
 }
 
@@ -852,7 +865,6 @@ function renderGroup(tbody, g, number) {
                 g.run_id ? runLink(g.run_id, machineName(g)) : machineName(g));
   }
   name.append(head);
-  if (g.cpu_layout) name.append(el("span", "label", g.cpu_layout));
   if (g.cpus_offline) name.append(offlineNote(g));
   name.append(el("span", "label", g.runs > 1
     ? `median of ${g.runs} runs` + (g.boards && g.boards.length ? ` · ${g.boards.join(", ")}` : "")

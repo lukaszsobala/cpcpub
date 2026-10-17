@@ -42,7 +42,7 @@ from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import cast
+from typing import cast, overload
 
 HERE = Path(__file__).resolve().parent
 STATIC_DIR = HERE / "static"
@@ -217,6 +217,13 @@ RELEASE_BUILD = ("(SELECT vb.release FROM verified_builds vb "
                  "WHERE vb.sha256 = r.binary_sha256 "
                  "ORDER BY vb.release_rank DESC, vb.added_at DESC "
                  "LIMIT 1) AS release_build")
+
+# RUN_COLUMNS as a select list over `runs r`, the layout read as reported or
+# else guessed, which is what every reader of a run means by it.
+def run_columns_sql() -> str:
+    return ", ".join(f"{LAYOUT_SQL} AS cpu_layout" if c == "cpu_layout" else f"r.{c}"
+                     for c in RUN_COLUMNS)
+
 
 RUN_COLUMNS = [
     "id", "created_at", "label", "notes", "mode", "binary_sha256",
@@ -895,7 +902,7 @@ def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
     elif names and len(names) == len(groups):
         # The line lists designs in the order of their first CPU, so the group
         # holding the lowest-numbered CPU is the first name.
-        first = [min((cpu_of(r) for r in g if cpu_of(r) is not None), default=1 << 30)
+        first = [min((c for r in g if (c := cpu_of(r)) is not None), default=1 << 30)
                  for g in groups]
         labels = [""] * len(groups)
         for name, k in zip(names, sorted(range(len(groups)), key=first.__getitem__)):
@@ -919,7 +926,8 @@ def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
                 if mine:
                     out.append({"scope": "thread", "name": label,
                                 "ids": [t["id"] for t in mine],
-                                "cpus": sorted(cpu_of(t) for t in mine)})
+                                "cpus": sorted(c for t in mine
+                                               if (c := cpu_of(t)) is not None)})
         else:
             out.append({"scope": "thread", "name": "all threads",
                         "ids": [t["id"] for t in threads],
@@ -965,18 +973,24 @@ def guess_layout(records: list[dict], cpu_models: str | None,
 LAYOUT_SQL = "COALESCE(r.cpu_layout, r.cpu_layout_guess)"
 
 
+@overload
+def cpu_family(cpu_models: str) -> str: ...
+@overload
+def cpu_family(cpu_models: None) -> None: ...
 def cpu_family(cpu_models: str | None) -> str | None:
-    """The CPU line without the board it was measured on.
+    """The CPU line without the board it was measured on, where that leaves a chip.
 
     The benchmark appends the platform's name in parentheses ("Cortex-A55 +
     Cortex-A76 (Radxa ROCK 5B)"), which tells two boards on one SoC apart in a
-    run's own title but must not tell their processors apart. A line that is
-    only a parenthetical, or has none, is returned as it is.
+    run's own title but must not tell their processors apart. Only a line
+    naming several designs loses it: with the core counts beside it, which
+    peer_key() also reads, that is close to naming the SoC. A single design is
+    a core and not a chip -- "Cortex-A53" is a dozen SoCs at as many clocks --
+    so there the board is what tells the chips apart, and stays.
     """
-    if not cpu_models:
+    if not cpu_models or not named_designs(cpu_models):
         return cpu_models
-    line = re.sub(r"\s*\([^()]*\)$", "", cpu_models)
-    return line or cpu_models
+    return re.sub(r"\s*\([^()]*\)$", "", cpu_models)
 
 
 def family_clause(column: str, families: list[str]) -> tuple[str, list[object]]:
@@ -1185,7 +1199,7 @@ class Store:
     def run(self, run_id: int) -> dict | None:
         with self.connect() as db:
             row = db.execute(
-                f"SELECT {','.join(RUN_COLUMNS)}, {SUBMITTER}, {RELEASE_BUILD} "
+                f"SELECT {run_columns_sql()}, {SUBMITTER}, {RELEASE_BUILD} "
                 f"FROM runs r WHERE id = ?", (run_id,)).fetchone()
             if row is None:
                 return None
@@ -1321,7 +1335,7 @@ class Store:
             g["runs"] = len(members)
             # The line the group shares, and the boards it was measured on.
             # A lone run keeps its own title, board and all.
-            fam = cpu_family(first.get("cpu_models"))
+            fam = cpu_family(first.get("cpu_models")) or ""
             boards = {m["cpu_models"][len(fam):].strip(" ()")
                       for m in members if m.get("cpu_models")}
             g["boards"] = sorted(b for b in boards if b)
@@ -1352,7 +1366,7 @@ class Store:
         args: list[object] = [user_id] if user_id is not None else []
         with self.connect() as db:
             rows = db.execute(
-                f"SELECT r.{', r.'.join(RUN_COLUMNS)}, {SUBMITTER}, {RELEASE_BUILD}, "
+                f"SELECT {run_columns_sql()}, {SUBMITTER}, {RELEASE_BUILD}, "
                 f"       (SELECT COUNT(*) FROM cores c WHERE c.run_id = r.id) AS records, "
                 f"       (SELECT MAX(c.score) FROM cores c "
                 f"          WHERE c.run_id = r.id AND c.scope != 'total') AS best_score "
