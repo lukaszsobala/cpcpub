@@ -979,9 +979,11 @@ function renderGroup(tbody, g, number) {
   }
   name.append(head);
   if (g.cpus_offline) name.append(offlineNote(g));
-  name.append(el("span", "label", g.runs > 1
-    ? `median of ${g.runs} runs` + (g.boards && g.boards.length ? ` · ${g.boards.join(", ")}` : "")
-    : "1 run"));
+  // The boards they ran on are in its tooltip: listed out, several of them
+  // made the row mostly text.
+  const runs = el("span", "label", g.runs > 1 ? `median of ${g.runs} runs` : "1 run");
+  if (g.runs > 1 && g.boards && g.boards.length) runs.title = `on ${g.boards.join(", ")}`;
+  name.append(runs);
   tr.append(name);
   const systems = (g.sysnames || []).map((s) => osName({ sysname: s })).join(", ");
   tr.append(el("td", "", systems || "—"), el("td", "", g.target || "—"),

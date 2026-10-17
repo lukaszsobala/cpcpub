@@ -37,6 +37,10 @@
 
 * { box-sizing: border-box; }
 
+/* Room for the scrollbar kept whether or not there is one, so unfolding rows
+   until the page scrolls does not shift the whole centred page sideways. */
+html { scrollbar-gutter: stable; }
+
 body {
   margin: 0;
   padding: 0 1.25rem 4rem;
