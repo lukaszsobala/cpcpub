@@ -209,11 +209,9 @@ public final class MainActivity extends Activity {
             "Baseline build only",
             "All four builds: with and without SIMD and FMA"},
             prefs.getInt("variants", 0));
-        page.addView(note("The benchmark is built four ways: with and without "
-            + "SIMD (several numbers per instruction) and FMA (multiply and add as "
-            + "one). The baseline uses neither, so it compares with every other "
-            + "device; the other three only with phones of the same kind, and show "
-            + "what each adds."));
+        page.addView(note("SIMD: several numbers per instruction. FMA: multiply "
+            + "and add in one. The baseline uses neither and compares with any "
+            + "device; the others only with the same kind of chip."));
 
         page.addView(heading("Cool-down"));
         cooldown = radios(page, COOLDOWN_NAMES, prefs.getInt("cooldown", COOLDOWN_DEFAULT));
