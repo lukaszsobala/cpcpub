@@ -8,7 +8,9 @@
 # round: its glibc is older than the binaries need, and the package has to say
 # so at install time rather than install something that will not start.
 # Termux is an aarch64 image; on any other machine it needs qemu-user
-# registered with binfmt_misc, and is skipped, saying so, without it.
+# registered with binfmt_misc, and is skipped, saying so, without it. The armhf
+# packages are tested the same way, in Debian's armhf image, on any machine
+# where qemu-user is registered for 32-bit Arm.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 pkgs=$(cd "$1" && pwd)
@@ -55,6 +57,19 @@ else
     failed="$failed debian:bookworm"
 fi
 rm -f "$log"
+
+# 32-bit Arm, which no runner is: Debian's armhf image under qemu-user, where
+# binfmt_misc has it registered, and skipped, saying so, where not.
+echo "######## debian:trixie (armhf)"
+if [ ! -e /proc/sys/fs/binfmt_misc/qemu-arm ]; then
+    echo "######## debian:trixie (armhf): skipped, nothing here runs an armhf image"
+elif docker run --rm --platform linux/arm/v7 -v "$pkgs:/pkgs:ro" -v "$rel:/rel:ro" \
+        -v "$here/test-inside.sh:/test.sh:ro" debian:trixie sh /test.sh; then
+    echo "######## debian:trixie (armhf): ok"
+else
+    echo "######## debian:trixie (armhf): FAILED"
+    failed="$failed debian:trixie-armhf"
+fi
 
 echo "######## termux"
 if [ "$(uname -m)" != aarch64 ] && [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then

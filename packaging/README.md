@@ -6,7 +6,7 @@ beside them:
 
 | | package | holds |
 | --- | --- | --- |
-| Debian, Ubuntu | `cpcpub_VERSION-1_ARCH.deb` | `/usr/bin/cpcpub`, and `cpcpub-v3` (x86-64) or `cpcpub-rva23` (RISC-V) |
+| Debian, Ubuntu | `cpcpub_VERSION-1_ARCH.deb` | `/usr/bin/cpcpub`, and `cpcpub-v3` (x86-64), `cpcpub-rva23` (RISC-V) or `cpcpub-neon` (32-bit Arm) |
 | | `cpcpub-gui_VERSION-1_all.deb` | the window, with a menu entry |
 | Fedora, openSUSE | `cpcpub-VERSION-1.ARCH.rpm`, `cpcpub-gui-VERSION-1.noarch.rpm` | the same |
 | Arch Linux | `cpcpub-VERSION-1-ARCH.pkg.tar.zst`, `cpcpub-gui-VERSION-1-any.pkg.tar.zst` | the same |
@@ -15,8 +15,9 @@ beside them:
 | Android | `cpcpub-VERSION-android-arm64.apk` | an app around the static Android binary; see [android/](../android/README.md) |
 
 The Linux packages exist for every architecture the release has a Linux
-binary for: x86-64, AArch64, RISC-V, LoongArch, ppc64le and s390x (no Arch
-package for s390x, which Arch has no port for).
+binary for: x86-64, AArch64, 32-bit Arm (ARMv7 with hard float: Debian's
+armhf, rpm's armv7hl, Arch Linux ARM's armv7h), RISC-V, LoongArch, ppc64le
+and s390x (no Arch package for s390x, which Arch has no port for).
 
 ```sh
 sudo apt install ./cpcpub_*_amd64.deb ./cpcpub-gui_*_all.deb
@@ -161,7 +162,7 @@ commit packages to the same bytes. The workflow sets it to the commit's time.
 - **Two x86-64 builds, one package.** `/usr/bin/cpcpub` (and `cpcpub.exe` on
   Windows) is always the baseline build: it runs everywhere, and it is what
   results compare against. The `-v3` build goes beside it, and the RISC-V
-  package does the same with `-rva23`. The window's Benchmark field mentions
+  package does the same with `-rva23` and the 32-bit Arm one with `-neon`. The window's Benchmark field mentions
   the other build in its tooltip, and Browse picks it. Choosing one quietly by
   CPU would hide which build produced a result.
 - **The glibc floor is read from the binaries.** The binaries currently need

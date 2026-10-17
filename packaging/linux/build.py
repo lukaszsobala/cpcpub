@@ -52,10 +52,12 @@ RELEASE = 1
 
 # (the release asset's suffix, nfpm's name for the architecture, the other
 # builds for it as {asset suffix: installed name}). nfpm turns its names into
-# each format's own -- amd64 is x86_64 to rpm, loong64 is loongarch64.
+# each format's own -- amd64 is x86_64 to rpm, loong64 is loongarch64, and
+# arm7 is armhf to Debian, armv7hl to rpm and armv7h to Arch Linux ARM.
 ARCHES = [
     ("x86_64", "amd64", {"x86_64-v3": "cpcpub-v3"}),
     ("aarch64", "arm64", {}),
+    ("armv7", "arm7", {"armv7-neon": "cpcpub-neon"}),
     ("riscv64", "riscv64", {"riscv64-rva23": "cpcpub-rva23"}),
     ("loongarch64", "loong64", {}),
     ("ppc64le", "ppc64le", {}),

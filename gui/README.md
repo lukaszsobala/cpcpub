@@ -25,7 +25,7 @@ almost certainly already has:
 The benchmark itself still needs nothing installed. The window looks for the
 `bench/cpcpub` this tree builds, then the `cpcpub` installed beside itself, then
 `cpcpub` on `PATH`. Where a package put a newer-ISA build beside the plain one
--- `cpcpub-v3`, `cpcpub-rva23` -- it takes the newest one this processor has
+-- `cpcpub-v3`, `cpcpub-rva23`, `cpcpub-neon` -- it takes the newest one this processor has
 the instructions for, read off `/proc/cpuinfo` (on Windows, the system's own
 AVX2 check), and the plain one otherwise. Those builds do not check for
 themselves: started on a processor without the instructions, one dies in the

@@ -110,6 +110,13 @@ def has_rva23():
     return base.startswith("rv64") and "v" in base[4:] and RVA23 <= set(extensions)
 
 
+def has_neon():
+    """NEON, by either name: a 32-bit kernel calls it neon, and a 64-bit one --
+    under a 32-bit userland, as on a Raspberry Pi running the 32-bit OS --
+    calls the same unit asimd."""
+    return bool({"neon", "asimd"} & set(cpuinfo("Features").split()))
+
+
 # The other builds a package installs beside the plain one, by the suffix
 # their file names carry: the same benchmark for a newer instruction set, and
 # how to tell whether this processor has it. The builds do not check for
@@ -118,6 +125,7 @@ def has_rva23():
 BUILDS = {
     "-v3": ("x86-64-v3 (AVX2 and FMA)", has_x86_64_v3),
     "-rva23": ("the RISC-V RVA23 profile", has_rva23),
+    "-neon": ("ARMv7 with NEON", has_neon),
 }
 
 # The four variants the binary carries, in the order --list-variants prints

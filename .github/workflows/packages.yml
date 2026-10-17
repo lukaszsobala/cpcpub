@@ -148,8 +148,9 @@ jobs:
           retention-days: 7
 
   # Installed in containers of the distributions they are for, on both
-  # architectures there are runners for. The arm64 runner also runs Termux's
-  # own image, natively.
+  # architectures there are runners for, and armhf in Debian's image under
+  # emulation on the x86-64 one. The arm64 runner also runs Termux's own image,
+  # natively.
   linux-test:
     needs: [prepare, linux]
     name: linux-test (${{ matrix.runs-on }})
@@ -174,6 +175,18 @@ jobs:
         with:
           name: packages-linux
           path: pkgs
+      # The armhf packages, which no runner is, run under qemu-user on the
+      # x86-64 one: Ubuntu's static qemu registers with binfmt_misc's F flag,
+      # which is what lets a container use it. Arm only -- the Termux image
+      # already runs natively on the arm64 runner, and twice is slower, not
+      # more checked.
+      - if: ${{ matrix.runs-on == 'ubuntu-24.04' }}
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user-static
+          sudo update-binfmts --disable qemu-aarch64 || true
+          cat /proc/sys/fs/binfmt_misc/qemu-arm
       - run: sh packaging/linux/test.sh pkgs rel
 
   # The window for Windows: Python, PyGObject and GTK 4 from MSYS2, frozen with

@@ -195,6 +195,40 @@ jobs:
             libc-arch: loong64
             qemu: loongarch64
             qemu-cpu: la464
+          # 32-bit Arm: ARMv7 with hard float, as Debian's armhf baseline has
+          # it -- VFPv3-D16 and no NEON -- so it runs on every ARMv7 board a
+          # current distribution does, the few without NEON (Tegra 2, Marvell's
+          # Armada 370/XP) included. Thumb-2, the toolchain's default. Its four
+          # variants come out as one: there is no vector unit to vectorise
+          # for, and no fused multiply-add before VFPv4.
+          #
+          # Not ARMv6 (the first Raspberry Pi and the Zero): this image's armhf
+          # C runtime is itself ARMv7, so an -march=armv6 build linked here
+          # would still not start on one. That needs a toolchain of its own.
+          - name: armv7
+            runs-on: ubuntu-24.04
+            asset: cpcpub-linux-armv7
+            cross: arm-linux-gnueabihf
+            libc-arch: armhf
+            vars: MARCH=armv7-a+fp
+            target: armv7
+            qemu: arm
+            qemu-cpu: cortex-a9
+          # The same with NEON, and the 32 VFP registers that come with it:
+          # every Cortex-A7, A8, A15 and A17 has it, and nearly every A5 and
+          # A9. The build where the vectorised variants differ on this ISA, as
+          # x86_64-v3 is on x86. NEONv1 rather than VFPv4's NEONv2, which the
+          # A8 and A9 lack -- so no FMA here either. Run as a Cortex-A8, the
+          # oldest core it claims to run on.
+          - name: armv7-neon
+            runs-on: ubuntu-24.04
+            asset: cpcpub-linux-armv7-neon
+            cross: arm-linux-gnueabihf
+            libc-arch: armhf
+            vars: MARCH=armv7-a+simd
+            target: armv7
+            qemu: arm
+            qemu-cpu: cortex-a8
           # Apple Silicon. A native arm64 macOS runner, because there is no
           # cross-toolchain for a Mach-O target here and nothing to emulate it
           # with -- so unlike every row above, what this one publishes is only
@@ -501,6 +535,28 @@ jobs:
           import glob, os, re, subprocess, sys
 
           name, cross = os.environ["NAME"], os.environ.get("CROSS", "")
+
+          # 32-bit Arm: what the linked binary declares of the FP and vector
+          # units, crt objects and all. Hard float always; NEON exactly when the
+          # row asks for it -- a baseline that picked some up stops running on
+          # the boards it exists for, and a NEON build that lost it measures
+          # nothing its name says.
+          if name.startswith("armv7"):
+              out = subprocess.run([f"{cross}-readelf", "-A", os.environ["BIN"]],
+                                   capture_output=True, text=True, check=True).stdout
+              tags = dict(re.findall(r"^\s*(Tag_\w+): (.*)$", out, re.M))
+              assert tags.get("Tag_CPU_arch") == "v7", tags
+              assert tags.get("Tag_ABI_VFP_args") == "VFP registers", "not a hard-float build"
+              simd = tags.get("Tag_Advanced_SIMD_arch")
+              if name == "armv7-neon":
+                  assert simd == "NEONv1", f"expected NEONv1, declares {simd}"
+              else:
+                  assert simd is None, f"the baseline build requires {simd}"
+                  assert tags.get("Tag_FP_arch") == "VFPv3-D16", tags.get("Tag_FP_arch")
+              print(f"{name}: v7, hard float, {tags.get('Tag_FP_arch')}, "
+                    f"{simd or 'no NEON'}")
+              sys.exit(0)
+
           if not name.startswith("riscv64"):
               sys.exit(0)
 

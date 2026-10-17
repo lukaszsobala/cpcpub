@@ -999,6 +999,16 @@ static const char *arch_string(void) {
 #endif
 #elif defined(__s390x__)
     return "s390x";
+// 32-bit Arm, by the architecture the build targets rather than the machine it
+// runs on: an ARMv7 build on an ARMv8 core is still an ARMv7 build, the way an
+// x86-64 build on an AVX-512 machine is still x86-64. uname's spelling, less
+// its "l" for little-endian, since that is what people call these boards.
+#elif defined(__arm__) && defined(__ARM_ARCH) && __ARM_ARCH == 7
+    return "armv7";
+#elif defined(__arm__) && defined(__ARM_ARCH) && __ARM_ARCH == 6
+    return "armv6";
+#elif defined(__arm__)
+    return "arm";
 #else
     return "unknown";
 #endif
@@ -1013,6 +1023,14 @@ static const char *arch_string(void) {
 // once so the helpers below and the branch that calls them cannot drift apart.
 #if !defined(_WIN32) && !defined(__APPLE__)
 #define CPCPUB_PROC_CPUINFO 1
+#endif
+
+// Arm in either width names its cores the same way: a 32-bit kernel publishes
+// the same MIDR fields in /proc/cpuinfo as a 64-bit one, and a 32-bit build on
+// a 64-bit kernel -- a 32-bit Raspberry Pi OS on a Pi 4, say -- reads the same
+// register file in sysfs.
+#if defined(CPCPUB_PROC_CPUINFO) && (defined(__aarch64__) || defined(__arm__))
+#define CPCPUB_ARM_MIDR 1
 #endif
 
 #ifdef CPCPUB_PROC_CPUINFO
@@ -1036,7 +1054,7 @@ static void models_add(char *out, size_t outsz, const char *name) {
 }
 #endif  // CPCPUB_PROC_CPUINFO
 
-#if defined(CPCPUB_PROC_CPUINFO) && defined(__aarch64__)
+#ifdef CPCPUB_ARM_MIDR
 // How many logical CPUs each distinct core name was read from, in the order of
 // each name's first CPU -- the same order models_add() gives the names, so the
 // two lists line up.
@@ -1068,24 +1086,32 @@ static void tally_layout(const core_tally_t *t, char *out, size_t outsz) {
         if (used >= outsz) { out[0] = '\0'; return; }
     }
 }
-#endif  // CPCPUB_PROC_CPUINFO && __aarch64__
+#endif  // CPCPUB_ARM_MIDR
 
-#if defined(CPCPUB_PROC_CPUINFO) && defined(__aarch64__)
+#ifdef CPCPUB_ARM_MIDR
 // Arm parts carry no brand string: there is no CPUID leaf to hold one and no
 // vendor writes one into /proc/cpuinfo, which publishes the raw MIDR fields
 // instead -- an implementer byte and a 12-bit part number. Without the tables
-// below every Arm machine names itself "aarch64", which is the one thing a
-// reader of these results already knows from build.target.
+// below every Arm machine names itself by its instruction set, "aarch64" or
+// "ARMv7 Processor", which a reader already knows from build.target.
 //
-// The numbers are the documented MIDR_EL1 values, as carried by Arm's own
-// manuals and the kernel's arch/arm64/include/asm/cputype.h. Only parts that
-// can run a 64-bit kernel are listed -- AArch32-only and Cortex-M cores cannot
-// be running this binary, so naming them would be dead weight. An unlisted
-// part still reports its numbers rather than "unknown": silicon newer than
-// this table is exactly the case where the raw pair is worth having.
+// The numbers are the documented MIDR values, as carried by Arm's own manuals
+// and the kernel's arch/arm64/include/asm/cputype.h and arch/arm's proc-v7
+// tables. The 32-bit-only cores -- ARM11 and the ARMv7 Cortex-A parts -- are
+// listed too, since an armv7 build runs on them; Cortex-M and -R cores cannot
+// run Linux userland, so naming them would be dead weight. An unlisted part
+// still reports its numbers rather than "unknown": silicon newer than this
+// table is exactly the case where the raw pair is worth having.
 typedef struct { unsigned part; const char *name; } midr_part_t;
 
 static const midr_part_t midr_arm[] = {
+    // 32-bit only: ARM11 (ARMv6, the first Raspberry Pi) and ARMv7.
+    { 0xb02, "ARM11-MPCore" },  { 0xb36, "ARM1136" },
+    { 0xb56, "ARM1156" },       { 0xb76, "ARM1176" },
+    { 0xc05, "Cortex-A5" },     { 0xc07, "Cortex-A7" },
+    { 0xc08, "Cortex-A8" },     { 0xc09, "Cortex-A9" },
+    { 0xc0d, "Cortex-A12" },    { 0xc0e, "Cortex-A17" },
+    { 0xc0f, "Cortex-A15" },    { 0xd01, "Cortex-A32" },
     { 0xd02, "Cortex-A34" },    { 0xd03, "Cortex-A53" },
     { 0xd04, "Cortex-A35" },    { 0xd05, "Cortex-A55" },
     { 0xd06, "Cortex-A65" },    { 0xd07, "Cortex-A57" },
@@ -1128,6 +1154,8 @@ static const midr_part_t midr_apple[] = {
 };
 
 static const midr_part_t midr_qcom[] = {
+    { 0x00f, "Scorpion" },       { 0x02d, "Scorpion" },
+    { 0x04d, "Krait" },          { 0x06f, "Krait" },
     { 0x001, "Oryon" },          { 0x201, "Kryo" },
     { 0x205, "Kryo" },           { 0x211, "Kryo" },
     { 0x800, "Falkor-V1/Kryo" }, { 0x801, "Kryo-V2" },
@@ -1180,6 +1208,7 @@ static const midr_part_t midr_phytium[] = {
 static const midr_part_t midr_brcm[]   = { { 0x100, "Brahma-B53" },
                                            { 0x516, "ThunderX2" } };
 static const midr_part_t midr_apm[]    = { { 0x000, "X-Gene" } };
+static const midr_part_t midr_marvell[] = { { 0x581, "PJ4" }, { 0x584, "PJ4B-MP" } };
 static const midr_part_t midr_ms[]     = { { 0xd49, "Azure-Cobalt-100" } };
 
 typedef struct {
@@ -1199,6 +1228,7 @@ static const midr_impl_t midr_impls[] = {
     { 0x50, "APM",       midr_apm,     ARRAY_LEN(midr_apm)     },
     { 0x51, "Qualcomm",  midr_qcom,    ARRAY_LEN(midr_qcom)    },
     { 0x53, "Samsung",   midr_samsung, ARRAY_LEN(midr_samsung) },
+    { 0x56, "Marvell",   midr_marvell, ARRAY_LEN(midr_marvell) },
     { 0x61, "Apple",     midr_apple,   ARRAY_LEN(midr_apple)   },
     { 0x6d, "Microsoft", midr_ms,      ARRAY_LEN(midr_ms)      },
     { 0x70, "Phytium",   midr_phytium, ARRAY_LEN(midr_phytium) },
@@ -1288,7 +1318,7 @@ static void midr_from_sysfs(char *out, size_t outsz, core_tally_t *tally) {
         tally_add(tally, name);
     }
 }
-#endif  // CPCPUB_PROC_CPUINFO && __aarch64__
+#endif  // CPCPUB_ARM_MIDR
 
 #ifdef CPCPUB_PROC_CPUINFO
 // Whether a "model name" says nothing the target field did not already say.
@@ -1309,7 +1339,7 @@ static int name_is_generic(const char *s) {
     low[w] = '\0';
 
     static const char *const nothings[] = {
-        "aarch64", "arm64", "armv8", "armv8l", "armv7l", "arm",
+        "aarch64", "arm64", "armv8", "armv8l", "armv7l", "armv6l", "arm",
         "unknown", "cpu", "processor", "generic",
     };
     for (int i = 0; i < ARRAY_LEN(nothings); ++i) {
@@ -1400,7 +1430,7 @@ static void detect_cpu_models(char *out, size_t outsz, char *layout, size_t layo
     // in parentheses, and stands alone where neither of the others answered.
     char models[320], platform[128];
     models[0] = platform[0] = '\0';
-#if defined(CPCPUB_PROC_CPUINFO) && defined(__aarch64__)
+#ifdef CPCPUB_ARM_MIDR
     // Outside the block below, because sysfs answers this even on a machine
     // whose /proc/cpuinfo could not be opened at all.
     char midrs[320];
@@ -1417,7 +1447,7 @@ static void detect_cpu_models(char *out, size_t outsz, char *layout, size_t layo
         static const char *const keys[] = {
             "model name", "Model Name", "cpu model", "cpu", "uarch",
         };
-#if defined(CPCPUB_PROC_CPUINFO) && defined(__aarch64__)
+#ifdef CPCPUB_ARM_MIDR
         unsigned impl = 0;
         int have_impl = 0;
 #endif
@@ -1461,7 +1491,7 @@ static void detect_cpu_models(char *out, size_t outsz, char *layout, size_t layo
             if (!platform[0] && strcmp(key, "Hardware") == 0) {
                 snprintf(platform, sizeof(platform), "%s", val);
             }
-#if defined(CPCPUB_PROC_CPUINFO) && defined(__aarch64__)
+#ifdef CPCPUB_ARM_MIDR
             // Both fields appear once per processor, implementer first, so a
             // part number is always read against the implementer above it.
             if (strcmp(key, "CPU implementer") == 0) {
@@ -1479,7 +1509,7 @@ static void detect_cpu_models(char *out, size_t outsz, char *layout, size_t layo
         fclose(f);
     }
 
-#if defined(CPCPUB_PROC_CPUINFO) && defined(__aarch64__)
+#ifdef CPCPUB_ARM_MIDR
     // Where /proc/cpuinfo carried no MIDR pair -- masked, synthesised, or not
     // there at all -- the register file still has it. Only consulted as a
     // fallback: the two report the same numbers, and /proc/cpuinfo is one file

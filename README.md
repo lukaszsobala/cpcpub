@@ -12,6 +12,7 @@ Download a binary from [the latest release][rel] — each is self-contained and 
 | --- | --- | --- | --- | --- |
 | x86-64 | `linux-x86_64`, `linux-x86_64-v3` | `macos-x86_64` | `windows-x86_64.exe`, `windows-x86_64-v3.exe` | |
 | Arm64 | `linux-aarch64` | `macos-arm64` | `windows-arm64.exe` | `android-arm64` |
+| 32-bit Arm | `linux-armv7`, `linux-armv7-neon` | | | |
 | RISC-V | `linux-riscv64`, `linux-riscv64-rva23` | | | |
 | Other | `linux-loongarch64`, `linux-ppc64le`, `linux-s390x` | | | |
 
@@ -37,7 +38,7 @@ Or install a package from the same release. Each one carries those same binaries
 
 [packaging/README.md](packaging/README.md) has the details, including why the Linux packages need glibc 2.38 or newer.
 
-The `-v3` and `-rva23` builds need a newer ISA than the plain ones and will not start on older hardware; the unsuffixed build runs everywhere. On macOS a binary fetched by a browser is quarantined and needs `xattr -d com.apple.quarantine cpcpub-macos-arm64` before it will run — `curl` does not set that attribute.
+The `-v3`, `-rva23` and `-neon` builds need a newer ISA than the plain ones and will not start on older hardware; the unsuffixed build runs everywhere. The 32-bit Arm builds are ARMv7 with hard float, so they do not run on ARMv6 — the first Raspberry Pi and the Pi Zero. On macOS a binary fetched by a browser is quarantined and needs `xattr -d com.apple.quarantine cpcpub-macos-arm64` before it will run — `curl` does not set that attribute.
 
 Or build it. Needs only `libc`, `libm` and `pthreads`; C2x with GCC 13+ or Clang:
 

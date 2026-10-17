@@ -12,6 +12,8 @@ case $(uname -m) in
              builds="cpcpub=cpcpub-linux-x86_64 cpcpub-v3=cpcpub-linux-x86_64-v3" ;;
     aarch64) deb=arm64 rpm=aarch64 pac=aarch64
              builds="cpcpub=cpcpub-linux-aarch64" ;;
+    armv7l)  deb=armhf rpm=armv7hl pac=armv7h
+             builds="cpcpub=cpcpub-linux-armv7 cpcpub-neon=cpcpub-linux-armv7-neon" ;;
     *) echo "no test written for $(uname -m)" >&2; exit 1 ;;
 esac
 
@@ -102,11 +104,17 @@ except OSError:
     sys.exit("the window wrote no report")
 print({k: v for k, v in report.items() if k != "log"})
 # The fastest build installed that this processor runs: the x86-64-v3 one
-# where the processor has all of x86-64-v3, as Linux names the parts.
-flags = next((line.split(":", 1)[1].split() for line in open("/proc/cpuinfo")
-              if line.startswith("flags")), [])
-v3 = {"avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave"} <= set(flags)
-want = "/usr/bin/cpcpub-v3" if v3 and os.path.exists("/usr/bin/cpcpub-v3") else "/usr/bin/cpcpub"
+# where the processor has all of x86-64-v3, the NEON one where it has NEON,
+# as Linux names the parts.
+def listed(key):
+    return set(next((line.split(":", 1)[1].split() for line in open("/proc/cpuinfo")
+                     if line.split(":", 1)[0].strip() == key), []))
+v3 = {"avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave"} <= listed("flags")
+neon = bool({"neon", "asimd"} & listed("Features"))
+want = "/usr/bin/cpcpub"
+for build, has in (("/usr/bin/cpcpub-v3", v3), ("/usr/bin/cpcpub-neon", neon)):
+    if has and os.path.exists(build):
+        want = build
 assert report["binary"] == want, (report["binary"], want)
 assert report["exit"] == 0 and report["docs"] == 1, report["log"]
 assert report["saved"], "no result document was saved"
