@@ -10,9 +10,9 @@ beside them:
 | | `cpcpub-gui_VERSION-1_all.deb` | the window, with a menu entry |
 | Fedora, openSUSE | `cpcpub-VERSION-1.ARCH.rpm`, `cpcpub-gui-VERSION-1.noarch.rpm` | the same |
 | Arch Linux | `cpcpub-VERSION-1-ARCH.pkg.tar.zst`, `cpcpub-gui-VERSION-1-any.pkg.tar.zst` | the same |
-| Termux | `cpcpub-termux_VERSION-1_aarch64.deb` | the static Android binary, under Termux's prefix |
+| Termux | `cpcpub-termux_VERSION-1_aarch64.deb`, `..._arm.deb` | the static Android binary for that ABI, under Termux's prefix |
 | Windows | `cpcpub-VERSION-windows-setup.exe`, for x64 and Arm64 | `cpcpub.exe` on PATH (and `cpcpub-v3.exe` on x64), the window in the Start menu |
-| Android | `cpcpub-VERSION-android-arm64.apk` | an app around the static Android binary; see [android/](../android/README.md) |
+| Android | `cpcpub-VERSION-android.apk` | an app around the static Android binaries, arm64 and armv7; see [android/](../android/README.md) |
 
 The Linux packages exist for every architecture the release has a Linux
 binary for: x86-64, AArch64, 32-bit Arm (ARMv7 with hard float: Debian's
@@ -23,7 +23,7 @@ and s390x (no Arch package for s390x, which Arch has no port for).
 sudo apt install ./cpcpub_*_amd64.deb ./cpcpub-gui_*_all.deb
 sudo dnf install ./cpcpub-*.x86_64.rpm ./cpcpub-gui-*.noarch.rpm
 sudo pacman -U cpcpub-*-x86_64.pkg.tar.zst cpcpub-gui-*-any.pkg.tar.zst
-apt install ./cpcpub-termux_*_aarch64.deb          # inside Termux
+apt install ./cpcpub-termux_*_aarch64.deb          # inside Termux (_arm.deb on 32-bit)
 ```
 
 ## The one rule: the binaries go in untouched
@@ -67,8 +67,11 @@ is published only if all of them pass:
     the result (see `CPCPUB_GUI_SMOKE` in the window's source);
   - uninstalls.
 
-  Debian 12 must *refuse* the package (see below). The Termux package is
-  installed in Termux's own image, natively on the arm64 runner.
+  Debian 12 must *refuse* the package (see below). The armhf packages go
+  through the same test in Debian's armhf image under qemu on the x86-64
+  runner. The aarch64 Termux package is installed in Termux's own image,
+  natively on the arm64 runner. The 32-bit one is not: its image hangs under
+  qemu, and its binary is the APK's armv7 one, which the release runs.
 - **Windows:** [windows/test-installer.ps1](windows/test-installer.ps1)
   installs the setup silently on an x64 and an Arm64 runner, and checks:
   - that each got its own machine's benchmark, by digest, and its own
@@ -81,7 +84,7 @@ is published only if all of them pass:
 - **Android:** the APK is checked rather than installed. There is no
   emulator on the arm64 runners, and an x86 emulator's Arm translation cannot
   run a static binary. The checks are its signature, its manifest and the
-  embedded binary's digest. The same binary runs in Termux's image above.
+  embedded binaries' digests. The same binaries run in Termux's images above.
   [android/README.md](../android/README.md) says what was tried on an
   emulator by hand.
 

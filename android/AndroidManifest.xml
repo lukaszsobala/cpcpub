@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  cpcpub for Android: a window over the release's static Android binary, which
-  rides in the APK as lib/arm64-v8a/libcpcpub.so. The version, the SDK levels
-  and the signing come from build.sh.
+  cpcpub for Android: a window over the release's static Android binaries,
+  which ride in the APK as lib/arm64-v8a/libcpcpub.so and
+  lib/armeabi-v7a/libcpcpub.so; the device gets the one for its own ABI. The
+  version, the SDK levels and the signing come from build.sh.
 
   extractNativeLibs: the package manager copies the "library" out to the app's
   native library directory at install time, where Android lets an app execute

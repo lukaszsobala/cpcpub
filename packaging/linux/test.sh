@@ -71,33 +71,44 @@ else
     failed="$failed debian:trixie-armhf"
 fi
 
-echo "######## termux"
-if [ "$(uname -m)" != aarch64 ] && [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
-    echo "######## termux: skipped, nothing here runs an aarch64 image"
-# Termux's dpkg runs as Termux's own user, who cannot read a file mounted from
-# outside; the package is copied into its temporary directory first.
-elif docker run --rm --platform linux/arm64 -v "$pkgs:/pkgs:ro" -v "$rel:/rel:ro" \
-        termux/termux-docker:aarch64 bash -c '
-        set -eu
-        cp /pkgs/cpcpub-termux_*_aarch64.deb "$TMPDIR/cpcpub.deb"
-        dpkg -i "$TMPDIR/cpcpub.deb"
-        bin="$PREFIX/bin/cpcpub"
-        have=$(sha256sum "$bin" | cut -d" " -f1)
-        want=$(sha256sum /rel/cpcpub-android-arm64 | cut -d" " -f1)
-        [ "$have" = "$want" ] || { echo "$bin is $have, the release is $want"; exit 1; }
-        echo "$bin = cpcpub-android-arm64 ($have)"
-        cpcpub --threads 1 --cpus 0 --time 0.05 --reps 1 --warmup 0.02 --json \
-            > "$TMPDIR/run.json"
-        grep -q "\"binary_sha256\": \"$have\"" "$TMPDIR/run.json"
-        echo "binary_sha256 matches the installed file"
-        dpkg -r cpcpub
-        [ ! -e "$bin" ]
-        echo "removed cleanly"'; then
-    echo "######## termux: ok"
-else
-    echo "######## termux: FAILED"
-    failed="$failed termux"
-fi
+# Termux, in its own image, for each architecture it has a package for. Its
+# dpkg runs as Termux's own user, who cannot read a file mounted from outside,
+# so the package is copied into its temporary directory first.
+termux() {  # termux TERMUX_ARCH DOCKER_PLATFORM QEMU_NAME ASSET
+    echo "######## termux ($1)"
+    if [ "$(uname -m)" != "$3" ] && [ ! -e "/proc/sys/fs/binfmt_misc/qemu-$3" ]; then
+        echo "######## termux ($1): skipped, nothing here runs a $3 image"
+        return
+    fi
+    # The two names are written into the script rather than passed with -e:
+    # the image's entrypoint starts the command afresh, without them.
+    if docker run --rm --platform "$2" -v "$pkgs:/pkgs:ro" -v "$rel:/rel:ro" \
+            "termux/termux-docker:$1" bash -c '
+            set -eu
+            ARCH='"$1"' ASSET='"$4"'
+            cp /pkgs/cpcpub-termux_*_"$ARCH".deb "$TMPDIR/cpcpub.deb"
+            dpkg -i "$TMPDIR/cpcpub.deb"
+            bin="$PREFIX/bin/cpcpub"
+            have=$(sha256sum "$bin" | cut -d" " -f1)
+            want=$(sha256sum "/rel/$ASSET" | cut -d" " -f1)
+            [ "$have" = "$want" ] || { echo "$bin is $have, the release is $want"; exit 1; }
+            echo "$bin = $ASSET ($have)"
+            cpcpub --threads 1 --cpus 0 --time 0.05 --reps 1 --warmup 0.02 --json \
+                > "$TMPDIR/run.json"
+            grep -q "\"binary_sha256\": \"$have\"" "$TMPDIR/run.json"
+            echo "binary_sha256 matches the installed file"
+            dpkg -r cpcpub
+            [ ! -e "$bin" ]
+            echo "removed cleanly"'; then
+        echo "######## termux ($1): ok"
+    else
+        echo "######## termux ($1): FAILED"
+        failed="$failed termux-$1"
+    fi
+}
+# Not the 32-bit package: its image hangs in its own start-up under qemu,
+# and the binary in it is the APK's armv7 one, which the release runs.
+termux aarch64 linux/arm64 aarch64 cpcpub-android-arm64
 
 [ -z "$failed" ] || { echo "failed:$failed" >&2; exit 1; }
 echo "all distributions passed"

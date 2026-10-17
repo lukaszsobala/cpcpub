@@ -31,6 +31,8 @@ make CC=powerpc64le-linux-gnu-gcc MCPU=power8
 make CC=s390x-linux-gnu-gcc MARCH=z13
 make CC=arm-linux-gnueabihf-gcc MARCH=armv7-a+fp                 # 32-bit Arm, no NEON
 make CC=arm-linux-gnueabihf-gcc MARCH=armv7-a+simd               # ... with NEON
+make CC=arm-linux-gnueabihf-gcc MARCH="armv6+fp -marm" \
+     LDFLAGS="$(armv6/sysroot.py /tmp/rpi)"                     # Pi 1 and Zero: see armv6/sysroot.py
 make CC=x86_64-w64-mingw32-gcc MARCH=x86-64 MTUNE=generic       # -> cpcpub.exe
 make CC=aarch64-w64-mingw32-clang MARCH=armv8-a                 # llvm-mingw
 make CC=aarch64-linux-android29-clang MARCH=armv8-a LDFLAGS=-static

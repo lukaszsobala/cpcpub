@@ -3,7 +3,9 @@
 #
 #   android/build.sh RELEASE_DIR VERSION OUT_DIR
 #
-# -> OUT_DIR/cpcpub-VERSION-android-arm64.apk. Needs $ANDROID_HOME with
+# -> OUT_DIR/cpcpub-VERSION-android.apk, carrying the release's arm64 and
+# armv7 binaries, one per ABI: Android installs the one the device runs
+# natively, so a 32-bit phone gets the armv7 build. Needs $ANDROID_HOME with
 # platforms/android-35 and a build-tools, a JDK (javac, keytool) and python3.
 #
 # The SDK's own tools and no Gradle: the app is five Java files and no
@@ -33,7 +35,10 @@ platform="$sdk/platforms/android-$target_sdk/android.jar"
 bt=${BUILD_TOOLS:-$(ls -d "$sdk"/build-tools/* | sort -V | tail -1)}
 echo "build-tools: $bt"
 asset="$rel/cpcpub-android-arm64"
-[ -f "$asset" ] || { echo "$asset is missing" >&2; exit 1; }
+asset32="$rel/cpcpub-android-armv7"
+for a in "$asset" "$asset32"; do
+    [ -f "$a" ] || { echo "$a is missing" >&2; exit 1; }
+done
 
 # 0.3.6 -> 3006: each part gets three digits, so every release counts higher
 # than the one before, which is all Android asks of a version code.
@@ -75,13 +80,14 @@ javac --release 11 -encoding UTF-8 -Xlint:all,-options -Werror \
 "$bt/d8" --release --min-api "$min_sdk" --lib "$platform" --output "$work/dex" \
     $(find "$work/classes" -name '*.class')
 
-# The code, and the benchmark as the one native "library". Added with fixed
-# timestamps, so the same inputs give the same APK before signing.
-python3 - "$work/base.apk" "$work/dex/classes.dex" "$asset" <<'PY'
+# The code, and the benchmark as the one native "library" of each ABI. Added
+# with fixed timestamps, so the same inputs give the same APK before signing.
+python3 - "$work/base.apk" "$work/dex/classes.dex" "$asset" "$asset32" <<'PY'
 import sys, zipfile
-apk, dex, binary = sys.argv[1:]
+apk, dex, binary, binary32 = sys.argv[1:]
 with zipfile.ZipFile(apk, "a") as z:
-    for name, src in (("classes.dex", dex), ("lib/arm64-v8a/libcpcpub.so", binary)):
+    for name, src in (("classes.dex", dex), ("lib/arm64-v8a/libcpcpub.so", binary),
+                      ("lib/armeabi-v7a/libcpcpub.so", binary32)):
         info = zipfile.ZipInfo(name, date_time=(1981, 1, 1, 0, 0, 0))
         info.compress_type = zipfile.ZIP_DEFLATED
         info.external_attr = 0o644 << 16
@@ -108,21 +114,22 @@ else
     echo "WARNING: no ANDROID_KEYSTORE; signed with a throwaway key, so this APK" \
          "will not install over one signed with any other key"
 fi
-apk="$out/cpcpub-$version-android-arm64.apk"
+apk="$out/cpcpub-$version-android.apk"
 "$bt/apksigner" sign --ks "$ks" --ks-key-alias "$alias" \
     --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
     --out "$apk" "$work/aligned.apk"
 rm -f "$apk.idsig"
 "$bt/apksigner" verify --print-certs "$apk" | grep -E "Signer #1 certificate (DN|SHA-256)"
 
-# What the APK carries has to be the release binary, to the byte.
-python3 - "$apk" "$asset" <<'PY'
+# What the APK carries has to be the release binaries, to the byte.
+python3 - "$apk" "$asset" "$asset32" <<'PY'
 import hashlib, sys, zipfile
-apk, asset = sys.argv[1:]
-inside = zipfile.ZipFile(apk).read("lib/arm64-v8a/libcpcpub.so")
-want = hashlib.sha256(open(asset, "rb").read()).hexdigest()
-have = hashlib.sha256(inside).hexdigest()
-assert have == want, f"the APK's binary is {have}, the release's is {want}"
-print(f"lib/arm64-v8a/libcpcpub.so = {asset.rsplit('/', 1)[-1]} ({have})")
+apk, asset, asset32 = sys.argv[1:]
+for abi, src in (("arm64-v8a", asset), ("armeabi-v7a", asset32)):
+    inside = zipfile.ZipFile(apk).read(f"lib/{abi}/libcpcpub.so")
+    want = hashlib.sha256(open(src, "rb").read()).hexdigest()
+    have = hashlib.sha256(inside).hexdigest()
+    assert have == want, f"the APK's {abi} binary is {have}, the release's is {want}"
+    print(f"lib/{abi}/libcpcpub.so = {src.rsplit('/', 1)[-1]} ({have})")
 PY
 ls -l "$apk"

@@ -20,13 +20,16 @@ also kept in `Android/data/je.qd.cpcpub/files/results/`, and can be saved
 elsewhere or shared as JSON. **Past results** lists them, newest first, with
 the score and whether each is on a hub, and opens one again.
 
-It needs Android 10 (API 29) or newer on a 64-bit Arm device, which is nearly
-every phone sold since 2019.
+It needs Android 10 (API 29) or newer on an Arm device: a 64-bit one runs the
+arm64 build, and one with a 32-bit userland -- older phones, many TV boxes --
+the armv7 build.
 
 ## How the benchmark gets in, unchanged
 
 The release's `cpcpub-android-arm64` rides in the APK as
-`lib/arm64-v8a/libcpcpub.so`, with `extractNativeLibs` on.
+`lib/arm64-v8a/libcpcpub.so`, and `cpcpub-android-armv7` as
+`lib/armeabi-v7a/libcpcpub.so`, with `extractNativeLibs` on. Android installs
+the one for the device's own ABI, which is where the app runs it from.
 
 - **Why disguise it as a library:** since Android 10 an app may not execute
   files it wrote itself. It may execute what the package manager extracted

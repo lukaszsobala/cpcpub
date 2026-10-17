@@ -3,7 +3,7 @@
 
     python3 packaging/linux/build.py RELEASE_DIR VERSION OUT_DIR
 
-RELEASE_DIR holds the release assets (cpcpub-linux-*, cpcpub-android-arm64),
+RELEASE_DIR holds the release assets (cpcpub-linux-*, cpcpub-android-arm64 and -armv7),
 VERSION is the release, with or without its "v". Needs nfpm (or $NFPM) and
 readelf. $SOURCE_DATE_EPOCH, when set, dates every file in every package and
 the release line in the metainfo, so that the same release packaged twice
@@ -195,14 +195,19 @@ def gui_config(version, metainfo):
     return conf
 
 
-def termux_config(binary, version):
-    """Termux keeps its own prefix and calls the architecture aarch64. The
-    binary is the static Android one, so there is nothing to depend on but
-    curl, recommended for an https --submit as on Linux."""
-    conf = common("cpcpub", "arm64", version, DESCRIPTION)
-    # nfpm would write Debian's arm64; Termux's dpkg refuses anything but its
-    # own name for the architecture.
-    conf["deb"] = {"arch": "aarch64"}
+# Termux's names for the architectures it has an Android binary for, with
+# nfpm's: (release asset suffix, nfpm's arch, Termux's arch).
+TERMUX_ARCHES = [("arm64", "arm64", "aarch64"), ("armv7", "arm7", "arm")]
+
+
+def termux_config(binary, version, arch, termux_arch):
+    """Termux keeps its own prefix and its own names for the architectures,
+    aarch64 and arm. The binary is the static Android one, so there is nothing
+    to depend on but curl, recommended for an https --submit as on Linux."""
+    conf = common("cpcpub", arch, version, DESCRIPTION)
+    # nfpm would write Debian's arm64 or armhf; Termux's dpkg refuses anything
+    # but its own name for the architecture.
+    conf["deb"] = {"arch": termux_arch}
     conf["recommends"] = ["curl"]
     conf["contents"] = [
         {"src": str(binary), "dst": f"{TERMUX_PREFIX}/bin/cpcpub",
@@ -265,12 +270,13 @@ def main():
             nfpm(gui_config(version, metainfo), packager, out, work)
         print("cpcpub-gui: deb, rpm, archlinux")
 
-        android = rel / "cpcpub-android-arm64"
-        if not android.is_file():
-            sys.exit(f"{android} is missing")
-        nfpm(termux_config(android, version), "deb",
-             out / f"cpcpub-termux_{version}-{RELEASE}_aarch64.deb", work)
-        print("cpcpub for Termux: deb")
+        for suffix, arch, termux_arch in TERMUX_ARCHES:
+            android = rel / f"cpcpub-android-{suffix}"
+            if not android.is_file():
+                sys.exit(f"{android} is missing")
+            nfpm(termux_config(android, version, arch, termux_arch), "deb",
+                 out / f"cpcpub-termux_{version}-{RELEASE}_{termux_arch}.deb", work)
+            print(f"cpcpub for Termux {termux_arch}: deb")
 
     for path in sorted(set(out.iterdir()) - before):
         print(f"  {path.name}")

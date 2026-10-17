@@ -12,7 +12,7 @@ Download a binary from [the latest release][rel] — each is self-contained and 
 | --- | --- | --- | --- | --- |
 | x86-64 | `linux-x86_64`, `linux-x86_64-v3` | `macos-x86_64` | `windows-x86_64.exe`, `windows-x86_64-v3.exe` | |
 | Arm64 | `linux-aarch64` | `macos-arm64` | `windows-arm64.exe` | `android-arm64` |
-| 32-bit Arm | `linux-armv7`, `linux-armv7-neon` | | | |
+| 32-bit Arm | `linux-armv7`, `linux-armv7-neon`, `linux-armv6` | | | `android-armv7` |
 | RISC-V | `linux-riscv64`, `linux-riscv64-rva23` | | | |
 | Other | `linux-loongarch64`, `linux-ppc64le`, `linux-s390x` | | | |
 
@@ -34,11 +34,11 @@ Or install a package from the same release. Each one carries those same binaries
 | Fedora, openSUSE | `cpcpub-*.rpm`, `cpcpub-gui-*.noarch.rpm` |
 | Arch Linux | `cpcpub-*.pkg.tar.zst`, `cpcpub-gui-*-any.pkg.tar.zst` |
 | Windows | `cpcpub-*-windows-setup.exe`, for x64 and Arm64 alike: the benchmark on PATH, the window in the Start menu |
-| Android | `cpcpub-*-android-arm64.apk`, an app; or `cpcpub-termux_*.deb` for Termux |
+| Android | `cpcpub-*-android.apk`, an app for 64- and 32-bit Arm alike; or `cpcpub-termux_*.deb` for Termux |
 
 [packaging/README.md](packaging/README.md) has the details, including why the Linux packages need glibc 2.38 or newer.
 
-The `-v3`, `-rva23` and `-neon` builds need a newer ISA than the plain ones and will not start on older hardware; the unsuffixed build runs everywhere. The 32-bit Arm builds are ARMv7 with hard float, so they do not run on ARMv6 — the first Raspberry Pi and the Pi Zero. On macOS a binary fetched by a browser is quarantined and needs `xattr -d com.apple.quarantine cpcpub-macos-arm64` before it will run — `curl` does not set that attribute.
+The `-v3`, `-rva23` and `-neon` builds need a newer ISA than the plain ones and will not start on older hardware; the unsuffixed build runs everywhere. The 32-bit Arm packages are ARMv7 with hard float. For ARMv6 — the first Raspberry Pi and the Pi Zero — there is `linux-armv6`, best effort and with no package; it needs Raspberry Pi OS 13 (trixie) or newer. On macOS a binary fetched by a browser is quarantined and needs `xattr -d com.apple.quarantine cpcpub-macos-arm64` before it will run — `curl` does not set that attribute.
 
 Or build it. Needs only `libc`, `libm` and `pthreads`; C2x with GCC 13+ or Clang:
 

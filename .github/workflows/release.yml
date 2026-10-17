@@ -117,6 +117,9 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runs-on }}
+    # A best-effort row that fails leaves the release one asset short rather
+    # than stopping it: the manifest is built from the builds that arrived.
+    continue-on-error: ${{ matrix.best-effort == true }}
     permissions:
       contents: read
     defaults:
@@ -202,9 +205,7 @@ jobs:
           # variants come out as one: there is no vector unit to vectorise
           # for, and no fused multiply-add before VFPv4.
           #
-          # Not ARMv6 (the first Raspberry Pi and the Zero): this image's armhf
-          # C runtime is itself ARMv7, so an -march=armv6 build linked here
-          # would still not start on one. That needs a toolchain of its own.
+          # Not ARMv6: see the armv6 row below.
           - name: armv7
             runs-on: ubuntu-24.04
             asset: cpcpub-linux-armv7
@@ -229,6 +230,25 @@ jobs:
             target: armv7
             qemu: arm
             qemu-cpu: cortex-a8
+          # ARMv6 with VFP, for the first Raspberry Pi and the Pi Zero: best
+          # effort, a download with no package. This image's armhf C runtime
+          # -- the start-up objects and libgcc linked into every binary -- is
+          # ARMv7 Thumb-2, which an ARM1176 cannot execute, so the link takes
+          # Raspberry Pi OS's ARMv6 ones instead, from its archive and checked
+          # against its signing key (bench/armv6/sysroot.py). ARM state rather
+          # than Thumb: ARMv6 has only Thumb-1, which has no VFP. Needs
+          # Raspberry Pi OS 13 (trixie) or newer, for glibc 2.38.
+          - name: armv6
+            runs-on: ubuntu-24.04
+            asset: cpcpub-linux-armv6
+            cross: arm-linux-gnueabihf
+            libc-arch: armhf
+            rpi-sysroot: trixie
+            vars: MARCH="armv6+fp -marm"
+            target: armv6
+            qemu: arm
+            qemu-cpu: arm1176
+            best-effort: true
           # Apple Silicon. A native arm64 macOS runner, because there is no
           # cross-toolchain for a Mach-O target here and nothing to emulate it
           # with -- so unlike every row above, what this one publishes is only
@@ -335,9 +355,27 @@ jobs:
             runs-on: ubuntu-24.04
             asset: cpcpub-android-arm64
             ndk-api: "29"
+            ndk-triple: aarch64-linux-android
             vars: MARCH=armv8-a MTUNE=generic LDFLAGS='-static -s'
             target: aarch64
             qemu: aarch64
+          # 32-bit Android (armeabi-v7a): phones and TV boxes with a 32-bit
+          # userland, and the APK's second ABI. ARMv7 with NEON, the NDK's own
+          # baseline for this ABI since r21, and the softfp calling convention
+          # Android uses here -- so it is not the Linux armv7 build, whose
+          # hard-float binaries need a glibc this userland does not have.
+          #
+          # 32-bit bionic aborts under a process id above 65535, which Android
+          # keeps its pids below; a fresh runner's are far below it too.
+          - name: android-armv7
+            runs-on: ubuntu-24.04
+            asset: cpcpub-android-armv7
+            ndk-api: "29"
+            ndk-triple: armv7a-linux-androideabi
+            vars: MARCH=armv7-a MTUNE=generic LDFLAGS='-static -s'
+            target: armv7
+            qemu: arm
+            qemu-cpu: cortex-a8
 
     steps:
       - uses: actions/checkout@v7
@@ -352,21 +390,22 @@ jobs:
           LLVM_MINGW: ${{ matrix.llvm-mingw }}
           LLVM_MINGW_SHA256: ${{ matrix.llvm-mingw-sha256 }}
           NDK_API: ${{ matrix.ndk-api }}
+          NDK_TRIPLE: ${{ matrix.ndk-triple }}
         run: |
           set -eux
           # Android's toolchain is on the image already, at whatever version
           # ANDROID_NDK_ROOT points at -- which is why the compiler this row
           # ended up with is read back out of the binary's own output later
           # rather than asserted here. qemu is for the smoke test: the artifact
-          # is static, so an aarch64 emulator is all it needs.
+          # is static, so an emulator of its ISA is all it needs.
           if [ -n "$NDK_API" ]; then
             sudo apt-get update
             sudo apt-get install -y --no-install-recommends qemu-user
             ndk="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
             [ -d "$ndk" ] || { echo "no NDK at $ndk" >&2; exit 1; }
-            "$ndk/aarch64-linux-android$NDK_API-clang" --version
+            "$ndk/$NDK_TRIPLE$NDK_API-clang" --version
             echo "$ndk" >> "$GITHUB_PATH"
-            echo "CC=aarch64-linux-android$NDK_API-clang" >> "$GITHUB_ENV"
+            echo "CC=$NDK_TRIPLE$NDK_API-clang" >> "$GITHUB_ENV"
             echo "READELF=$ndk/llvm-readelf" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -442,13 +481,27 @@ jobs:
       # it came from; a hand-built tree keeps the Makefile's "dev". HUB_URL is
       # what makes a downloaded binary's `--submit` work with no argument; a
       # hand-built tree bakes in nothing and still needs the address.
+      # The ARMv6 row links against Raspberry Pi OS's C runtime rather than
+      # this image's; the script checks what it fetches against the archive's
+      # signing key and prints the LDFLAGS that point the link at it.
+      - name: Fetch a Raspberry Pi OS sysroot
+        if: ${{ matrix.rpi-sysroot }}
+        env:
+          SUITE: ${{ matrix.rpi-sysroot }}
+        run: |
+          set -eux
+          ldflags=$(python3 bench/armv6/sysroot.py "$RUNNER_TEMP/rpi" "$SUITE")
+          echo "RPI_LDFLAGS=$ldflags" >> "$GITHUB_ENV"
+          echo "SYSROOT=$RUNNER_TEMP/rpi" >> "$GITHUB_ENV"
+
       - name: Build
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment-target }}
         run: |
           set -eux
           make -C bench ${{ matrix.make-target || 'all' }} \
-              VERSION="$TAG" HUB_URL="$HUB_URL" ${{ matrix.vars }}
+              VERSION="$TAG" HUB_URL="$HUB_URL" ${{ matrix.vars }} \
+              ${RPI_LDFLAGS:+"LDFLAGS=$RPI_LDFLAGS"}
           # No file(1) in Git Bash, and nothing here depends on its output.
           command -v file >/dev/null && file "$BIN" || ls -l "$BIN"
 
@@ -541,12 +594,21 @@ jobs:
           # row asks for it -- a baseline that picked some up stops running on
           # the boards it exists for, and a NEON build that lost it measures
           # nothing its name says.
-          if name.startswith("armv7"):
+          if name.startswith(("armv6", "armv7")):
               out = subprocess.run([f"{cross}-readelf", "-A", os.environ["BIN"]],
                                    capture_output=True, text=True, check=True).stdout
               tags = dict(re.findall(r"^\s*(Tag_\w+): (.*)$", out, re.M))
-              assert tags.get("Tag_CPU_arch") == "v7", tags
               assert tags.get("Tag_ABI_VFP_args") == "VFP registers", "not a hard-float build"
+              # ARMv6 has no Thumb-2: a binary that declares it carries code
+              # from an ARMv7 runtime, and dies on the first instruction of it.
+              if name == "armv6":
+                  assert tags.get("Tag_CPU_arch") == "v6", tags
+                  assert tags.get("Tag_THUMB_ISA_use") != "Thumb-2", tags
+                  assert tags.get("Tag_FP_arch") == "VFPv2", tags.get("Tag_FP_arch")
+                  assert "Tag_Advanced_SIMD_arch" not in tags, tags
+                  print("armv6: v6, no Thumb-2, hard float, VFPv2")
+                  sys.exit(0)
+              assert tags.get("Tag_CPU_arch") == "v7", tags
               simd = tags.get("Tag_Advanced_SIMD_arch")
               if name == "armv7-neon":
                   assert simd == "NEONv1", f"expected NEONv1, declares {simd}"
@@ -633,9 +695,11 @@ jobs:
           set -eux
           # -L only where there is a cross sysroot to point at: the Android row
           # is emulated too, but its binary is static and has nothing to look up.
+          # The ARMv6 row runs on Raspberry Pi OS's libc, as it will on a Pi.
           RUN=""
           if [ -n "$QEMU" ]; then
-            RUN="qemu-$QEMU ${QCPU:+-cpu $QCPU} ${CROSS:+-L /usr/$CROSS}"
+            root=${SYSROOT:-${CROSS:+/usr/$CROSS}}
+            RUN="qemu-$QEMU ${QCPU:+-cpu $QCPU} ${root:+-L $root}"
           fi
           $RUN "./$BIN" --list-variants
           $RUN "./$BIN" --full --cpus 0 --threads 1 \

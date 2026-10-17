@@ -177,9 +177,9 @@ jobs:
           path: pkgs
       # The armhf packages, which no runner is, run under qemu-user on the
       # x86-64 one: Ubuntu's static qemu registers with binfmt_misc's F flag,
-      # which is what lets a container use it. Arm only -- the Termux image
-      # already runs natively on the arm64 runner, and twice is slower, not
-      # more checked.
+      # which is what lets a container use it. 32-bit Arm only -- the Termux
+      # image already runs natively on the arm64 runner, and twice is slower,
+      # not more checked.
       - if: ${{ matrix.runs-on == 'ubuntu-24.04' }}
         run: |
           set -eux
