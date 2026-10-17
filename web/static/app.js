@@ -265,14 +265,24 @@ function kindName(kind, scope, n) {
   return `${kind} ${noun} ×${n}`;
 }
 
-// A value against the median of its CPU's runs, signed so that + is better:
-// "+4%", "−12%", "±0%".
-function versus(v, median, better) {
-  if (v === null || v === undefined || !median || !v) return null;
-  const ratio = better === "low" ? median / v : v / median;
-  const pct = (ratio - 1) * 100;
-  if (Math.abs(pct) < 0.5) return { text: "±0%", pct: 0 };
-  return { text: `${pct > 0 ? "+" : "−"}${Math.abs(pct).toFixed(0)}%`, pct };
+// How far a run is behind the best of the runs it is compared with, from a
+// standing ({value, low, high, rank}): "Top" for the best -- ties included --
+// and "−8%" for one that reached 92% of it. Nothing for a metric with no
+// better end, which has no best.
+const BEHIND_BAD = 5;       // percent behind the best that is worth a colour
+
+function behind(f, better) {
+  if (!f || better === "none" || f.value === null || f.value === undefined) return null;
+  if (f.rank === 1) return { text: "Top", pct: 0, top: true };
+  const best = better === "low" ? f.low : f.high;
+  if (!best || !f.value) return null;
+  const pct = (better === "low" ? best / f.value : f.value / best) * 100 - 100;
+  const gap = Math.abs(pct);
+  return { text: `−${gap < 1 ? "<1" : gap.toFixed(0)}%`, pct, top: false };
+}
+
+function behindClass(b) {
+  return b.top ? "good" : -b.pct >= BEHIND_BAD ? "bad" : null;
 }
 
 // Per-GHz normalisation. Rates divide by clock and latencies in ns become
@@ -609,8 +619,8 @@ function sortHeader(label, unit, key) {
 
 function fitHeader() {
   const th = el("th", "num", "vs CPU");
-  th.title = "against the median of every run on the same CPU with the same build, " +
-             "at the metric the board is sorted by; + is better";
+  th.title = "against the best run on the same CPU with the same build, at the " +
+             "metric the board is sorted by: Top is that run, −8% is 8% behind it";
   return th;
 }
 
@@ -646,12 +656,13 @@ function fitCell(row) {
   const td = el("td", "num fit");
   const f = row.cpu_fit;
   const m = state.metrics.find((x) => x.key === state.sort);
-  const vs = f && m ? versus(f.value, f.median, m.better) : null;
-  if (!vs) return td;
-  td.textContent = vs.text;
-  if (m.better !== "none" && vs.pct) td.classList.add(vs.pct > 0 ? "good" : "bad");
-  td.title = (m.better !== "none" ? `${ordinal(f.rank)} of ` : "among ") +
-             `${f.of} runs on this CPU; their median is ${fmt(f.median)}`;
+  const b = f && m ? behind(f, m.better) : null;
+  if (!b) return td;
+  td.textContent = b.text;
+  const cls = behindClass(b);
+  if (cls) td.classList.add(cls);
+  td.title = `${ordinal(f.rank)} of ${f.of} runs on this CPU; the best is ` +
+             fmt(m.better === "low" ? f.low : f.high);
   return td;
 }
 
@@ -892,15 +903,17 @@ function renderGroup(tbody, g, number) {
   const systems = (g.sysnames || []).map((s) => osName({ sysname: s })).join(", ");
   tr.append(el("td", "", systems || "—"), el("td", "", g.target || "—"),
             el("td", "flags", flagsText(g)));
-  // The spread of its runs, worst to best, against their median.
+  // The spread of its runs: how far the worst is behind the best.
   const spread = el("td", "num fit");
   const m = state.metrics.find((x) => x.key === state.sort);
-  if (m && g.runs > 1) {
-    const ends = [versus(g.low, g.sort_value, m.better), versus(g.high, g.sort_value, m.better)]
-      .filter(Boolean).sort((a, b) => a.pct - b.pct);
-    if (ends.length === 2) {
-      spread.textContent = `${ends[0].text} … ${ends[1].text}`;
-      spread.title = "the worst and the best of these runs against their median";
+  if (m && g.runs > 1 && m.better !== "none") {
+    const [worst, best] = m.better === "low" ? [g.high, g.low] : [g.low, g.high];
+    const b = behind({ value: worst, low: g.low, high: g.high, rank: worst === best ? 1 : 2 },
+                     m.better);
+    if (b) {
+      spread.textContent = b.top ? "even" : b.text;
+      spread.title = b.top ? "these runs all came out the same"
+                           : `the worst of these runs, against the best`;
     }
   }
   tr.append(spread);
@@ -1255,7 +1268,7 @@ function closeRun() {
 }
 
 // Where this run stands among the runs on the same CPU with the same build:
-// its whole machine and its best core, each against their median.
+// its whole machine and its best core, each against the best of them.
 function sameCpu(scopes) {
   const wrap = el("div");
   wrap.append(el("h3", null, "Against the same CPU"));
@@ -1274,13 +1287,14 @@ function sameCpu(scopes) {
     tr.append(el("td", null, m.label));
     for (const k of order) {
       const f = scopes[k].metrics[m.key];
-      const vs = f ? versus(f.value, f.median, m.better) : null;
+      const b = f ? behind(f, m.better) : null;
       const td = el("td", "num fit");
-      if (vs) {
-        td.textContent = `${vs.text} · ${ordinal(f.rank)}`;
-        if (vs.pct) td.classList.add(vs.pct > 0 ? "good" : "bad");
-        td.title = `${fmt(f.value)} against a median of ${fmt(f.median)} ` +
-                   `(${fmt(f.low)} to ${fmt(f.high)})`;
+      if (b) {
+        td.textContent = b.top ? b.text : `${b.text} · ${ordinal(f.rank)}`;
+        const cls = behindClass(b);
+        if (cls) td.classList.add(cls);
+        td.title = `${fmt(f.value)}; these runs went from ${fmt(f.low)} to ${fmt(f.high)}, ` +
+                   `with a median of ${fmt(f.median)}`;
       }
       tr.append(td);
     }
@@ -1290,7 +1304,8 @@ function sameCpu(scopes) {
   const scroller = el("div", "scroller");
   scroller.append(table);
   wrap.append(scroller);
-  wrap.append(el("p", "note legend", "Against the median of those runs; + is better."));
+  wrap.append(el("p", "note legend",
+    "Against the best of those runs: Top is the best, −8% is 8% behind it."));
   return wrap;
 }
 
