@@ -114,12 +114,30 @@ The token field has a Show/Hide button, to check a pasted token.
 ```sh
 tag=$(gh release view --repo lukaszsobala/cpcpub --json tagName -q .tagName)
 gh release download "$tag" --repo lukaszsobala/cpcpub --pattern 'cpcpub-android-*' --dir rel
-ANDROID_HOME=~/Android/Sdk android/build.sh rel "$tag" out
+ANDROID_HOME=~/Android/Sdk BUNDLETOOL=~/bundletool-all-1.18.3.jar \
+    android/build.sh rel "$tag" out
 ```
 
-It needs `platforms;android-35`, a build-tools, a JDK and python3. Without a
-keystore in the environment the APK is signed with a throwaway key; see
+It makes two things: `cpcpub-VERSION-android.apk`, to install directly, and
+`cpcpub-VERSION-android.aab`, the app bundle Google Play takes. It needs
+`platforms;android-37.0`, a build-tools, a JDK, python3 and
+[bundletool](https://github.com/google/bundletool/releases). Without a
+keystore in the environment both are signed with a throwaway key; see
 [packaging/README.md](../packaging/README.md#the-android-signing-key).
+
+- **Target API 37**, which Google Play asks of a new app. Nothing the app uses
+  changed between 35 and 37: it draws edge to edge already, handles no back
+  gesture of its own, and reflects on nothing.
+- **The bundle keeps native code compressed.** Play's default is to store it
+  uncompressed and run it from inside the APK, never extracting it -- and the
+  benchmark is a program the app executes, which Android allows only from the
+  native library directory it is extracted to. The build checks what the
+  bundle gives an arm64 and an armv7 device: the release binary, byte for
+  byte, compressed, with `extractNativeLibs` on.
+- **16 KB pages.** The arm64 binary's segments are aligned to 16 KB
+  (`-Wl,-z,max-page-size=16384`), which phones with 16 KB pages need to load
+  it and Play asks of 64-bit native code. 32-bit Android always has 4 KB
+  pages.
 
 ## What has been tested where
 

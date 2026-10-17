@@ -356,7 +356,10 @@ jobs:
             asset: cpcpub-android-arm64
             ndk-api: "29"
             ndk-triple: aarch64-linux-android
-            vars: MARCH=armv8-a MTUNE=generic LDFLAGS='-static -s'
+            # Its segments aligned to 16 KB, which phones with 16 KB pages
+            # need to load it and Google Play asks of 64-bit native code; see
+            # the check below.
+            vars: MARCH=armv8-a MTUNE=generic LDFLAGS='-static -s -Wl,-z,max-page-size=16384'
             target: aarch64
             qemu: aarch64
           # 32-bit Android (armeabi-v7a): phones and TV boxes with a 32-bit
@@ -578,6 +581,18 @@ jobs:
               exit 1
             fi
             echo "statically linked, no shared-library dependencies"
+            # 16 KB pages: every loadable segment aligned to 16 KB, or a phone
+            # whose kernel uses them cannot load the binary at all -- and Google
+            # Play refuses 64-bit native code that is not. 32-bit Android
+            # always has 4 KB pages, so the armv7 build is left as it is.
+            if [ "$TARGET" = aarch64 ]; then
+              "$READELF" -lW "$BIN" | python3 -c '
+          import sys
+          aligns = [int(line.split()[-1], 16) for line in sys.stdin
+                    if line.split()[:1] == ["LOAD"]]
+          assert aligns and min(aligns) >= 0x4000, f"LOAD alignments {aligns}"
+          print(f"{len(aligns)} LOAD segments, each aligned to 16 KB or more")'
+            fi
             exit 0
           fi
           READELF="${CROSS:+$CROSS-}readelf"

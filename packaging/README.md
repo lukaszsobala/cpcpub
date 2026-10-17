@@ -12,7 +12,7 @@ beside them:
 | Arch Linux | `cpcpub-VERSION-1-ARCH.pkg.tar.zst`, `cpcpub-gui-VERSION-1-any.pkg.tar.zst` | the same |
 | Termux | `cpcpub-termux_VERSION-1_aarch64.deb`, `..._arm.deb` | the static Android binary for that ABI, under Termux's prefix |
 | Windows | `cpcpub-VERSION-windows-setup.exe`, for x64 and Arm64 | `cpcpub.exe` on PATH (and `cpcpub-v3.exe` on x64), the window in the Start menu |
-| Android | `cpcpub-VERSION-android.apk` | an app around the static Android binaries, arm64 and armv7; see [android/](../android/README.md) |
+| Android | `cpcpub-VERSION-android.apk`, and `.aab` for Google Play | an app around the static Android binaries, arm64 and armv7; see [android/](../android/README.md) |
 
 The Linux packages exist for every architecture the release has a Linux
 binary for: x86-64, AArch64, 32-bit Arm (ARMv7 with hard float: Debian's
@@ -131,6 +131,14 @@ gh secret set ANDROID_KEYSTORE_PASSWORD     # prompts; the one keytool asked for
 gh secret set ANDROID_KEY_ALIAS --body cpcpub
 gh secret set ANDROID_KEY_PASSWORD          # the same password, for a PKCS12 store
 ```
+
+The same key signs the app bundle for Google Play. Give Play this key as the
+app signing key (Play App Signing's "use my own key", at the first upload),
+so that the APK here and the app from Play are one app to Android and either
+updates the other. Play also asks for an upload key; this one can serve, or
+`android/build.sh` signs the bundle with a separate one given as
+`ANDROID_UPLOAD_KEYSTORE`, `ANDROID_UPLOAD_KEYSTORE_PASSWORD`,
+`ANDROID_UPLOAD_KEY_ALIAS` and `ANDROID_UPLOAD_KEY_PASSWORD`.
 
 ## Building them yourself
 
