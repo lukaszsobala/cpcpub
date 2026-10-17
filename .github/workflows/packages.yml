@@ -5,7 +5,7 @@
 # build jobs have left the binaries as artifacts of the same run, and attaches
 # what comes out -- or, for a trial run, with the commit it built as `ref`, so
 # the packaging checked out is that commit's and not a tag that does not exist
-# yet. Pushed on its own -- a change to the packaging, the window or
+# yet. Pushed on its own to main -- a change to the packaging, the window or
 # this file -- it packages the binaries of the latest published release
 # instead, so the packaging can be worked on without cutting a release, and it
 # uploads nothing but run artifacts.
@@ -50,7 +50,11 @@ on:
         required: false
       ANDROID_KEY_PASSWORD:
         required: false
+  # Only main: a branch can package what the published release lacks -- a new
+  # architecture, say -- and its run would fail on binaries nobody has built
+  # yet. A branch is tried with a trial run of release.yml, which builds them.
   push:
+    branches: [main]
     paths:
       - "packaging/**"
       - "gui/**"
