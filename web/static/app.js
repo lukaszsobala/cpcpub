@@ -529,7 +529,7 @@ async function toggleExpand(row) {
 }
 
 function groupKey(g) {
-  return JSON.stringify([g.cpu_models, g.target, g.vectorize, g.fma, g.threads, g.run_id]);
+  return JSON.stringify([g.cpu_models, g.cpu_layout, g.target, g.vectorize, g.fma, g.threads, g.run_id]);
 }
 
 // The runs one row of the CPU board stands for, under the same filters and in
@@ -542,6 +542,7 @@ async function toggleGroup(g) {
     p.delete("group");
     p.delete("offset");
     p.set("cpu", g.cpu_models);
+    p.set("layout", g.cpu_layout || "");
     p.set("target", g.target);
     p.set("vectorize", String(g.vectorize));
     p.set("fma", String(g.fma));
@@ -594,6 +595,19 @@ function fitHeader() {
   th.title = "against the median of every run on the same CPU with the same build, " +
              "at the metric the board is sorted by; + is better";
   return th;
+}
+
+// A run measured with CPUs switched off: shown, but left out of every
+// comparison, since its machine was less than its CPU line says.
+function offlineText(row) {
+  const n = row.cpus_offline;
+  return `${n} CPU${n > 1 ? "s" : ""} offline`;
+}
+
+function offlineNote(row) {
+  const note = el("span", "label", `${offlineText(row)} · not compared`);
+  note.title = "measured with CPUs switched off, so left out of the comparisons with its CPU";
+  return note;
 }
 
 // Where a run stands among the runs on its CPU, at the board's metric.
@@ -746,6 +760,7 @@ function runRow(row, number, nested = false) {
   if (mark) head.append(mark);
   name.append(head);
   if (row.label && !nested) name.append(el("span", "label", row.label));
+  if (row.cpus_offline && !nested) name.append(offlineNote(row));
   // Who uploaded it, when anyone signed in did. Clicking narrows the board to
   // that account -- one machine's owner usually has several, and reading them
   // together is the reason to have accounts at all.
@@ -837,7 +852,11 @@ function renderGroup(tbody, g, number) {
                 g.run_id ? runLink(g.run_id, machineName(g)) : machineName(g));
   }
   name.append(head);
-  name.append(el("span", "label", g.runs > 1 ? `median of ${g.runs} runs` : "1 run"));
+  if (g.cpu_layout) name.append(el("span", "label", g.cpu_layout));
+  if (g.cpus_offline) name.append(offlineNote(g));
+  name.append(el("span", "label", g.runs > 1
+    ? `median of ${g.runs} runs` + (g.boards && g.boards.length ? ` · ${g.boards.join(", ")}` : "")
+    : "1 run"));
   tr.append(name);
   const systems = (g.sysnames || []).map((s) => osName({ sysname: s })).join(", ");
   tr.append(el("td", "", systems || "—"), el("td", "", g.target || "—"),
@@ -1110,6 +1129,9 @@ async function showRun(id) {
     copyText(`${location.origin}${location.pathname}#run=${run.id}`, share));
   box.append(share);
   if (run.label) box.append(el("p", "label big", run.label));
+  if (run.cpus_offline) box.append(el("p", "notes", offlineText(run) +
+    ". It was measured with less than the whole machine, so it is not compared " +
+    "with other runs of its CPU."));
   if (run.notes) box.append(el("p", "notes", run.notes));
 
   // What identifies the run, then everything that qualifies it. The second set

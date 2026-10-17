@@ -140,7 +140,7 @@ python3 verified.py --db runs.sqlite3 --forget v0.1.0
 | `GET` | `/api/runs?limit=&offset=&user=` | recent runs, optionally one submitter's |
 | `GET` | `/api/runs/<id>`, `/raw`, `/rank` | one run, with its kinds of core; the document as uploaded; its percentile per metric and its standing on the same CPU |
 | `DELETE` | `/api/runs/<id>` | withdraw; needs `X-Delete-Token` or a signed-in owner |
-| `GET` | `/api/cores?scope=&target=&os=&vectorize=&fma=&q=&cpu=&threads=&user=&verified=release&sort=&order=&norm=&limit=&offset=` | leaderboard rows: one per upload, each its best record at `sort`, with `cpu_fit` |
+| `GET` | `/api/cores?scope=&target=&os=&vectorize=&fma=&q=&cpu=&layout=&threads=&user=&verified=release&sort=&order=&norm=&limit=&offset=` | leaderboard rows: one per upload, each its best record at `sort`, with `cpu_fit` |
 | `GET` | `/api/cores?group=cpu&scope=…` | the same filters, one row per CPU: the medians of its runs |
 | `GET` | `/api/cores?run=<id>` / `?ids=1,2,3` | every record of one run, each with its `type` / named records |
 | `GET` | `/api/metrics`, `/api/stats`, `/api/builds` | metric definitions; counts, including one per architecture and one per operating system, which is what fills the board's **Arch** and **OS** pickers; recognised release digests |
@@ -160,14 +160,20 @@ because the board is paged: ordering a page after it arrives would only sort the
 rows that happened to be on it. With `group=run` it also decides which record
 stands for an upload — per GHz that is its most efficient core, not its fastest.
 
-**The same CPU.** Runs are peers when they name the same `cpu_models`,
-target, vectorize and FMA, and for the whole-machine and per-thread scopes
-the same thread count. A board row's `cpu_fit` is where its value at `sort`
-stands among its peers' values, picked the same way:
+**The same CPU.** Runs are peers when they name the same `cpu_models`
+(the board in parentheses at its end aside, so two boards on one SoC are one
+CPU) and the same core layout, target, vectorize and FMA, and for the
+whole-machine and per-thread scopes the same thread count. A run measured with
+CPUs switched off (`system.cpus_offline`) is no one's peer: it is listed, but
+left out of every comparison, of `group=cpu` and of `/rank`'s populations. A board row's
+`cpu_fit` is where its value at `sort` stands among its peers' values, picked
+the same way:
 `{value, median, low, high, rank, of}`, absent with no peer. `group=cpu` folds
 the board into one row per set of peers, ordered by their median; `cpu=` (the
-exact line) and `threads=` then list one row's runs. `/rank` gives the same
-standing for every ranked metric, for the whole machine and the best core.
+line, board aside), `layout=` (empty for none) and `threads=` then list one
+row's runs. The layout is `system.cpu_layout` where the run reported it, and
+otherwise counted from its per-core scores where those settle it. `/rank`
+gives the same standing for every ranked metric, for the whole machine and the best core.
 The page shows it as a percentage of the median, signed so that + is better.
 
 **Kinds of core.** A run's per-core records are grouped by score: sorted, a

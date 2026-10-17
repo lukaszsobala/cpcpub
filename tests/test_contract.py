@@ -53,7 +53,7 @@ UNCONSUMED_TOP = {"core_spread"}
 SECTION_KEYS = {
     "build":  {"compiler", "compiler_version", "cc", "flags", "target",
                "binary_sha256", "vectorize", "fma"},
-    "system": {"sysname", "release", "machine", "cpus", "cpu_models"},
+    "system": {"sysname", "release", "machine", "cpus", "cpu_models", "cpu_layout", "cpus_offline"},
     "config": {"threads", "seconds_per_phase", "reps", "warmup_seconds",
                "mem_bytes_per_thread", "mem_bytes_per_core_sweep",
                "pin", "clock", "seed"},
@@ -75,6 +75,8 @@ SECTION_COLUMNS = {
     ("system", "machine"):            "machine",
     ("system", "cpus"):               "cpus",
     ("system", "cpu_models"):         "cpu_models",
+    ("system", "cpu_layout"):         "cpu_layout",
+    ("system", "cpus_offline"):       "cpus_offline",
     ("config", "threads"):            "threads",
     ("config", "seconds_per_phase"):  "seconds",
     ("config", "reps"):               "reps",

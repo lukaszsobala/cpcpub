@@ -223,7 +223,7 @@ RUN_COLUMNS = [
     "compiler",
     "compiler_version", "cc", "build_flags", "target",
     "vectorize", "fma", "sysname", "os_release", "machine", "cpus",
-    "cpu_models", "threads", "seconds", "reps", "warmup", "mem_bytes", "pin",
+    "cpu_models", "cpu_layout", "cpus_offline", "threads", "seconds", "reps", "warmup", "mem_bytes", "pin",
     "clock", "seed", "dram_name", "dram_mhz_min", "dram_mhz_max", "checksum",
 ]
 
@@ -493,6 +493,8 @@ def validate(payload: object) -> tuple[dict, list[dict]]:
         "machine": _text(system.get("machine"), 64, "system.machine"),
         "cpus": _int(system.get("cpus"), "system.cpus", 0, 4096),
         "cpu_models": _text(system.get("cpu_models"), 300, "system.cpu_models"),
+        "cpu_layout": _text(system.get("cpu_layout"), 300, "system.cpu_layout"),
+        "cpus_offline": _int(system.get("cpus_offline"), "system.cpus_offline", 0, 4096),
         "threads": _int(config.get("threads"), "config.threads", 0, 4096),
         "seconds": _num(config.get("seconds_per_phase"), "config.seconds_per_phase", 0, 1e6),
         "reps": _int(config.get("reps"), "config.reps", 0, 1 << 20),
@@ -934,8 +936,79 @@ def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
 # at all -- and, for the whole-machine and per-thread rows, the same number of
 # threads, since a run on half the cores is a different measurement.
 
+def guess_layout(records: list[dict], cpu_models: str | None,
+                 cpus: int | None) -> str | None:
+    """A run's core counts worked out from its per-core scores.
+
+    The fallback for a run that did not report `system.cpu_layout`: the same
+    "2x Cortex-A76 + 6x Cortex-A55" it would have said, or None where the
+    scores do not settle it. They settle it only when the CPU line names more
+    than one design, the sweep measured every one of the machine's `cpus` --
+    a sweep of some of them counts only those -- and its steps come out as one
+    per design, after core_types() joins a design measured at two clocks.
+    Fewer steps than names means two designs ran alike, and which is which
+    cannot be told.
+    """
+    names = named_designs(cpu_models)
+    swept = [r for r in records if r.get("scope") == "cpu"]
+    if (not names or not cpus or len(swept) != cpus
+            or any(not r.get("score") or not isinstance(r.get("cpu"), int) for r in swept)):
+        return None
+    count = {t["name"]: len(t["ids"]) for t in core_types(records, cpu_models)
+             if t["scope"] == "cpu"}
+    if sorted(count) != sorted(names):
+        return None
+    return " + ".join(f"{count[n]}x {n}" for n in names)
+
+
+# What a run's core layout is, reported or else guessed; see guess_layout().
+LAYOUT_SQL = "COALESCE(r.cpu_layout, r.cpu_layout_guess)"
+
+
+def cpu_family(cpu_models: str | None) -> str | None:
+    """The CPU line without the board it was measured on.
+
+    The benchmark appends the platform's name in parentheses ("Cortex-A55 +
+    Cortex-A76 (Radxa ROCK 5B)"), which tells two boards on one SoC apart in a
+    run's own title but must not tell their processors apart. A line that is
+    only a parenthetical, or has none, is returned as it is.
+    """
+    if not cpu_models:
+        return cpu_models
+    line = re.sub(r"\s*\([^()]*\)$", "", cpu_models)
+    return line or cpu_models
+
+
+def family_clause(column: str, families: list[str]) -> tuple[str, list[object]]:
+    """SQL matching any run whose CPU line, board aside, is one of `families`.
+
+    By prefix rather than LIKE, which ignores case in SQLite and would let
+    "cortex-a55" stand for "Cortex-A55" where peer_key() would not.
+    """
+    terms = [f"({column} = ? OR (substr({column}, 1, ?) = ? AND {column} GLOB '*)'))"]
+    args: list[object] = []
+    for f in families:
+        args += [f, len(f) + 2, f + " ("]
+    return "(" + " OR ".join(terms * len(families)) + ")", args
+
+
+def comparable(row: dict) -> bool:
+    """Whether a run can stand among others of its CPU at all.
+
+    Not one that named no CPU, and not one measured with CPUs switched off:
+    that machine was less than its CPU line says, by an amount the line does
+    not say.
+    """
+    return bool(row.get("cpu_models")) and not row.get("cpus_offline")
+
+
+# The same condition in SQL, for the runs a comparison is drawn from.
+COMPARABLE_SQL = "r.cpu_models IS NOT NULL AND COALESCE(r.cpus_offline, 0) = 0"
+
+
 def peer_key(row: dict, scope: str | None) -> tuple:
-    key = (row.get("cpu_models"), row.get("target"), row.get("vectorize"), row.get("fma"))
+    key = (cpu_family(row.get("cpu_models")), row.get("cpu_layout"), row.get("target"),
+           row.get("vectorize"), row.get("fma"))
     return key if scope == "cpu" else key + (row.get("threads"),)
 
 
@@ -956,7 +1029,9 @@ class Store:
                      ("build_flags", "TEXT"), ("user_id", "INTEGER"),
                      ("binary_sha256", "TEXT"), ("attest_tier", "TEXT"),
                      ("attest_repo", "TEXT"), ("attest_workflow", "TEXT"),
-                     ("attest_run_url", "TEXT"), ("attest_at", "TEXT"))
+                     ("attest_run_url", "TEXT"), ("attest_at", "TEXT"),
+                     ("cpu_layout", "TEXT"), ("cpu_layout_guess", "TEXT"),
+                     ("cpus_offline", "INTEGER"))
 
     def __init__(self, path: str):
         self.path = path
@@ -975,6 +1050,14 @@ class Store:
             db.execute("CREATE INDEX IF NOT EXISTS runs_binary "
                        "ON runs(binary_sha256)")
             self._migrate_verified_builds(db)
+            # Runs from before the layout was reported, and any whose guess a
+            # better rule might now make: only those naming several designs
+            # can have one.
+            for r in db.execute("SELECT id FROM runs WHERE cpu_layout IS NULL "
+                                "AND cpu_layout_guess IS NULL "
+                                "AND COALESCE(cpus_offline, 0) = 0 "
+                                "AND cpu_models LIKE '% + %'").fetchall():
+                self._guess_layout(db, r["id"])
 
     @staticmethod
     def _migrate_verified_builds(db: sqlite3.Connection) -> None:
@@ -1057,7 +1140,23 @@ class Store:
                 f"INSERT INTO cores ({','.join(ccols)}) "
                 f"VALUES ({','.join('?' * len(ccols))})",
                 [[run_id] + [c.get(col) for col in ccols[1:]] for c in cores])
+            if not run.get("cpu_layout"):
+                self._guess_layout(db, run_id)
         return run_id, token
+
+    @staticmethod
+    def _guess_layout(db: sqlite3.Connection, run_id: int) -> None:
+        run = db.execute("SELECT cpu_models, cpus, cpus_offline FROM runs WHERE id = ?",
+                         (run_id,)).fetchone()
+        # Its sweep covered only the CPUs that were up, so counting it would
+        # describe a smaller machine than the one named.
+        if run["cpus_offline"]:
+            return
+        rows = db.execute("SELECT id, scope, cpu, score FROM cores WHERE run_id = ?",
+                          (run_id,)).fetchall()
+        guess = guess_layout([dict(r) for r in rows], run["cpu_models"], run["cpus"])
+        if guess:
+            db.execute("UPDATE runs SET cpu_layout_guess = ? WHERE id = ?", (guess, run_id))
 
     def delete(self, run_id: int, token: str | None = None,
                user_id: int | None = None) -> bool:
@@ -1123,24 +1222,26 @@ class Store:
         if not cpu_models:
             return []
         cols = ", ".join(f"{agg}({sql}) AS {name}" for name, sql, agg in exprs)
-        marks = ",".join("?" * len(cpu_models))
+        match, match_args = family_clause("r.cpu_models",
+                                          sorted({cpu_family(m) for m in cpu_models}))
         with self.connect() as db:
             rows = db.execute(
-                f"SELECT r.id AS run_id, r.cpu_models, r.target, r.vectorize, "
+                f"SELECT r.id AS run_id, r.cpu_models, {LAYOUT_SQL} AS cpu_layout, r.target, r.vectorize, "
                 f"       r.fma, r.threads, {cols} "
                 f"FROM cores c JOIN runs r ON r.id = c.run_id "
-                f"WHERE c.scope = ? AND r.cpu_models IN ({marks}) "
-                f"GROUP BY r.id", [scope, *cpu_models]).fetchall()
+                f"WHERE c.scope = ? AND {match} AND {COMPARABLE_SQL} "
+                f"GROUP BY r.id", [scope, *match_args]).fetchall()
         return [dict(r) for r in rows]
 
     def cpu_fit(self, run_id: int) -> dict | None:
         """How this run stands among its peers, per metric: whole machine and best core."""
         with self.connect() as db:
-            run = db.execute("SELECT cpu_models, target, vectorize, fma, threads "
-                             "FROM runs WHERE id = ?", (run_id,)).fetchone()
+            run = db.execute(f"SELECT r.cpu_models, {LAYOUT_SQL} AS cpu_layout, r.target, "
+                             f"r.vectorize, r.fma, r.threads, r.cpus_offline "
+                             f"FROM runs r WHERE r.id = ?", (run_id,)).fetchone()
             scopes = {r["scope"] for r in db.execute(
                 "SELECT DISTINCT scope FROM cores WHERE run_id = ?", (run_id,))}
-        if run is None or not run["cpu_models"]:
+        if run is None or not comparable(dict(run)):
             return None
         ranked = [m for m in METRICS if m["better"] != "none"]
         exprs = [(m["key"], f"c.{m['key']}", "MIN" if m["better"] == "low" else "MAX")
@@ -1184,7 +1285,7 @@ class Store:
             if p["v"] is not None:
                 by_key[peer_key(p, scope)].append(p["v"])
         for r in rows:
-            vals = by_key.get(peer_key(r, scope), []) if r.get("cpu_models") else []
+            vals = by_key.get(peer_key(r, scope), []) if comparable(r) else []
             if len(vals) > 1 and r.get("sort_value") is not None:
                 r["cpu_fit"] = standing(r["sort_value"], vals, better)
 
@@ -1203,8 +1304,9 @@ class Store:
         grouped: dict[tuple, list[dict]] = {}
         for r in rows:
             # A machine that named no CPU is a group of its own: "unknown" is
-            # not a processor two runs can share.
-            key = peer_key(r, scope) if r.get("cpu_models") else ("run", r["run_id"])
+            # not a processor two runs can share. Nor is one measured with
+            # CPUs switched off a sample of its CPU.
+            key = peer_key(r, scope) if comparable(r) else ("run", r["run_id"])
             grouped.setdefault(key, []).append(r)
 
         def median(vals):
@@ -1214,9 +1316,17 @@ class Store:
         out = []
         for members in grouped.values():
             first = members[0]
-            g = {k: first.get(k) for k in ("cpu_models", "target", "vectorize", "fma",
+            g = {k: first.get(k) for k in ("cpu_models", "cpu_layout", "cpus_offline", "target", "vectorize", "fma",
                                             "machine", "threads", "scope")}
             g["runs"] = len(members)
+            # The line the group shares, and the boards it was measured on.
+            # A lone run keeps its own title, board and all.
+            fam = cpu_family(first.get("cpu_models"))
+            boards = {m["cpu_models"][len(fam):].strip(" ()")
+                      for m in members if m.get("cpu_models")}
+            g["boards"] = sorted(b for b in boards if b)
+            if len(members) > 1:
+                g["cpu_models"] = fam
             g["run_id"] = first["run_id"] if len(members) == 1 else None
             g["sysnames"] = sorted({m["sysname"] for m in members if m.get("sysname")})
             g["mhz"] = median(m.get("mhz") for m in members)
@@ -1256,6 +1366,7 @@ class Store:
                      search: str | None = None, ids: list[int] | None = None,
                      run: int | None = None, user_id: int | None = None,
                      verified: str | None = None, cpu: str | None = None,
+                     layout: str | None = None,
                      threads: int | None = None) -> tuple[list[str], list[object]]:
         """The WHERE that a listing and its count are both built from.
 
@@ -1298,8 +1409,15 @@ class Store:
         # The exact CPU line, for one row of the board grouped by CPU: the
         # search box matches a part of it, and "Ryzen 7" is several CPUs.
         if cpu:
-            where.append("r.cpu_models = ?")
-            args.append(cpu)
+            clause, clause_args = family_clause("r.cpu_models", [cpu_family(cpu)])
+            # The runs a group was made of, which leaves out those that were
+            # not compared: each of them is a row of its own.
+            where.append(f"{clause} AND {COMPARABLE_SQL}")
+            args += clause_args
+        if layout is not None:
+            where.append(f"{LAYOUT_SQL} = ?" if layout else f"{LAYOUT_SQL} IS NULL")
+            if layout:
+                args.append(layout)
         if threads is not None:
             where.append("r.threads = ?")
             args.append(threads)
@@ -1367,7 +1485,7 @@ class Store:
             f"  WHERE {' AND '.join(where)}) "
             f"SELECT c.id, c.run_id, c.scope, c.cpu, c.mhz, c.mhz_src, "
             f"       c.{', c.'.join(CORE_COLUMNS[3:])}, "
-            f"       r.target, r.vectorize, r.fma, r.cpu_models, r.label, "
+            f"       r.target, r.vectorize, r.fma, r.cpu_models, {LAYOUT_SQL} AS cpu_layout, r.cpus_offline, r.label, "
             f"       r.created_at, r.mode, r.threads, r.compiler, r.machine, "
             # Which operating system produced it. The family alone is what the
             # board prints -- Linux, Windows, macOS -- so the release string
@@ -1390,7 +1508,8 @@ class Store:
         """Percentile of this run's best value for every metric.
 
         Compared only against records of the same scope built with the same
-        fairness flags -- a vectorised build is not comparable with a scalar one.
+        fairness flags -- a vectorised build is not comparable with a scalar one
+        -- and from runs with every CPU online.
         """
         with self.connect() as db:
             run = db.execute(
@@ -1416,7 +1535,9 @@ class Store:
                     f"       SUM(CASE WHEN c.{key} {cmp_op} ? THEN 1 ELSE 0 END) AS worse "
                     f"FROM cores c JOIN runs r ON r.id = c.run_id "
                     f"WHERE c.scope = ? AND c.{key} IS NOT NULL "
-                    f"  AND r.vectorize IS ? AND r.fma IS ?",
+                    f"  AND r.vectorize IS ? AND r.fma IS ? "
+                    # Runs with CPUs switched off are measured but not counted.
+                    f"  AND COALESCE(r.cpus_offline, 0) = 0",
                     (mine, scope, run["vectorize"], run["fma"])).fetchone()
                 total = row["total"] or 0
                 worse = row["worse"] or 0
@@ -2252,6 +2373,10 @@ class Handler(BaseHTTPRequestHandler):
             "ids": ids,
             "run": run,
             "cpu": _text(one("cpu"), MAX_TEXT, "cpu"),
+            # Present-but-empty means the runs that reported no layout, which
+            # `one` would fold into "not asked".
+            "layout": (_text(query["layout"][0], MAX_TEXT, "layout") or ""
+                       if "layout" in query else None),
             "threads": None if one("threads") is None
                        else clamp_int(one("threads"), 0, 1 << 20, 0),
         }

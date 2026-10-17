@@ -697,6 +697,67 @@ class HubTest(unittest.TestCase):
         _, runs = self.req("/api/cores?scope=cpu&cpu=Group+CPU+A")
         self.assertEqual(len(runs["cores"]), 3)
 
+    def test_boards_on_one_soc_are_one_cpu(self):
+        for s, board in ((10000, "Board One"), (11000, "Board Two")):
+            self.hybrid(f"Soc CPU X + Soc CPU Y ({board})", [s])
+        self.hybrid("Soc CPU Z (Board Three)", [5000])
+        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=Soc+CPU")
+        rows = {g["cpu_models"]: g for g in page["groups"]}
+        self.assertEqual(rows["Soc CPU X + Soc CPU Y"]["runs"], 2)
+        self.assertEqual(rows["Soc CPU X + Soc CPU Y"]["boards"], ["Board One", "Board Two"])
+        self.assertEqual(rows["Soc CPU Z (Board Three)"]["runs"], 1)
+        _, runs = self.req("/api/cores?scope=cpu&cpu=Soc+CPU+X+%2B+Soc+CPU+Y")
+        self.assertEqual(len(runs["cores"]), 2)
+
+    def test_core_counts_split_a_soc(self):
+        for layout, s in (("2x Lay A + 6x Lay B", 10000), ("4x Lay A + 4x Lay B", 11000),
+                          ("4x Lay A + 4x Lay B", 12000)):
+            doc = document()
+            doc["system"]["cpu_models"] = "Lay A + Lay B (Some Board)"
+            doc["system"]["cpu_layout"] = layout
+            self.upload(doc)
+        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=Lay+A")
+        self.assertEqual(sorted((g["cpu_layout"], g["runs"]) for g in page["groups"]),
+                         [("2x Lay A + 6x Lay B", 1), ("4x Lay A + 4x Lay B", 2)])
+        _, runs = self.req("/api/cores?scope=cpu&cpu=Lay+A+%2B+Lay+B"
+                           "&layout=4x+Lay+A+%2B+4x+Lay+B")
+        self.assertEqual(len(runs["cores"]), 2)
+
+    def test_layout_is_guessed_when_not_reported(self):
+        # Three fast cores and five slow ones, by score, under a two-design line.
+        def run(layout):
+            doc = document(mode="per-core")
+            doc["system"]["cpu_models"] = "Gue A + Gue B (Gue Board)"
+            if layout:
+                doc["system"]["cpu_layout"] = layout
+            fast, slow = 3, 5
+            doc["cores"] = [core(cpu=i, score=20000.0 if i < fast else 8000.0)
+                           for i in range(fast + slow)]
+            return self.upload(doc)
+        run("3x Gue A + 5x Gue B")
+        run(None)
+        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=Gue+A")
+        self.assertEqual([(g["cpu_layout"], g["runs"]) for g in page["groups"]],
+                         [("3x Gue A + 5x Gue B", 2)])
+
+    def test_runs_with_cpus_offline_are_not_compared(self):
+        ids = [self.hybrid("Off CPU", [s])["id"] for s in (10000, 11000)]
+        doc = document()
+        doc["system"]["cpu_models"] = "Off CPU"
+        doc["system"]["cpus_offline"] = 4
+        off = self.upload(doc)["id"]
+        _, page = self.req("/api/cores?scope=cpu&q=Off+CPU&limit=50")
+        fit = {r["run_id"]: r.get("cpu_fit") for r in page["cores"]}
+        self.assertIsNone(fit[off])
+        self.assertEqual({fit[i]["of"] for i in ids}, {2})
+        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=Off+CPU")
+        self.assertEqual(sorted((g["runs"], g.get("cpus_offline")) for g in page["groups"]),
+                         [(1, 4), (2, None)])
+        _, runs = self.req("/api/cores?scope=cpu&cpu=Off+CPU&layout=")
+        self.assertEqual(sorted(r["run_id"] for r in runs["cores"]), sorted(ids))
+        _, rank = self.req(f"/api/runs/{off}/rank")
+        self.assertIsNone(rank["cpu"])
+
     def test_grouping_by_cpu_needs_a_scope(self):
         code, _ = self.expect_error("/api/cores?group=cpu&ids=1")
         self.assertEqual(code, 400)

@@ -80,6 +80,9 @@ CREATE TABLE IF NOT EXISTS runs (
     machine       TEXT,
     cpus          INTEGER,
     cpu_models    TEXT,
+    cpu_layout    TEXT,               -- "2x Cortex-A76 + 6x Cortex-A55"; NULL for one kind of core
+    cpu_layout_guess TEXT,            -- the same, from per-core scores, where not reported
+    cpus_offline  INTEGER,            -- CPUs present but switched off; such a run is compared with none
 
     threads       INTEGER,
     seconds       REAL,

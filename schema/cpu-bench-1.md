@@ -20,7 +20,7 @@ Written by `json_open` / `json_result` / `emit_json` in
   "build":  { "compiler": …, "compiler_version": …, "cc": …, "flags": …,
               "target": …, "binary_sha256": …, "vectorize": false, "fma": false },
   "system": { "sysname": …, "release": …, "machine": …, "cpus": 8,
-              "cpu_models": … },
+              "cpu_models": …, "cpu_layout": …, "cpus_offline": … },
   "config": { "threads": …, "seconds_per_phase": …, "reps": …,
               "warmup_seconds": …, "mem_bytes_per_thread": …,
               "mem_bytes_per_core_sweep": …, "pin": true,
@@ -53,6 +53,19 @@ the board in parentheses where the device tree says (`… (Radxa ROCK 5B)`). It 
 **absent, never `null`**, on a host that would only name its instruction set: a
 value that repeats `build.target` is not a CPU model, and a reader is better off
 seeing the field missing than seeing `aarch64` in a column of CPU names.
+
+`system.cpu_layout` says how many of each core the machine has, in the order
+`cpu_models` names them: `2x Cortex-A76 + 6x Cortex-A55`. Read from the same
+per-CPU MIDR lines, so Arm only for now, and **absent** on a machine of one kind
+of core, where `system.cpus` already says it. It lets a hub tell a 4+4 part from a
+2+6 one, which `cpu_models` names identically.
+
+`system.cpus_offline` is how many CPUs the kernel lists as present but not
+online, the most seen at the start of the run or at its end; **absent** when
+none were, or where the machine will not say (anything but Linux). Such a run
+measured less than the whole machine -- a board with its big cluster down
+measures as a little one -- so the benchmark warns on stderr, and a hub shows
+the run but leaves it out of every comparison.
 
 A `--disp-sweep` dump carries the same `schema` and `mode: "disp-sweep"`. The
 hub **rejects** it: it is a diagnostic curve with no summary metrics to rank.
