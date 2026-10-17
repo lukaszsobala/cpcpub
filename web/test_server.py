@@ -827,6 +827,16 @@ class HubTest(unittest.TestCase):
                          [("Cortex-A35", "4x Cortex-A35", 2),
                           ("Cortex-A35 (Arm Board R)", "2x Cortex-A35", 1)])
 
+    def test_an_arm11_is_an_arm_design(self):
+        # The first Raspberry Pi's core, named from its MIDR like any Cortex.
+        for b in ("Pi Model B Rev 2", "Pi Zero W"):
+            doc = document()
+            doc["system"].update(cpu_models=f"ARM1176 (Raspberry {b})", cpus=1)
+            self.upload(doc)
+        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=ARM1176")
+        self.assertEqual([(g["cpu_models"], g["cpu_layout"], g["runs"])
+                          for g in page["groups"]], [("ARM1176", "1x ARM1176", 2)])
+
     def test_a_run_carries_its_guessed_layout(self):
         doc = document()
         doc["system"]["cpu_models"] = "Shw A + Shw B (Shw Board)"

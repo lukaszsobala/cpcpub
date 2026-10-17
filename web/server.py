@@ -981,8 +981,9 @@ def guess_layout(records: list[dict], cpu_models: str | None,
 
 # The core designs Arm itself names, as the benchmark spells them from a MIDR:
 # each is one kind of core whatever chip it is in, so a count of them is
-# meaningful. Other vendors' names are left to the benchmark to count.
-ARM_DESIGN_RE = re.compile(r"^(Cortex|Neoverse|C1)-[A-Za-z0-9]+$")
+# meaningful. Other vendors' names are left to the benchmark to count. ARM11
+# is the 32-bit generation before Cortex: "ARM1176" in the first Raspberry Pi.
+ARM_DESIGN_RE = re.compile(r"^((Cortex|Neoverse|C1)-[A-Za-z0-9]+|ARM11[0-9A-Za-z-]*)$")
 
 BOARD_RE = re.compile(r"\s*\(([^()]*)\)$")
 
