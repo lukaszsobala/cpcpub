@@ -499,7 +499,7 @@ def validate(payload: object) -> tuple[dict, list[dict]]:
         "os_release": _text(system.get("release"), 64, "system.release"),
         "machine": _text(system.get("machine"), 64, "system.machine"),
         "cpus": _int(system.get("cpus"), "system.cpus", 0, 4096),
-        "cpu_models": _text(system.get("cpu_models"), 300, "system.cpu_models"),
+        "cpu_models": tidy_line(_text(system.get("cpu_models"), 300, "system.cpu_models")),
         "cpu_layout": _text(system.get("cpu_layout"), 300, "system.cpu_layout"),
         "cpus_offline": _int(system.get("cpus_offline"), "system.cpus_offline", 0, 4096),
         "threads": _int(config.get("threads"), "config.threads", 0, 4096),
@@ -992,6 +992,25 @@ def bare_line(cpu_models: str) -> str:
     return BOARD_RE.sub("", cpu_models) or cpu_models
 
 
+# A device-tree id, "vendor,core": what a RISC-V kernel prints as `uarch`,
+# beside its "model name". The benchmark took both for names of cores, so a
+# line read "Spacemit(R) X60 + spacemit,x60" -- one core, said twice, and
+# looking like two kinds. The id is kept only where it is the only name.
+DT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*,[a-z0-9][a-z0-9._+-]*$")
+
+
+def tidy_line(cpu_models: str | None) -> str | None:
+    """The CPU line without device-tree ids where it names its CPU otherwise."""
+    if not cpu_models:
+        return cpu_models
+    names = bare_line(cpu_models).split(" + ")
+    kept = [n for n in names if not DT_ID_RE.match(n.strip())]
+    if not kept or len(kept) == len(names):
+        return cpu_models
+    board = BOARD_RE.search(cpu_models)
+    return " + ".join(kept) + (board.group(0) if board else "")
+
+
 def board_of(cpu_models: str) -> str | None:
     m = BOARD_RE.search(cpu_models)
     return m.group(1) if m else None
@@ -1223,8 +1242,13 @@ class Store:
     def _classify(self, db: sqlite3.Connection, run_id: int) -> None:
         """Store what a run is compared as, and its core counts where it did
         not report them; see classify()."""
-        run = db.execute("SELECT cpu_models, cpus, cpus_offline, cpu_layout, cpu_key, "
-                         "cpu_layout_guess FROM runs WHERE id = ?", (run_id,)).fetchone()
+        run = dict(db.execute("SELECT cpu_models, cpus, cpus_offline, cpu_layout, cpu_key, "
+                              "cpu_layout_guess FROM runs WHERE id = ?", (run_id,)).fetchone())
+        # Stored before the hub tidied lines; the raw document keeps the original.
+        tidy = tidy_line(run["cpu_models"])
+        if tidy != run["cpu_models"]:
+            db.execute("UPDATE runs SET cpu_models = ? WHERE id = ?", (tidy, run_id))
+            run["cpu_models"] = tidy
         # The records are only read where a count could come from them.
         rows = (db.execute("SELECT id, scope, cpu, score FROM cores WHERE run_id = ?",
                            (run_id,)).fetchall()
@@ -1588,11 +1612,14 @@ class Store:
             return [dict(r) for r in db.execute(sql, args).fetchall()]
 
     def rank(self, run_id: int) -> dict:
-        """Percentile of this run's best value for every metric.
+        """Where this run's best value stands among every other run's, per metric.
 
-        Compared only against records of the same scope built with the same
-        fairness flags -- a vectorised build is not comparable with a scalar one
-        -- and from runs with every CPU online.
+        One value per run -- its best record in the scope -- so a run is set
+        against other runs, not against every core on the hub: counting each
+        core had a big core beating its own little ones and every little core
+        anywhere. Only runs of the same scope built with the same fairness
+        flags -- a vectorised build is not comparable with a scalar one -- and
+        with every CPU online.
         """
         with self.connect() as db:
             run = db.execute(
@@ -1612,23 +1639,26 @@ class Store:
                     f"WHERE run_id = ? AND scope = ?", (run_id, scope)).fetchone()["v"]
                 if mine is None:
                     continue
-                cmp_op = "<" if m["better"] == "low" else ">"
+                cmp_op = ">" if m["better"] == "low" else "<"
                 row = db.execute(
                     f"SELECT COUNT(*) AS total, "
-                    f"       SUM(CASE WHEN c.{key} {cmp_op} ? THEN 1 ELSE 0 END) AS worse "
-                    f"FROM cores c JOIN runs r ON r.id = c.run_id "
-                    f"WHERE c.scope = ? AND c.{key} IS NOT NULL "
-                    f"  AND r.vectorize IS ? AND r.fma IS ? "
+                    f"       SUM(CASE WHEN best.v {cmp_op} ? THEN 1 ELSE 0 END) AS beaten "
+                    f"FROM (SELECT {agg}(c.{key}) AS v FROM cores c "
+                    f"      JOIN runs r ON r.id = c.run_id "
+                    f"      WHERE c.scope = ? AND c.{key} IS NOT NULL AND r.id != ? "
+                    f"        AND r.vectorize IS ? AND r.fma IS ? "
                     # Runs with CPUs switched off are measured but not counted.
-                    f"  AND COALESCE(r.cpus_offline, 0) = 0",
-                    (mine, scope, run["vectorize"], run["fma"])).fetchone()
+                    f"        AND COALESCE(r.cpus_offline, 0) = 0 "
+                    f"      GROUP BY c.run_id) best",
+                    (mine, scope, run_id, run["vectorize"], run["fma"])).fetchone()
                 total = row["total"] or 0
-                worse = row["worse"] or 0
+                beaten = row["beaten"] or 0
                 out["metrics"][key] = {
                     "value": mine,
+                    # How many other runs it is set against.
                     "population": total,
-                    # Share of the population this run beats.
-                    "percentile": (100.0 * (total - worse) / total) if total else None,
+                    # Share of them it is strictly better than.
+                    "percentile": (100.0 * beaten / total) if total else None,
                 }
         out["cpu"] = self.cpu_fit(run_id)
         return out

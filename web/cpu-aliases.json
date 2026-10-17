@@ -4,5 +4,15 @@
     "cpu": "Cortex-A55 + Cortex-A76",
     "layout": "4x Cortex-A55 + 4x Cortex-A76",
     "why": "CoolPi's vendor kernel names the chip, not its cores. The RK3588S is the RK3588's four A55 and four A76 cores in a smaller package."
+  },
+  {
+    "line": "Ky(R) X1",
+    "cpu": "Spacemit(R) X60",
+    "why": "The Ky X1 (Orange Pi RV2) is SpacemiT's K1 under another name: eight X60 cores, which its own uarch line, ky,x60, says. No layout, since a SpacemiT line reports none either."
+  },
+  {
+    "line": "Spacemit(R) X60",
+    "cpu": "Spacemit(R) X60",
+    "why": "A core, not a board: the line names SpacemiT's X60, the same on any board, so the board is set aside as it is for Arm's cores and the Ky X1 entry above has one CPU to join."
   }
 ]

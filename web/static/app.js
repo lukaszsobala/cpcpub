@@ -219,6 +219,27 @@ function copyText(text, btn) {
 // Formatting
 // ---------------------------------------------------------------------------
 
+// A moment as people read one: in their own time zone and words, "26 Aug 2026,
+// 19:32 · 7 weeks ago", with the exact instant it was stored as on hover.
+function when(iso) {
+  const t = Date.parse(iso || "");
+  const span = el("span", null, Number.isNaN(t) ? iso || "" : `${
+    new Date(t).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+  } · ${ago(t)}`);
+  if (iso) span.title = iso;
+  return span;
+}
+
+function ago(t) {
+  const s = (Date.now() - t) / 1000;
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  for (const [unit, n] of [["year", 31557600], ["month", 2629800], ["week", 604800],
+                           ["day", 86400], ["hour", 3600], ["minute", 60]]) {
+    if (s >= n) return rtf.format(-Math.round(s / n), unit);
+  }
+  return "just now";
+}
+
 function fmt(v, digits) {
   if (v === null || v === undefined) return "—";
   const a = Math.abs(v);
@@ -1224,7 +1245,9 @@ function metaList(pairs) {
   const dl = el("dl", "meta");
   for (const [k, v] of pairs) {
     if (!v) continue;
-    dl.append(el("dt", null, k), el("dd", null, v));
+    const dd = el("dd");
+    dd.append(v);       // text, or a node such as when() gives
+    dl.append(el("dt", null, k), dd);
   }
   return dl;
 }
@@ -1254,7 +1277,7 @@ async function showRun(id) {
   // is what you go looking for once a number surprises you, not what you read
   // on the way in, so it starts folded.
   box.append(metaList([
-    ["uploaded", run.created_at],
+    ["uploaded", run.created_at && when(run.created_at)],
     ["submitted by", run.user || "anonymous"],
     ["system", [run.sysname, run.os_release, run.machine].filter(Boolean).join(" ")],
   ]));
@@ -1284,7 +1307,6 @@ async function showRun(id) {
   }
 
   if (rank.metrics && Object.keys(rank.metrics).length) {
-    box.append(el("h3", null, `Best results`));
     const list = el("div", "percentiles");
     for (const m of shownMetrics()) {
       const r = rank.metrics[m.key];
@@ -1302,10 +1324,17 @@ async function showRun(id) {
       bar.append(fill);
       line.append(bar);
       line.append(el("span", "pct-val",
-        `beats ${r.percentile.toFixed(0)}% of ${r.population}`));
+        `beats ${r.percentile.toFixed(0)}% of ${r.population} run${r.population === 1 ? "" : "s"}`));
       list.append(line);
     }
-    box.append(list);
+    // One value per run, so a big core is not counted as beating its own
+    // little ones, or every little core on the hub.
+    if (list.childElementCount) {
+      const what = rank.scope === "thread" ? "thread" : "core";
+      box.append(el("h3", null, "Against every run"), list,
+                 el("p", "note", `Its best ${what} against the best ${what} of every ` +
+                                 "other run built with the same Vectorize and FMA."));
+    }
   }
 
   if (rank.cpu && rank.cpu.scopes && Object.keys(rank.cpu.scopes).length) {
@@ -2133,7 +2162,9 @@ function runCard(entry, picked, onPick) {
   cb.checked = picked.has(entry.id);
   cb.setAttribute("aria-label", `select run ${entry.id}`);
   cb.addEventListener("change", () => onPick(cb.checked));
-  card.append(cb, entry.title, el("span", "muted", entry.at || ""));
+  const at = entry.at ? when(entry.at) : el("span");
+  at.className = "muted";
+  card.append(cb, entry.title, at);
   if (entry.token) card.append(el("code", "token", entry.token));
   return card;
 }

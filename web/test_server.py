@@ -172,6 +172,49 @@ class MergeListTest(unittest.TestCase):
              "layout": "2x Mrg A + 2x Mrg B"}]))
         self.assertEqual(len(self.groups(srv.Store(self.db, self.aliases))), 1)
 
+    def test_rank_is_against_other_runs_not_their_cores(self):
+        # Three runs of four cores each: the middle run's best core beats one
+        # run and loses to one, however many cores each of them has.
+        store = srv.Store(self.db, self.aliases)
+        ids = [self.put(store, "Rnk CPU", [s, s / 2, s / 3, s / 4])
+               for s in (10000.0, 20000.0, 30000.0)]
+        pct = store.rank(ids[1])["metrics"]["score"]
+        self.assertEqual(pct["population"], 2)
+        self.assertEqual(pct["percentile"], 50.0)
+        # The best beats both.
+        self.assertEqual(store.rank(ids[2])["metrics"]["score"]["percentile"], 100.0)
+
+    def test_a_device_tree_id_beside_a_name_is_dropped(self):
+        self.assertEqual(srv.tidy_line("Spacemit(R) X60 + spacemit,x60 (LPi3A Board)"),
+                         "Spacemit(R) X60 (LPi3A Board)")
+        self.assertEqual(srv.tidy_line("Ky(R) X1 + ky,x60"), "Ky(R) X1")
+        # The only name a line has stays, and so does a line of plain names.
+        self.assertEqual(srv.tidy_line("thead,c906 (Milk-V Duo S)"), "thead,c906 (Milk-V Duo S)")
+        self.assertEqual(srv.tidy_line("Cortex-A55 + Cortex-A76"), "Cortex-A55 + Cortex-A76")
+
+    def test_stored_lines_are_tidied_at_start(self):
+        store = srv.Store(self.db, self.aliases)
+        run_id = self.put(store, "Dt X60 (Dt Board)", [9000.0] * 4)
+        with store.connect() as db:
+            db.execute("UPDATE runs SET cpu_models = ? WHERE id = ?",
+                       ("Dt X60 + dt,x60 (Dt Board)", run_id))
+        store = srv.Store(self.db, self.aliases)
+        with store.connect() as db:
+            row = db.execute("SELECT cpu_models, cpu_key FROM runs WHERE id = ?",
+                             (run_id,)).fetchone()
+        self.assertEqual((row["cpu_models"], row["cpu_key"]),
+                         ("Dt X60 (Dt Board)", "Dt X60 (Dt Board)"))
+
+    def test_the_shipped_list_joins_ky_x1_to_spacemit_x60(self):
+        store = srv.Store(self.db, srv.ALIASES_PATH)
+        eight = [9000.0] * 8
+        self.put(store, "Ky(R) X1 + ky,x60 (ky x1 orangepi-rv2 board)", eight)
+        self.put(store, "Spacemit(R) X60 + spacemit,x60 (SiPEED LPi3A Board)", eight)
+        rows, _ = store.cpu_groups(sort="score", desc=True, norm="abs", limit=50,
+                                   offset=0, scope="cpu", search="X")
+        self.assertEqual([(g["cpu_models"], g["runs"]) for g in rows],
+                         [("Spacemit(R) X60", 2)])
+
     def test_a_bad_list_stops_the_hub(self):
         self.aliases.write_text(json.dumps([{"line": "X"}]))
         with self.assertRaises(ValueError):
@@ -478,13 +521,14 @@ class HubTest(unittest.TestCase):
         self.assertEqual(code, 400)
 
     def test_rank_reports_percentile(self):
+        self.upload()           # something to stand against
         out = self.upload()
         _, rank = self.req(f"/api/runs/{out['id']}/rank")
         self.assertEqual(rank["scope"], "cpu")
         self.assertIn("int_thr", rank["metrics"])
         pct = rank["metrics"]["int_thr"]
         self.assertGreater(pct["population"], 0)
-        self.assertTrue(0 < pct["percentile"] <= 100)
+        self.assertTrue(0 <= pct["percentile"] <= 100)
 
     def test_label_and_notes_from_query(self):
         out = self.upload(query="?label=my+box&notes=quiet+room")

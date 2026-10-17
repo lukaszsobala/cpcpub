@@ -138,7 +138,7 @@ python3 verified.py --db runs.sqlite3 --forget v0.1.0
 | --- | --- | --- |
 | `POST` | `/api/runs?label=&notes=` | upload one document; returns `{id, delete_token, user, records}` |
 | `GET` | `/api/runs?limit=&offset=&user=` | recent runs, optionally one submitter's |
-| `GET` | `/api/runs/<id>`, `/raw`, `/rank` | one run, with its kinds of core; the document as uploaded; its percentile per metric and its standing on the same CPU |
+| `GET` | `/api/runs/<id>`, `/raw`, `/rank` | one run, with its kinds of core; the document as uploaded; per metric, the share of other runs its best record beats (one value per run: each one's best record in the same scope, same Vectorize and FMA, every CPU online), and its standing on the same CPU |
 | `DELETE` | `/api/runs/<id>` | withdraw; needs `X-Delete-Token` or a signed-in owner |
 | `GET` | `/api/cores?scope=&target=&os=&vectorize=&fma=&q=&cpu=&layout=&threads=&user=&verified=release&sort=&order=&norm=&limit=&offset=` | leaderboard rows: one per upload, each its best record at `sort`, with `cpu_fit` |
 | `GET` | `/api/cores?group=cpu&scope=…` | the same filters, one row per CPU: the medians of its runs |
@@ -170,6 +170,12 @@ four Cortex-A53s. A line that names a chip or a board keeps all of it. The layou
 ("4x Cortex-A55 + 4x Cortex-A76") is `system.cpu_layout` where the run reported
 it; otherwise the hub counts it, from `system.cpus` for a line of one Arm core
 design and from the per-core scores for several, where those settle it.
+
+A line is tidied as it is stored: a device-tree id ("spacemit,x60", which a
+RISC-V kernel prints as `uarch`) beside another name is the same core said
+twice, and is dropped; it stays where it is the only name. The raw document
+keeps the line as uploaded, and the hub tidies stored runs again when it
+starts.
 
 The **merge list**, [cpu-aliases.json](cpu-aliases.json), says which lines are
 another CPU under a different name: a vendor kernel that prints the chip's
