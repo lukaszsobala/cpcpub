@@ -93,7 +93,7 @@ termux() {  # termux TERMUX_ARCH DOCKER_PLATFORM QEMU_NAME ASSET
             want=$(sha256sum "/rel/$ASSET" | cut -d" " -f1)
             [ "$have" = "$want" ] || { echo "$bin is $have, the release is $want"; exit 1; }
             echo "$bin = $ASSET ($have)"
-            cpcpub --threads 1 --cpus 0 --time 0.05 --reps 1 --warmup 0.02 --json \
+            cpcpub --threads 1 --cpus 0 --time 0.05 --reps 1 --warmup 0.02 --mem-per-thread 16777216 --json \
                 > "$TMPDIR/run.json"
             grep -q "\"binary_sha256\": \"$have\"" "$TMPDIR/run.json"
             echo "binary_sha256 matches the installed file"

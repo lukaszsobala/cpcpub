@@ -64,7 +64,7 @@ done
 
 say "the benchmark runs and names itself"
 cpcpub --version
-cpcpub --threads 1 --cpus 0 --time 0.05 --reps 1 --warmup 0.02 --json > /tmp/run.json
+cpcpub --threads 1 --cpus 0 --time 0.05 --reps 1 --warmup 0.02 --mem-per-thread 16777216 --json > /tmp/run.json
 python3 - <<'PY'
 import hashlib, json
 doc = json.load(open("/tmp/run.json"))

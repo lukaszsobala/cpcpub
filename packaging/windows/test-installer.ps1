@@ -74,7 +74,7 @@ $exe = Join-Path $dir "cpcpub.exe"
 & $exe --version
 if ($LASTEXITCODE -ne 0) { throw "cpcpub --version exited $LASTEXITCODE" }
 $run = Join-Path $work "run.json"
-& $exe --threads 1 --cpus 0 --time 0.05 --reps 1 --warmup 0.02 --json | Set-Content -Encoding utf8 $run
+& $exe --threads 1 --cpus 0 --time 0.05 --reps 1 --warmup 0.02 --mem-per-thread 16777216 --json | Set-Content -Encoding utf8 $run
 if ($LASTEXITCODE -ne 0) { throw "the run exited $LASTEXITCODE" }
 $doc = Get-Content -Raw $run | ConvertFrom-Json
 if ($doc.build.binary_sha256 -ne (Digest $exe)) { throw "the run says $($doc.build.binary_sha256)" }

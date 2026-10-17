@@ -1618,6 +1618,12 @@ class Window(Gtk.ApplicationWindow):
         argv += ["--warmup", f"{self.warmup.get_value():g}"]
         if self.cooldown.get_sensitive() and self.cooldown.get_value_as_int() > 0:
             argv += ["--cooldown", f"{self.cooldown.get_value_as_int()}"]
+        if SMOKE:
+            # The packaging tests ask whether the window runs the benchmark,
+            # not what it measures: left to size itself from the last-level
+            # cache, the memory buffer on a large server part is gigabytes,
+            # and under emulation filling it outlasts the test.
+            argv += ["--mem-per-thread", str(16 << 20)]
         argv.append("--json")
 
         env = {}
