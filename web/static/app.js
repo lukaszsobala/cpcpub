@@ -26,6 +26,8 @@ const state = {
   sort: "score",        // which metric the board is ranked by, set by its header
   order: "desc",
   search: "",           // the last submitted search, not what is in the box
+  cpus: new Map(),      // suggested CPU name -> [cpu_key, layout], from /api/stats
+  pickable: [],         // the run rows the board is showing, for its tick-all box
   norm: "abs",
   detailed: false,      // every metric, rather than the headline set
   scopeNote: "",        // what changing scope did to the selection, if anything
@@ -371,26 +373,27 @@ function fillTargets(counts) {
   if (sel.value !== chosen) sel.value = "";
 }
 
-// Fill the CPU picker from what this hub can compare: each CPU with its core
-// counts once, as the board grouped by CPU would draw it, so "4× Cortex-A55 +
-// 4× Cortex-A76" and "6× Cortex-A55 + 2× Cortex-A76" are two entries.
+// Fill the search box's suggestions from what this hub can compare: each CPU
+// with its core counts once, as the board grouped by CPU would draw it, so
+// "4× Cortex-A55 + 4× Cortex-A76" and "6× Cortex-A55 + 2× Cortex-A76" are two
+// entries. A search that is one of them exactly narrows the board to that CPU
+// rather than matching text, since the counts are in no column to match.
 function fillCpus(rows) {
-  const sel = $("#filters").elements.cpu;
-  const chosen = sel.value;
-  sel.replaceChildren();
-  const any = el("option", null, "any");
-  any.value = "";
-  sel.append(any);
+  state.cpus = new Map();
+  const list = $("#cpu-list");
+  list.replaceChildren();
   const entries = (rows || []).filter((r) => r.cpu_key)
     .map((r) => ({ r, name: withCounts(r.cpu_key, r.cpu_layout) }))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   for (const { r, name } of entries) {
-    const o = el("option", null, `${name} (${r.n})`);
-    o.value = JSON.stringify([r.cpu_key, r.cpu_layout || null]);
-    sel.append(o);
+    if (state.cpus.has(name)) continue;
+    state.cpus.set(name, [r.cpu_key, r.cpu_layout || null]);
+    // The name alone: given a label as well, Firefox shows only the label and
+    // Chrome shows both, so a run count there reads wrong in one of them.
+    const o = el("option");
+    o.value = name;
+    list.append(o);
   }
-  sel.value = chosen;
-  if (sel.value !== chosen) sel.value = "";
 }
 
 // What to call the operating system a result was measured on. The upload
@@ -482,15 +485,16 @@ function filterParams() {
     const v = form.elements[name].value;
     if (v) p.set(name, v);
   }
-  // One CPU and its core counts, held as the pair the server keys it by.
-  if (form.elements.cpu.value) {
-    const [key, layout] = JSON.parse(form.elements.cpu.value);
-    p.set("cpu", key);
-    p.set("layout", layout || "");
-  }
   // The search box does not: half-typed text is not a filter anyone asked for,
-  // so it applies on submit and is held here until then.
-  if (state.search) p.set("q", state.search);
+  // so it applies on submit and is held here until then. One of its suggested
+  // CPUs is that CPU and its core counts, as the pair the server keys it by.
+  const pick = state.cpus.get(state.search);
+  if (pick) {
+    p.set("cpu", pick[0]);
+    p.set("layout", pick[1] || "");
+  } else if (state.search) {
+    p.set("q", state.search);
+  }
   // Set by clicking a submitter's name rather than by a control in the form,
   // and shown as a chip above the table so it is never a filter you cannot see.
   if (state.submitter) p.set("user", state.submitter);
@@ -799,23 +803,60 @@ function renderBoard() {
         goToPage);
 
   const hr = el("tr");
-  hr.append(el("th", "num", "#"), el("th", "", ""),
+  const all = el("th");
+  const allBox = el("input", "row-pick");
+  allBox.type = "checkbox";
+  all.append(allBox);
+  hr.append(el("th", "num", "#"), all,
             el("th", "wide", state.grouped ? "CPU" : "machine"),
-            el("th", "", "OS"), el("th", "", "arch"), el("th", "", "build"),
-            fitHeader(), sortHeader("MHz", "", "mhz"));
+            el("th", "", "OS"), el("th", "", "arch"), el("th", "", "build"));
+  // Grouped, each row already is its CPU, so standing against it says nothing.
+  if (!state.grouped) hr.append(fitHeader());
+  hr.append(sortHeader("MHz", "", "mhz"));
   for (const m of shownMetrics()) hr.append(sortHeader(m.label, unitOf(m), m.key));
   thead.append(hr);
 
+  state.pickable = [];
   if (state.grouped) {
     state.rows.forEach((g, i) => renderGroup(tbody, g, state.offset + i + 1));
-    return;
+  } else {
+    state.rows.forEach((row, i) => {
+      // Its place in the whole ranking: on page three of a hundred-row board the
+      // top row is 201st, and numbering it 1 would say the opposite.
+      tbody.append(runRow(row, state.offset + i + 1));
+      if (state.expanded.has(row.run_id)) renderRecords(tbody, row);
+    });
   }
-  state.rows.forEach((row, i) => {
-    // Its place in the whole ranking: on page three of a hundred-row board the
-    // top row is 201st, and numbering it 1 would say the opposite.
-    tbody.append(runRow(row, state.offset + i + 1));
-    if (state.expanded.has(row.run_id)) renderRecords(tbody, row);
-  });
+  tickAllBox(allBox, state.pickable);
+}
+
+// The header's box: ticks every run the board is showing, or unticks them all
+// when they already are. The records unfolded under a run are not among them --
+// a run beside its own records is the same machine twice. On the board grouped
+// by CPU the runs are those of the CPUs unfolded, so it waits for one to be.
+function tickAllBox(box, rows) {
+  const on = rows.filter((r) => state.selected.has(r.id)).length;
+  box.checked = rows.length > 0 && on === rows.length;
+  box.indeterminate = on > 0 && on < rows.length;
+  box.disabled = !rows.length;
+  box.title = !rows.length ? "unfold a CPU to tick its runs"
+    : box.checked ? "untick every run shown" : "tick every run shown";
+  box.addEventListener("change", () =>
+    selectRows(rows, box.checked).catch((e) => alert(e.message)));
+}
+
+async function selectRows(rows, on) {
+  if (on) {
+    // The board's runs are all of its scope, so one retarget covers them.
+    await retargetSelection(rows[0].scope);
+    for (const r of rows) state.selected.set(r.id, r);
+  } else {
+    for (const r of rows) state.selected.delete(r.id);
+    if (!state.selected.size) state.scopeNote = "";
+  }
+  syncHash();
+  renderSelection();
+  renderBoard();
 }
 
 // One upload's row. `nested` is a run listed under its CPU on the grouped
@@ -824,6 +865,7 @@ function runRow(row, number, nested = false) {
   const open = state.expanded.has(row.run_id);
   const tr = el("tr", nested ? "run-row nested" : "run-row");
   tr.append(el("td", "num", number), selectBox(row));
+  state.pickable.push(row);
   if (row.peers) lightPeers(tr, row.peers);
 
   const name = el("td", "wide");
@@ -859,7 +901,8 @@ function runRow(row, number, nested = false) {
   // The family only -- Linux, Windows, macOS. The build number the upload
   // also carries is a different question, and it is on the run's own page.
   tr.append(el("td", "", osName(row)), el("td", "", row.target || "—"),
-            el("td", "flags", flagsText(row)), fitCell(row));
+            el("td", "flags", flagsText(row)));
+  if (!state.grouped) tr.append(fitCell(row));
   metricCells(tr, row);
   return tr;
 }
@@ -943,20 +986,6 @@ function renderGroup(tbody, g, number) {
   const systems = (g.sysnames || []).map((s) => osName({ sysname: s })).join(", ");
   tr.append(el("td", "", systems || "—"), el("td", "", g.target || "—"),
             el("td", "flags", flagsText(g)));
-  // The spread of its runs: how far the worst is behind the best.
-  const spread = el("td", "num fit");
-  const m = state.metrics.find((x) => x.key === state.sort);
-  if (m && g.runs > 1 && m.better !== "none") {
-    const [worst, best] = m.better === "low" ? [g.high, g.low] : [g.low, g.high];
-    const gap = gapBehind(worst, best, m.better);
-    if (gap !== null) {
-      const even = gap < TOP_BAND;
-      spread.textContent = even ? "even" : `−${gap.toFixed(0)}%`;
-      spread.title = even ? `these runs came out within ${TOP_BAND}% of each other`
-                          : "how far the worst of these runs is behind the best";
-    }
-  }
-  tr.append(spread);
   metricCells(tr, g);
   tbody.append(tr);
   if (!open) return;
@@ -2427,7 +2456,15 @@ async function boot() {
   // `norm` is in here rather than with the redraw-only control below because
   // it is what the board is ranked by as well as what it prints: switching to
   // per GHz reorders the rows, so it has to ask the server again.
-  for (const name of ["scope", "target", "os", "cpu", "vectorize", "fma", "verified",
+  // Picking a suggested CPU is a whole gesture too, so it searches at once;
+  // text typed by hand still waits to be submitted.
+  $("#filters").elements.q.addEventListener("input", (e) => {
+    const text = e.target.value.trim();
+    if (text === state.search || !state.cpus.has(text)) return;
+    state.search = text;
+    loadBoard().catch((err) => alert(err.message));
+  });
+  for (const name of ["scope", "target", "os", "vectorize", "fma", "verified",
                       "limit", "norm", "bycpu"]) {
     $("#filters").elements[name].addEventListener("change", () => {
       loadBoard().catch((err) => alert(err.message));

@@ -143,7 +143,7 @@ python3 verified.py --db runs.sqlite3 --forget v0.1.0
 | `GET` | `/api/cores?scope=&target=&os=&vectorize=&fma=&q=&cpu=&layout=&threads=&user=&verified=release&sort=&order=&norm=&limit=&offset=` | leaderboard rows: one per upload, each its best record at `sort`, with `cpu_fit` |
 | `GET` | `/api/cores?group=cpu&scope=…` | the same filters, one row per CPU: the medians of its runs |
 | `GET` | `/api/cores?run=<id>` / `?ids=1,2,3` | every record of one run, each with its `type` / named records |
-| `GET` | `/api/metrics`, `/api/stats`, `/api/builds` | metric definitions; counts, including one per architecture, one per operating system and one per CPU with its core counts (`cpus`: `cpu_key`, `cpu_layout`, `n`), which is what fills the board's **Arch**, **OS** and **CPU** pickers; recognised release digests |
+| `GET` | `/api/metrics`, `/api/stats`, `/api/builds` | metric definitions; counts, including one per architecture, one per operating system and one per CPU with its core counts (`cpus`: `cpu_key`, `cpu_layout`, `n`), which is what fills the board's **Arch** and **OS** pickers and the CPUs its **Search** box suggests; recognised release digests |
 | `GET` | `/api/users/<name>` | public profile: name, since, run count |
 | `GET` | `/api/auth/policy` | what registering here costs: `{open, invite_required, bits}` |
 | `GET` | `/api/auth/challenge` | the same, plus a single-use puzzle to register with |
@@ -192,7 +192,10 @@ median; `cpu=` (the row's `cpu_key`), `layout=` (empty for none) and
 ranked metric, for the whole machine and the best core. The page shows "Top" for the best
 of those runs and anything within 1% of it, then "2nd" and "3rd", then how
 far behind the best a run is ("−8%"),
-coloured only on the rows of the CPU under the pointer.
+coloured only on the rows of the CPU under the pointer; grouped by CPU, where
+each row already is its CPU, it shows none. Picking one of the CPUs the
+**Search** box suggests sends `cpu=` and `layout=` for it; anything else typed
+there is `q=`, matched against the CPU line, the label and the machine.
 
 **Kinds of core.** A run's per-core records are grouped by score: sorted, a
 step of more than 15% starts a new kind. Where the CPU line names several

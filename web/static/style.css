@@ -95,7 +95,6 @@ main { max-width: 1100px; margin: 0 auto; }
    hidden again, explicitly. */
 .filters label[hidden], form label[hidden] { display: none; }
 /* Its entries are whole CPU names; past this they wrap the form for one. */
-.filters select[name="cpu"] { max-width: 20rem; }
 /* The tick that puts a run into the comparison, big enough to hit. */
 input.row-pick { width: 1.15rem; height: 1.15rem; cursor: pointer; }
 .filters .grow { flex: 1 1 12rem; }

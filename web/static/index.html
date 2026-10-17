@@ -50,11 +50,6 @@
     <label title="the operating system the result was measured on">OS
       <select name="os"></select>
     </label>
-    <!-- Options filled by the page: each CPU this hub can compare, with how
-         many of each core it has, once. -->
-    <label title="the processor, with how many of each kind of core it has">CPU
-      <select name="cpu"></select>
-    </label>
     <!-- Both default to "off" rather than "any": a board mixing build switches
          is a board of numbers that cannot be compared, and the scalar,
          no-FMA build is the one every machine can produce. -->
@@ -87,8 +82,13 @@
         <option value="release">from a published binary</option>
       </select>
     </label>
+    <!-- Suggestions filled by the page: each CPU this hub can compare, with
+         how many of each core it has, once. Picking one narrows the board to
+         that CPU; any other text is searched for as typed. -->
     <label class="grow">Search
-      <input type="search" name="q" placeholder="CPU model, label or machine">
+      <input type="search" name="q" list="cpu-list" autocomplete="off"
+             placeholder="pick a CPU, or type a model, label or machine">
+      <datalist id="cpu-list"></datalist>
     </label>
     <button type="submit">Search</button>
   </form>
