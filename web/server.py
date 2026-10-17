@@ -1651,6 +1651,12 @@ class Store:
             systems = db.execute(
                 "SELECT sysname, COUNT(*) AS n FROM runs WHERE sysname IS NOT NULL "
                 "GROUP BY sysname ORDER BY n DESC").fetchall()
+            # Every CPU this hub can compare, with its core counts, for the CPU
+            # picker: one entry per peer set, as group=cpu draws them.
+            cpus = db.execute(
+                f"SELECT r.cpu_key, {LAYOUT_SQL} AS cpu_layout, COUNT(*) AS n "
+                f"FROM runs r WHERE {COMPARABLE_SQL} "
+                f"GROUP BY r.cpu_key, cpu_layout ORDER BY r.cpu_key").fetchall()
             # The newest release this hub knows of, for the page to point at
             # when it explains what a release build is. By version and not by
             # when the manifest happened to be loaded: an operator catching up
@@ -1664,7 +1670,8 @@ class Store:
         return {"runs": runs, "records": cores, "users": users,
                 "release_builds": release_builds, "release": release,
                 "targets": [dict(t) for t in targets],
-                "systems": [dict(t) for t in systems]}
+                "systems": [dict(t) for t in systems],
+                "cpus": [dict(c) for c in cpus]}
 
     # -- verified builds ---------------------------------------------------
 

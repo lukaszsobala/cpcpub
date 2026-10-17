@@ -814,6 +814,20 @@ class HubTest(unittest.TestCase):
         self.assertIsNotNone(peers["Peer CPU"])
         self.assertIsNone(peers["Peer CPU 2"])
 
+    def test_stats_list_each_cpu_once_with_its_counts(self):
+        for layout in ("2x Pck A + 6x Pck B", "4x Pck A + 4x Pck B", "4x Pck A + 4x Pck B"):
+            doc = document()
+            doc["system"].update(cpu_models="Pck A + Pck B (Pck Board)", cpu_layout=layout)
+            self.upload(doc)
+        _, stats = self.req("/api/stats")
+        mine = sorted((c["cpu_layout"], c["n"]) for c in stats["cpus"]
+                      if c["cpu_key"] == "Pck A + Pck B")
+        self.assertEqual(mine, [("2x Pck A + 6x Pck B", 1), ("4x Pck A + 4x Pck B", 2)])
+        # Picking one is the cpu= and layout= the page sends.
+        _, page = self.req("/api/cores?scope=cpu&cpu=Pck+A+%2B+Pck+B"
+                           "&layout=2x+Pck+A+%2B+6x+Pck+B")
+        self.assertEqual(len(page["cores"]), 1)
+
     def test_core_counts_split_a_soc(self):
         for layout, s in (("2x Lay A + 6x Lay B", 10000), ("4x Lay A + 4x Lay B", 11000),
                           ("4x Lay A + 4x Lay B", 12000)):

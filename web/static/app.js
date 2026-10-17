@@ -371,6 +371,28 @@ function fillTargets(counts) {
   if (sel.value !== chosen) sel.value = "";
 }
 
+// Fill the CPU picker from what this hub can compare: each CPU with its core
+// counts once, as the board grouped by CPU would draw it, so "4× Cortex-A55 +
+// 4× Cortex-A76" and "6× Cortex-A55 + 2× Cortex-A76" are two entries.
+function fillCpus(rows) {
+  const sel = $("#filters").elements.cpu;
+  const chosen = sel.value;
+  sel.replaceChildren();
+  const any = el("option", null, "any");
+  any.value = "";
+  sel.append(any);
+  const entries = (rows || []).filter((r) => r.cpu_key)
+    .map((r) => ({ r, name: withCounts(r.cpu_key, r.cpu_layout) }))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  for (const { r, name } of entries) {
+    const o = el("option", null, `${name} (${r.n})`);
+    o.value = JSON.stringify([r.cpu_key, r.cpu_layout || null]);
+    sel.append(o);
+  }
+  sel.value = chosen;
+  if (sel.value !== chosen) sel.value = "";
+}
+
 // What to call the operating system a result was measured on. The upload
 // carries uname's own spelling, and "Darwin" is not what anyone calls that
 // machine; anything else -- a BSD, an unknown -- passes through as it came.
@@ -406,9 +428,10 @@ function fillSystems(counts) {
 }
 
 // A CPU line with how many of each core it has: "4× Cortex-A55 + 4× Cortex-A76
-// (Radxa ROCK 5B)" where the layout names the line's own designs in its order,
-// or the line followed by the layout where the line names the chip instead
-// ("Rockchip RK3588S CoolPi (…) · 4× Cortex-A55 + 4× Cortex-A76").
+// (Radxa ROCK 5B)". Where the line names the chip rather than its cores, as a
+// vendor kernel's does, the counts lead all the same and the line's own name
+// for the machine follows in their place: "4× Cortex-A55 + 4× Cortex-A76
+// (RK3588S CoolPi 4B Board)".
 function withCounts(line, layout) {
   if (!layout) return line;
   const parts = layout.split(" + ").map((p) => p.match(/^(\d+)x (.+)$/));
@@ -419,7 +442,8 @@ function withCounts(line, layout) {
   if (parts.length === names.length && parts.every((p, i) => p[2] === names[i])) {
     return parts.map(counted).join(" + ") + (board ? board[0] : "");
   }
-  return `${line} · ${parts.map(counted).join(" + ")}`;
+  const own = board ? board[0].trim().slice(1, -1) : line;
+  return `${parts.map(counted).join(" + ")} (${own})`;
 }
 
 // What to call a machine whose run never said. uname's `machine` is the
@@ -457,6 +481,12 @@ function filterParams() {
   for (const name of ["scope", "target", "os", "vectorize", "fma", "norm"]) {
     const v = form.elements[name].value;
     if (v) p.set(name, v);
+  }
+  // One CPU and its core counts, held as the pair the server keys it by.
+  if (form.elements.cpu.value) {
+    const [key, layout] = JSON.parse(form.elements.cpu.value);
+    p.set("cpu", key);
+    p.set("layout", layout || "");
   }
   // The search box does not: half-typed text is not a filter anyone asked for,
   // so it applies on submit and is held here until then.
@@ -592,7 +622,7 @@ async function toggleGroup(g) {
 
 function selectBox(row) {
   const box = el("td");
-  const cb = el("input");
+  const cb = el("input", "row-pick");
   cb.type = "checkbox";
   cb.checked = state.selected.has(row.id);
   cb.addEventListener("change", () =>
@@ -2361,6 +2391,7 @@ async function boot() {
   // counts when they arrive.
   fillTargets(null);
   fillSystems(null);
+  fillCpus(null);
   renderVerifiedNote();
 
   const meta = await api("/api/metrics");
@@ -2376,6 +2407,7 @@ async function boot() {
     state.held = typeof s.runs === "number" ? s.runs : null;
     fillTargets(s.targets || []);
     fillSystems(s.systems || []);
+    fillCpus(s.cpus || []);
     renderVerifiedNote();
     // Only ever corrects a message already on screen: an empty board drawn
     // before the counts arrived cannot yet know whether the hub is empty or
@@ -2395,7 +2427,7 @@ async function boot() {
   // `norm` is in here rather than with the redraw-only control below because
   // it is what the board is ranked by as well as what it prints: switching to
   // per GHz reorders the rows, so it has to ask the server again.
-  for (const name of ["scope", "target", "os", "vectorize", "fma", "verified",
+  for (const name of ["scope", "target", "os", "cpu", "vectorize", "fma", "verified",
                       "limit", "norm", "bycpu"]) {
     $("#filters").elements[name].addEventListener("change", () => {
       loadBoard().catch((err) => alert(err.message));
