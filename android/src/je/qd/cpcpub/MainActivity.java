@@ -71,6 +71,9 @@ public final class MainActivity extends Activity {
     private static final int WARMUPS_PER_PASS = 9;
     private static final int PHASES_PER_PASS = 15;
     private static final double SETUP_SECONDS_PER_PASS = 0.1;
+    /** The policy of whoever publishes this app, not of the hub it uploads to,
+     *  so not derived from the hub URL. The port reaches it over IPv4 as well. */
+    private static final String PRIVACY_URL = "https://cpcpub.qd.je:30210/privacy.html";
     private static final int SAVE_REQUEST = 1;
     private static final int NOTIFY_REQUEST = 2;
     // The cool-down choices, in seconds, and the one a new install starts on:
@@ -235,6 +238,8 @@ public final class MainActivity extends Activity {
         if (!prefs.contains("label")) label.setText(deviceName());
         notes = field(uploadFields, "Notes", "cooling, power settings, anything else",
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE, "notes");
+        uploadFields.addView(note("An upload is public on the hub, with its label "
+            + "and notes. It describes the phone's chip, not you."));
         page.addView(uploadFields);
         upload.setOnCheckedChangeListener((b, on) -> {
             uploadFields.setVisibility(on ? View.VISIBLE : View.GONE);
@@ -242,12 +247,23 @@ public final class MainActivity extends Activity {
         });
 
         // A disclosure rather than an action, so it stays flat, with the arrow
-        // saying which way it is.
+        // saying which way it is. The privacy policy shares its row: Google
+        // Play wants it reachable from inside the app, and it is a page to
+        // read, not a step in a run.
+        LinearLayout flat = new LinearLayout(this);
         Button advanced = new Button(this, null, android.R.attr.borderlessButtonStyle);
         advanced.setText("Advanced ▸");
         advanced.setAllCaps(false);
         advanced.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        page.addView(advanced);
+        flat.addView(advanced, new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        Button privacy = new Button(this, null, android.R.attr.borderlessButtonStyle);
+        privacy.setText("Privacy policy");
+        privacy.setAllCaps(false);
+        privacy.setAlpha(0.7f);
+        privacy.setOnClickListener(v -> openPage(PRIVACY_URL));
+        flat.addView(privacy);
+        page.addView(flat);
         advancedFields = column();
         advancedFields.setVisibility(View.GONE);
         threads = field(advancedFields, "Threads (blank: one per CPU)", "auto",
