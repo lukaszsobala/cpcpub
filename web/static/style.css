@@ -344,6 +344,13 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
   padding: 0.15rem 0.4rem; border-radius: 4px; word-break: break-all;
   display: inline-block; margin: 0.25rem 0;
 }
+.tokenbox { display: inline-flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.tokenbox .copy {
+  font: inherit; font-size: 0.72rem; cursor: pointer; padding: 0.15rem 0.5rem;
+  background: var(--bg); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 5px;
+}
+.tokenbox .copy:hover { color: var(--ink); }
 #uploadform { display: flex; flex-direction: column; gap: 0.75rem; max-width: 40rem; }
 #uploadform button { align-self: flex-start; }
 #uploadresult { margin-top: 1rem; }

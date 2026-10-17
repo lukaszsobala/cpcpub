@@ -204,15 +204,26 @@ function copyButton(btn) {
 
 // The same for one line of text that is not on the page, such as a link. Where
 // there is no clipboard, the browser's own prompt holds it ready to copy.
-function copyText(text, btn) {
+function copyText(text, btn, what = "link") {
   const label = btn.textContent;
   const done = (msg) => {
     btn.textContent = msg;
     setTimeout(() => { btn.textContent = label; }, 1500);
   };
-  const ask = () => window.prompt("Copy this link:", text);
+  const ask = () => window.prompt(`Copy this ${what}:`, text);
   if (!navigator.clipboard) return ask();
   navigator.clipboard.writeText(text).then(() => done("copied"), ask);
+}
+
+// A token and a button that copies it: a token is pasted somewhere else --
+// the app, a command line, a note to keep -- and never read off the screen.
+function tokenBox(token) {
+  const box = el("span", "tokenbox");
+  const copy = el("button", "copy", "Copy");
+  copy.type = "button";
+  copy.addEventListener("click", () => copyText(token, copy, "token"));
+  box.append(el("code", "token", token), copy);
+  return box;
 }
 
 // ---------------------------------------------------------------------------
@@ -1780,7 +1791,7 @@ function accountPanel() {
     "on this account with nothing to copy back. It grants uploading and " +
     "withdrawing as you and nothing else — it cannot change your password or " +
     "read anything the board does not already show."));
-  wrap.append(el("code", "token", u.api_token));
+  wrap.append(tokenBox(u.api_token));
 
   const rotate = el("button", "danger", "Issue a new token");
   rotate.type = "button";
@@ -2105,7 +2116,7 @@ function uploadReceipt(job, res) {
     card.append(el("p", "muted",
       "Uploaded anonymously. This delete token is the only way to withdraw " +
       "it — it is saved in this browser, under My uploads:"));
-    card.append(el("code", "token", res.delete_token));
+    card.append(tokenBox(res.delete_token));
   }
   return card;
 }
@@ -2166,7 +2177,7 @@ function runCard(entry, picked, onPick) {
   const at = entry.at ? when(entry.at) : el("span");
   at.className = "muted";
   card.append(cb, entry.title, at);
-  if (entry.token) card.append(el("code", "token", entry.token));
+  if (entry.token) card.append(tokenBox(entry.token));
   return card;
 }
 
@@ -2445,7 +2456,7 @@ async function boot() {
   setupTabs();
   setupDropzone();
   setupPageSizes();
-  for (const b of document.querySelectorAll("button.copy")) {
+  for (const b of document.querySelectorAll("button.copy[data-copy]")) {
     b.addEventListener("click", () => copyButton(b));
   }
   renderCommands();
