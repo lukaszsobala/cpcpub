@@ -10,6 +10,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 /**
  * Uploads a result to a hub, the way `cpcpub --submit` does -- submit_document()
  * in bench/src/bench.c, which this follows step for step.
@@ -205,6 +208,27 @@ final class Hub {
             if (conn != null) conn.disconnect();
         }
         return log.toString();
+    }
+
+    /**
+     * GET a small JSON reply: where an uploaded run stands, from
+     * /api/runs/ID/rank. Null where the hub cannot be reached or says no --
+     * the standing is a nicety beside the result, never a reason to fail.
+     */
+    static JSONObject getJson(String hub, String path) {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(hub.replaceAll("/+$", "") + path).openConnection();
+            conn.setInstanceFollowRedirects(false);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            if (conn.getResponseCode() != 200) return null;
+            return new JSONObject(readAll(conn.getInputStream()));
+        } catch (IOException | IllegalArgumentException | JSONException e) {
+            return null;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
     }
 
     private static String readAll(InputStream in) throws IOException {

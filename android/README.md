@@ -6,7 +6,8 @@ reads back what it prints. The command itself is not shown, only written at
 the top of the log. You choose:
 
 - the run: multi-threaded, per-core, or Both, which ticks the two;
-- the variants: the baseline, or all four compared;
+- the builds: the baseline only, or all four -- with and without SIMD and
+  FMA -- each explained under the choice;
 - a cool-down between runs, 30 s unless you pick otherwise;
 - the upload fields, with the label set to the phone's own name until you
   change it (`Build.MANUFACTURER`, `Build.MODEL`, and the chip,
@@ -14,8 +15,11 @@ the top of the log. You choose:
 - under **Advanced**, the timing settings and the hub URL. The URL is blank
   for the hub the release was built with, which its hint shows.
 
-The result appears as a table. Tap a heading for what that column means; the
-score and the columns it is a geometric mean of are in bold. Every result is
+The result appears as a table of the headline columns -- the clock, the score,
+INT-thr and MEM, as on the hub and the desktop -- or every column with
+**Detailed** ticked, which is remembered. Tap a heading for what that column
+means; with Detailed on, the score and the columns it is a geometric mean of
+are in bold. Its scrollbar sits under the last row, not over it. Every result is
 also kept in `Android/data/je.qd.cpcpub/files/results/`, and can be saved
 elsewhere or shared as JSON. **Past results** lists them, newest first, with
 the score and whether each is on a hub, and opens one again.
@@ -57,7 +61,12 @@ makes the same request `submit_document()` in
 - redirects are not followed;
 - each document is uploaded exactly as the benchmark printed it.
 
-After an upload, "See how it compares" opens the run's page on the hub. The
+After an upload, the result says where it stands, in one request to the
+hub's `/api/runs/ID/rank`: the share of the hub's other runs its best core's
+score beats, and its place among runs on the same CPU (Top, 2nd, 3rd or how
+far behind the best, as the hub puts it). Past results ask again, so the
+standing is the hub's current one; a withdrawn result shows none. "See how it
+compares" opens the run's page on the hub. The
 hub's reply goes to the log, which opens by itself only when an upload fails,
 and is kept beside the result in the app's private storage (`files/uploads/`,
 which no other app can read). Its delete token is what **Withdraw**
@@ -90,7 +99,7 @@ leaves the choice to run anyway:
 - Android already reports the phone as throttling (its thermal status is
   light or worse);
 - the battery is at 45 °C or more;
-- the last run ended less than three minutes ago.
+- the last run ended less than 30 seconds ago, the default cool-down.
 
 During the run it follows Android's thermal status. Afterwards the log gives
 the battery temperature at the start and the end and the hottest status, and a

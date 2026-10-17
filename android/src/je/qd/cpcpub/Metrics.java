@@ -42,6 +42,29 @@ final class Metrics {
         "score", "int_thr_mops", "mul_thr_mmul_s", "fp_thr_mflops", "mem_lat8_ns",
         "disp_thr_mcall_s", "disp_cap_calls");
 
+    /** The columns shown unless Detailed is on: the clock and the hub's and the
+     *  desktop window's headline set. Fifteen columns is more than a phone's
+     *  width, and most of them matter only to someone looking for something. */
+    static final Set<String> HEADLINE = Set.of("mhz", "score", "int_thr_mops", "mem_gbps");
+
+    /** How near the best its peers' run is within which a run reads as Top, in
+     *  percent, as on the hub: two runs of one machine differ by about that. */
+    static final double TOP_BAND = 1.0;
+
+    /**
+     * Where a run stands among its CPU's runs at a higher-is-better metric, as
+     * the hub says it: Top, or 2nd or 3rd, or how far behind the best -- of how
+     * many. `f` is one metric of /rank's cpu scopes: {value, high, rank, of}.
+     */
+    static String standing(JSONObject f) {
+        int rank = f.optInt("rank"), of = f.optInt("of");
+        double value = f.optDouble("value"), best = f.optDouble("high");
+        double gap = rank == 1 || !(best > 0) ? 0 : 100 * (best - value) / best;
+        String place = gap < TOP_BAND ? "Top" : rank == 2 ? "2nd" : rank == 3 ? "3rd"
+            : String.format(Locale.getDefault(), "−%.0f%%", gap);
+        return place + " of " + of;
+    }
+
     static final Map<String, String> EXPLAIN = new HashMap<>();
     static {
         EXPLAIN.put("mhz", "Core clock during the run, in MHz. Tap a value to see how "

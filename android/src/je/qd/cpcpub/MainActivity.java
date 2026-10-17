@@ -50,8 +50,10 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -78,10 +80,11 @@ public final class MainActivity extends Activity {
     private static final String[] COOLDOWN_NAMES = {"Off", "30 s", "1 min", "2 min"};
     private static final int COOLDOWN_DEFAULT = 1;
     // When to say before a run that the phone is likely still warm: a battery
-    // this hot, or a run that ended this recently. A phone idles in the low
-    // thirties and comes out of a run near forty.
+    // this hot, or a run that ended this recently -- the length of the default
+    // cool-down, which is what the app itself takes to be rest enough. A phone
+    // idles in the low thirties and comes out of a run near forty.
     private static final float WARM_BATTERY_C = 45f;
-    private static final long RECENT_RUN_MS = 3 * 60 * 1000;
+    private static final long RECENT_RUN_MS = 30 * 1000;
     // PowerManager's thermal statuses, by their number, in words.
     private static final String[] THERMAL = {
         "not throttling", "throttling lightly", "throttling", "throttling hard",
@@ -119,6 +122,14 @@ public final class MainActivity extends Activity {
     private Button compareButton;
     private Button withdrawButton;
     private TextView warning;
+    // The result on show, for the Detailed switch to draw again.
+    private List<JSONObject> shownDocs;
+    private int shownWhich;
+    // Where the result on show stands on the hub, once it has been uploaded,
+    // and what the hub said for each run asked about: the run's id to the
+    // words, so going back to a tab does not ask again.
+    private TextView standingView;
+    private final Map<String, String> standings = new HashMap<>();
     private ScrollView scroll;
     private LinearLayout results;
     private Button logButton;
@@ -195,10 +206,14 @@ public final class MainActivity extends Activity {
         // of its variants are distinct and --variants would run the same four as
         // --variants=all.
         variants = radios(page, new String[] {
-            "Baseline only (scalar-nofma)", "All four, and compare them"},
+            "Baseline build only",
+            "All four builds: with and without SIMD and FMA"},
             prefs.getInt("variants", 0));
-        page.addView(note("Compare baseline across architectures, "
-            + "others only within the same architecture."));
+        page.addView(note("The benchmark is built four ways: with and without "
+            + "SIMD (several numbers per instruction) and FMA (multiply and add as "
+            + "one). The baseline uses neither, so it compares with every other "
+            + "device; the other three only with phones of the same kind, and show "
+            + "what each adds."));
 
         page.addView(heading("Cool-down"));
         cooldown = radios(page, COOLDOWN_NAMES, prefs.getInt("cooldown", COOLDOWN_DEFAULT));
@@ -451,7 +466,7 @@ public final class MainActivity extends Activity {
         }
         cooldownNote.setText(applies
             ? "A rest between runs, so each starts on a cool phone."
-            : "Needs Both or all four variants.");
+            : "Needs Both or all four builds.");
         double s = estimateSeconds();
         estimate.setText("Estimated run time: " + (s < 90 ? Math.round(s) + " s"
             : String.format(Locale.getDefault(), "%.1f min", s / 60)));
@@ -851,7 +866,12 @@ public final class MainActivity extends Activity {
                     compareButton.setOnClickListener(v -> openPage(first));
                     compareButton.setVisibility(View.VISIBLE);
                 }
-                if (name.equals(lastName)) showWithdraw(name);
+                if (name.equals(lastName)) {
+                    showWithdraw(name);
+                    // The receipts are kept now, so the hub can be asked where
+                    // the result on show stands.
+                    if (shownDocs != null) showStanding(shownWhich);
+                }
             });
         }).start();
     }
@@ -965,6 +985,10 @@ public final class MainActivity extends Activity {
                 if (f == 0) {
                     status.setText("Withdrawn.");
                     compareButton.setVisibility(View.GONE);
+                    // No longer on the hub, so no longer standing anywhere there.
+                    if (name.equals(lastName) && standingView != null) {
+                        standingView.setVisibility(View.GONE);
+                    }
                 } else {
                     status.setText("Withdraw failed; see the log.");
                     log.setVisibility(View.VISIBLE);
@@ -1098,9 +1122,13 @@ public final class MainActivity extends Activity {
     // -- the results -----------------------------------------------------
 
     private void showResults(List<JSONObject> docs, int which) {
+        shownDocs = docs;
+        shownWhich = which;
         results.removeAllViews();
         if (docs.size() > 1) {
             HorizontalScrollView strip = new HorizontalScrollView(this);
+            // The scrollbar beside what it scrolls, not drawn over it.
+            strip.setScrollBarStyle(View.SCROLLBARS_OUTSIDE_INSET);
             LinearLayout tabs = new LinearLayout(this);
             for (int i = 0; i < docs.size(); i++) {
                 Button b = new Button(this, null, android.R.attr.borderlessButtonStyle);
@@ -1121,11 +1149,31 @@ public final class MainActivity extends Activity {
         TextView cpu = text(18, true);
         cpu.setText(sys != null ? sys.optString("cpu_models", "(cpu not named)") : "");
         results.addView(cpu);
+        // Filled in from the hub once the result is uploaded; see showStanding().
+        standingView = text(14, false);
+        standingView.setVisibility(View.GONE);
+        results.addView(standingView);
+        showStanding(which);
+
+        // The headline columns, or with Detailed every one the run measured.
+        boolean all = prefs.getBoolean("detailed", false);
+        CheckBox detailed = new CheckBox(this);
+        detailed.setText("Detailed: every measurement");
+        detailed.setChecked(all);
+        detailed.setOnCheckedChangeListener((b, on) -> {
+            prefs.edit().putBoolean("detailed", on).apply();
+            showResults(shownDocs, shownWhich);
+        });
+        results.addView(detailed);
+        List<String[]> columns = new ArrayList<>();
+        for (String[] col : Metrics.COLUMNS) {
+            if (all || Metrics.HEADLINE.contains(col[0])) columns.add(col);
+        }
 
         TableLayout table = new TableLayout(this);
         TableRow head = new TableRow(this);
         head.addView(cell("", false, false));
-        for (String[] col : Metrics.COLUMNS) {
+        for (String[] col : columns) {
             TextView t = cell(col[1] + "\n" + col[2], true, true);
             t.setOnClickListener(v -> explain(col[1], Metrics.EXPLAIN.get(col[0])));
             head.addView(t);
@@ -1138,12 +1186,12 @@ public final class MainActivity extends Activity {
             TextView n = cell(name, name.equals("total"), false);
             n.setOnClickListener(v -> explain(name, Metrics.explainScope(name)));
             row.addView(n);
-            for (String[] col : Metrics.COLUMNS) {
+            for (String[] col : columns) {
                 String key = col[0];
                 String shown = Metrics.format(rec.opt(key));
                 String src = rec.optString("mhz_src", "");
                 if (key.equals("mhz") && src.equals("estimated")) shown = "~" + shown;
-                TextView t = cell(shown, Metrics.SCORE_PARTS.contains(key), true);
+                TextView t = cell(shown, all && Metrics.SCORE_PARTS.contains(key), true);
                 if (key.equals("mhz")) {
                     String why = Metrics.CLOCK_SOURCES.get(src);
                     t.setOnClickListener(v -> explain("clock", why != null ? why
@@ -1154,10 +1202,77 @@ public final class MainActivity extends Activity {
             table.addView(row);
         }
         HorizontalScrollView wide = new HorizontalScrollView(this);
+        // The scrollbar under the last row rather than over it.
+        wide.setScrollBarStyle(View.SCROLLBARS_OUTSIDE_INSET);
         wide.addView(table);
         results.addView(wide);
-        results.addView(note("Tap a heading for details. Score is the geometric mean "
-            + "of the bold columns."));
+        results.addView(note(all
+            ? "Tap a heading for details. Score is the geometric mean of the bold columns."
+            : "Tap a heading for details."));
+    }
+
+    /**
+     * Where the result on show stands on the hub, once uploaded: the share of
+     * every other run its best core beats, and its place among runs on the same
+     * CPU. Asked of the hub once per run and kept; nothing is shown for a result
+     * that was never uploaded, was withdrawn, or that the hub cannot be asked
+     * about just now.
+     */
+    private void showStanding(int which) {
+        if (lastName == null) return;
+        JSONArray kept = readReceipt(lastName);
+        JSONObject entry = kept.optJSONObject(which);
+        if (entry == null || entry.optBoolean("withdrawn")) return;
+        String id = entry.optString("id", ""), hubUrl = entry.optString("hub", "");
+        if (id.isEmpty() || hubUrl.isEmpty()) return;
+        String said = standings.get(id);
+        if (said != null) {
+            standingView.setText(said);
+            standingView.setVisibility(said.isEmpty() ? View.GONE : View.VISIBLE);
+            return;
+        }
+        TextView view = standingView;
+        new Thread(() -> {
+            JSONObject rank = Hub.getJson(hubUrl, "/api/runs/" + Hub.encode(id) + "/rank");
+            if (rank == null) return;
+            String words = standingWords(rank);
+            main.post(() -> {
+                standings.put(id, words);
+                // Only if that result is still the one on show.
+                if (view != standingView) return;
+                view.setText(words);
+                view.setVisibility(words.isEmpty() ? View.GONE : View.VISIBLE);
+            });
+        }).start();
+    }
+
+    /** /rank's answer in words, at the score: against every run, and on this CPU. */
+    private static String standingWords(JSONObject rank) {
+        List<String> lines = new ArrayList<>();
+        JSONObject metrics = rank.optJSONObject("metrics");
+        JSONObject score = metrics == null ? null : metrics.optJSONObject("score");
+        if (score != null && !score.isNull("percentile") && score.optInt("population") > 0) {
+            int others = score.optInt("population");
+            lines.add(String.format(Locale.getDefault(),
+                "%s: its score beats %.0f%% of the %d other run%s on the hub.",
+                "thread".equals(rank.optString("scope")) ? "Best thread" : "Best core",
+                score.optDouble("percentile"), others, others == 1 ? "" : "s"));
+        }
+        JSONObject cpu = rank.optJSONObject("cpu");
+        JSONObject scopes = cpu == null ? null : cpu.optJSONObject("scopes");
+        if (scopes != null) {
+            List<String> places = new ArrayList<>();
+            for (String[] scope : new String[][] {{"total", "whole phone"}, {"cpu", "best core"}}) {
+                JSONObject sc = scopes.optJSONObject(scope[0]);
+                JSONObject m = sc == null ? null : sc.optJSONObject("metrics");
+                JSONObject f = m == null ? null : m.optJSONObject("score");
+                if (f != null) places.add(scope[1] + " " + Metrics.standing(f));
+            }
+            lines.add(places.isEmpty()
+                ? "The first run of this CPU on the hub, with this build."
+                : "On this CPU: " + TextUtils.join(", ", places) + ".");
+        }
+        return TextUtils.join("\n", lines);
     }
 
     private void explain(String title, String text) {
