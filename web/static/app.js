@@ -387,17 +387,21 @@ function fillSystems(counts) {
   if (sel.value !== chosen) sel.value = "";
 }
 
-// A CPU line with how many of each core it has, where the run's layout names
-// the same designs in the same order: "4× Cortex-A55 + 4× Cortex-A76 (Radxa
-// ROCK 5B)". Anything that does not line up is left as the line was.
+// A CPU line with how many of each core it has: "4× Cortex-A55 + 4× Cortex-A76
+// (Radxa ROCK 5B)" where the layout names the line's own designs in its order,
+// or the line followed by the layout where the line names the chip instead
+// ("Rockchip RK3588S CoolPi (…) · 4× Cortex-A55 + 4× Cortex-A76").
 function withCounts(line, layout) {
   if (!layout) return line;
+  const parts = layout.split(" + ").map((p) => p.match(/^(\d+)x (.+)$/));
+  if (parts.some((p) => !p)) return line;
+  const counted = (p) => `${p[1]}× ${p[2]}`;
   const board = line.match(/\s*\([^()]*\)$/);
   const names = (board ? line.slice(0, board.index) : line).split(" + ");
-  const parts = layout.split(" + ").map((p) => p.match(/^(\d+)x (.+)$/));
-  if (parts.length !== names.length ||
-      parts.some((p, i) => !p || p[2] !== names[i])) return line;
-  return parts.map((p) => `${p[1]}× ${p[2]}`).join(" + ") + (board ? board[0] : "");
+  if (parts.length === names.length && parts.every((p, i) => p[2] === names[i])) {
+    return parts.map(counted).join(" + ") + (board ? board[0] : "");
+  }
+  return `${line} · ${parts.map(counted).join(" + ")}`;
 }
 
 // What to call a machine whose run never said. uname's `machine` is the
@@ -542,7 +546,7 @@ async function toggleExpand(row) {
 }
 
 function groupKey(g) {
-  return JSON.stringify([g.cpu_models, g.cpu_layout, g.target, g.vectorize, g.fma, g.threads, g.run_id]);
+  return JSON.stringify([g.cpu_key, g.cpu_layout, g.target, g.vectorize, g.fma, g.threads, g.run_id]);
 }
 
 // The runs one row of the CPU board stands for, under the same filters and in
@@ -554,7 +558,7 @@ async function toggleGroup(g) {
     const p = new URLSearchParams(state.params);
     p.delete("group");
     p.delete("offset");
-    p.set("cpu", g.cpu_models);
+    p.set("cpu", g.cpu_key);
     p.set("layout", g.cpu_layout || "");
     p.set("target", g.target);
     p.set("vectorize", String(g.vectorize));
@@ -621,6 +625,20 @@ function offlineNote(row) {
   const note = el("span", "label", `${offlineText(row)} · not compared`);
   note.title = "measured with CPUs switched off, so left out of the comparisons with its CPU";
   return note;
+}
+
+// Pointing at a row lights up the others on the same CPU -- the runs its
+// standing was drawn from -- so a percentage can be read against the rows it
+// compares, and the rest of the board's percentages stay in the background.
+function lightPeers(tr, peers) {
+  tr.dataset.peers = peers;
+  const set = (on) => {
+    for (const other of tr.parentElement?.querySelectorAll("tr[data-peers]") || []) {
+      if (other.dataset.peers === peers) other.classList.toggle("peer-lit", on);
+    }
+  };
+  tr.addEventListener("mouseenter", () => set(true));
+  tr.addEventListener("mouseleave", () => set(false));
 }
 
 // Where a run stands among the runs on its CPU, at the board's metric.
@@ -755,6 +773,7 @@ function runRow(row, number, nested = false) {
   const open = state.expanded.has(row.run_id);
   const tr = el("tr", nested ? "run-row nested" : "run-row");
   tr.append(el("td", "num", number), selectBox(row));
+  if (row.peers) lightPeers(tr, row.peers);
 
   const name = el("td", "wide");
   const head = el("div", "run-head");

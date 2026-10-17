@@ -127,6 +127,57 @@ def document(mode="per-core", **over):
     return doc
 
 
+class MergeListTest(unittest.TestCase):
+    """CPU lines an operator has said are another CPU."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = str(Path(self.tmp.name) / "m.sqlite3")
+        self.aliases = Path(self.tmp.name) / "aliases.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def put(self, store, cpu_models, scores):
+        doc = document()
+        doc["system"].update(cpu_models=cpu_models, cpus=len(scores))
+        doc["cores"] = [core(cpu=i, score=s) for i, s in enumerate(scores)]
+        run, cores = srv.validate(doc)
+        return store.insert(run, cores, json.dumps(doc), None, None)[0]
+
+    def groups(self, store):
+        rows, _ = store.cpu_groups(sort="score", desc=True, norm="abs", limit=50,
+                                   offset=0, scope="cpu", search="Mrg")
+        return sorted((g["cpu_models"], g["cpu_layout"], g["runs"], tuple(g["boards"]))
+                      for g in rows)
+
+    def test_an_alias_joins_its_cpu(self):
+        big_little = [8000.0] * 2 + [20000.0] * 2
+        self.aliases.write_text(json.dumps([
+            {"line": "Mrg Vendor Chip", "cpu": "Mrg A + Mrg B",
+             "layout": "2x Mrg A + 2x Mrg B"}]))
+        store = srv.Store(self.db, self.aliases)
+        self.put(store, "Mrg A + Mrg B (Board One)", big_little)
+        self.put(store, "Mrg Vendor Chip (Board Two)", big_little)
+        self.assertEqual(self.groups(store),
+                         [("Mrg A + Mrg B", "2x Mrg A + 2x Mrg B", 2, ("Board One", "Board Two"))])
+
+    def test_the_list_is_read_again_at_start(self):
+        store = srv.Store(self.db, self.aliases)
+        self.put(store, "Mrg A + Mrg B (Board One)", [8000.0] * 2 + [20000.0] * 2)
+        self.put(store, "Mrg Vendor Chip (Board Two)", [8000.0] * 2 + [20000.0] * 2)
+        self.assertEqual(len(self.groups(store)), 2)
+        self.aliases.write_text(json.dumps([
+            {"line": "Mrg Vendor Chip", "cpu": "Mrg A + Mrg B",
+             "layout": "2x Mrg A + 2x Mrg B"}]))
+        self.assertEqual(len(self.groups(srv.Store(self.db, self.aliases))), 1)
+
+    def test_a_bad_list_stops_the_hub(self):
+        self.aliases.write_text(json.dumps([{"line": "X"}]))
+        with self.assertRaises(ValueError):
+            srv.Store(self.db, self.aliases)
+
+
 class HubTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -728,6 +779,27 @@ class HubTest(unittest.TestCase):
         self.assertEqual(run["cpu_layout"], "2x Shw A + 6x Shw B")
         _, page = self.req("/api/cores?scope=cpu&q=Shw+A")
         self.assertEqual(page["cores"][0]["cpu_layout"], "2x Shw A + 6x Shw B")
+
+    def test_one_arm_design_is_counted(self):
+        doc = document()
+        doc["system"].update(cpu_models="Cortex-A55 (Cnt Board)", cpus=4)
+        rid = self.upload(doc)["id"]
+        _, run = self.req(f"/api/runs/{rid}")
+        self.assertEqual(run["cpu_layout"], "4x Cortex-A55")
+        # A brand name is a chip, not a core: nothing to count it as.
+        doc["system"].update(cpu_models="Cnt Brand(R) N9", cpus=4)
+        rid = self.upload(doc)["id"]
+        _, run = self.req(f"/api/runs/{rid}")
+        self.assertIsNone(run["cpu_layout"])
+
+    def test_peers_are_named_for_the_page(self):
+        for s in (10000, 11000):
+            self.hybrid("Peer CPU", [s])
+        self.hybrid("Peer CPU 2", [9000])
+        _, page = self.req("/api/cores?scope=cpu&q=Peer+CPU&limit=50")
+        peers = {r["cpu_models"]: r.get("peers") for r in page["cores"]}
+        self.assertIsNotNone(peers["Peer CPU"])
+        self.assertIsNone(peers["Peer CPU 2"])
 
     def test_core_counts_split_a_soc(self):
         for layout, s in (("2x Lay A + 6x Lay B", 10000), ("4x Lay A + 4x Lay B", 11000),

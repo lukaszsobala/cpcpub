@@ -140,7 +140,7 @@ thead th {
   color: var(--muted); font-weight: 600; vertical-align: bottom;
 }
 tbody tr:last-child td { border-bottom: 0; }
-tbody tr:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+tbody tr:hover, tbody tr.peer-lit { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 th.num { text-align: right; }
 /* the header is the sort control */
@@ -185,6 +185,9 @@ th.sorted .sorth { color: var(--accent); }
 .fit { color: var(--muted); }
 .fit.good { color: var(--ok); }
 .fit.bad { color: var(--warn); }
+/* On the board a standing takes its colour only on the CPU being pointed at,
+   so a page of them does not all compete for the eye at once. */
+tr.run-row:not(:hover):not(.peer-lit) td.fit { color: var(--muted); }
 .fit-table td:first-child { color: var(--muted); }
 .copylink { font-size: 0.8rem; }
 

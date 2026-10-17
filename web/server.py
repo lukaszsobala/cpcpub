@@ -42,7 +42,7 @@ from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import cast, overload
+from typing import cast
 
 HERE = Path(__file__).resolve().parent
 STATIC_DIR = HERE / "static"
@@ -230,7 +230,7 @@ RUN_COLUMNS = [
     "compiler",
     "compiler_version", "cc", "build_flags", "target",
     "vectorize", "fma", "sysname", "os_release", "machine", "cpus",
-    "cpu_models", "cpu_layout", "cpus_offline", "threads", "seconds", "reps", "warmup", "mem_bytes", "pin",
+    "cpu_models", "cpu_key", "cpu_layout", "cpus_offline", "threads", "seconds", "reps", "warmup", "mem_bytes", "pin",
     "clock", "seed", "dram_name", "dram_mhz_min", "dram_mhz_max", "checksum",
 ]
 
@@ -946,20 +946,30 @@ def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
 
 def guess_layout(records: list[dict], cpu_models: str | None,
                  cpus: int | None) -> str | None:
-    """A run's core counts worked out from its per-core scores.
+    """A run's core counts worked out from what else it reported.
 
     The fallback for a run that did not report `system.cpu_layout`: the same
-    "2x Cortex-A76 + 6x Cortex-A55" it would have said, or None where the
-    scores do not settle it. They settle it only when the CPU line names more
-    than one design, the sweep measured every one of the machine's `cpus` --
-    a sweep of some of them counts only those -- and its steps come out as one
-    per design, after core_types() joins a design measured at two clocks.
-    Fewer steps than names means two designs ran alike, and which is which
-    cannot be told.
+    "2x Cortex-A76 + 6x Cortex-A55" it would have said, or None where nothing
+    settles it.
+
+    A line of one Arm core design ("Cortex-A55") is that design on every one
+    of the machine's `cpus`. Other single names are left alone: "Intel(R)
+    N100" names a chip, not a core, and "4x" of it would be wrong.
+
+    A line of several designs is settled by the per-core scores, and only when
+    the sweep measured every one of `cpus` -- a sweep of some of them counts
+    only those -- and its steps come out as one per design, after
+    core_types() joins a design measured at two clocks. Fewer steps than
+    names means two designs ran alike, and which is which cannot be told.
     """
+    if not cpu_models or not cpus:
+        return None
     names = named_designs(cpu_models)
+    if not names:
+        bare = bare_line(cpu_models)
+        return f"{cpus}x {bare}" if ARM_DESIGN_RE.match(bare) else None
     swept = [r for r in records if r.get("scope") == "cpu"]
-    if (not names or not cpus or len(swept) != cpus
+    if (len(swept) != cpus
             or any(not r.get("score") or not isinstance(r.get("cpu"), int) for r in swept)):
         return None
     count = {t["name"]: len(t["ids"]) for t in core_types(records, cpu_models)
@@ -969,15 +979,30 @@ def guess_layout(records: list[dict], cpu_models: str | None,
     return " + ".join(f"{count[n]}x {n}" for n in names)
 
 
-# What a run's core layout is, reported or else guessed; see guess_layout().
+# The core designs Arm itself names, as the benchmark spells them from a MIDR:
+# each is one kind of core whatever chip it is in, so a count of them is
+# meaningful. Other vendors' names are left to the benchmark to count.
+ARM_DESIGN_RE = re.compile(r"^(Cortex|Neoverse|C1)-[A-Za-z0-9]+$")
+
+BOARD_RE = re.compile(r"\s*\(([^()]*)\)$")
+
+
+def bare_line(cpu_models: str) -> str:
+    """The CPU line without the board in parentheses at its end, if any."""
+    return BOARD_RE.sub("", cpu_models) or cpu_models
+
+
+def board_of(cpu_models: str) -> str | None:
+    m = BOARD_RE.search(cpu_models)
+    return m.group(1) if m else None
+
+
+# What a run's core layout is: as reported, or else as the hub has it -- from
+# the merge list or worked out by guess_layout().
 LAYOUT_SQL = "COALESCE(r.cpu_layout, r.cpu_layout_guess)"
 
 
-@overload
-def cpu_family(cpu_models: str) -> str: ...
-@overload
-def cpu_family(cpu_models: None) -> None: ...
-def cpu_family(cpu_models: str | None) -> str | None:
+def cpu_family(cpu_models: str) -> str:
     """The CPU line without the board it was measured on, where that leaves a chip.
 
     The benchmark appends the platform's name in parentheses ("Cortex-A55 +
@@ -988,22 +1013,60 @@ def cpu_family(cpu_models: str | None) -> str | None:
     a core and not a chip -- "Cortex-A53" is a dozen SoCs at as many clocks --
     so there the board is what tells the chips apart, and stays.
     """
-    if not cpu_models or not named_designs(cpu_models):
-        return cpu_models
-    return re.sub(r"\s*\([^()]*\)$", "", cpu_models)
+    return bare_line(cpu_models) if named_designs(cpu_models) else cpu_models
 
 
-def family_clause(column: str, families: list[str]) -> tuple[str, list[object]]:
-    """SQL matching any run whose CPU line, board aside, is one of `families`.
+# The merge list: CPU lines that are another CPU under a different name. A
+# vendor kernel can print its own name for a chip ("Rockchip RK3588S CoolPi")
+# where the mainline one names the cores, and nothing in the line says the two
+# are the same silicon; an operator who knows says so here. Read once, when
+# the hub starts.
+ALIASES_PATH = HERE / "cpu-aliases.json"
 
-    By prefix rather than LIKE, which ignores case in SQLite and would let
-    "cortex-a55" stand for "Cortex-A55" where peer_key() would not.
+
+def load_aliases(path: Path | None) -> dict[str, dict]:
+    """{bare line: {"cpu", "layout"}} from a merge-list file; {} for no file.
+
+    The file is a JSON list of {"line", "cpu", "layout"?, "why"?}: runs whose
+    line, board aside, is `line` are compared as `cpu`, with `layout` as their
+    core counts where they did not report their own.
     """
-    terms = [f"({column} = ? OR (substr({column}, 1, ?) = ? AND {column} GLOB '*)'))"]
-    args: list[object] = []
-    for f in families:
-        args += [f, len(f) + 2, f + " ("]
-    return "(" + " OR ".join(terms * len(families)) + ")", args
+    if path is None or not path.exists():
+        return {}
+    entries = json.loads(path.read_text())
+    if not isinstance(entries, list):
+        raise ValueError(f"{path}: a list of entries expected")
+    out: dict[str, dict] = {}
+    for e in entries:
+        if not (isinstance(e, dict) and isinstance(e.get("line"), str)
+                and isinstance(e.get("cpu"), str)
+                and isinstance(e.get("layout", ""), str)):
+            raise ValueError(f"{path}: each entry needs \"line\" and \"cpu\" "
+                             f"strings, and \"layout\" if any a string: {e!r}")
+        out[e["line"]] = {"cpu": e["cpu"], "layout": e.get("layout") or None}
+    return out
+
+
+def classify(cpu_models: str | None, cpus: int | None, cpus_offline: int | None,
+             records: list[dict], aliases: dict[str, dict]) -> tuple[str | None, str | None]:
+    """(cpu_key, layout) for one run: what it is compared as, and its core
+    counts as the hub has them where the run did not report its own."""
+    if not cpu_models:
+        return None, None
+    alias = aliases.get(bare_line(cpu_models))
+    if alias:
+        return alias["cpu"], alias["layout"]
+    # A sweep of only the CPUs that were up describes a smaller machine than
+    # the one named, so nothing is counted from it.
+    layout = None if cpus_offline else guess_layout(records, cpu_models, cpus)
+    return cpu_family(cpu_models), layout
+
+
+def design_line(run: dict) -> str | None:
+    """The line to name a run's kinds of core from: its own where that names
+    designs, or else the CPU the merge list says it is."""
+    own = run.get("cpu_models")
+    return own if named_designs(own) or not run.get("cpu_key") else run["cpu_key"]
 
 
 def comparable(row: dict) -> bool:
@@ -1013,15 +1076,15 @@ def comparable(row: dict) -> bool:
     that machine was less than its CPU line says, by an amount the line does
     not say.
     """
-    return bool(row.get("cpu_models")) and not row.get("cpus_offline")
+    return bool(row.get("cpu_key")) and not row.get("cpus_offline")
 
 
 # The same condition in SQL, for the runs a comparison is drawn from.
-COMPARABLE_SQL = "r.cpu_models IS NOT NULL AND COALESCE(r.cpus_offline, 0) = 0"
+COMPARABLE_SQL = "r.cpu_key IS NOT NULL AND COALESCE(r.cpus_offline, 0) = 0"
 
 
 def peer_key(row: dict, scope: str | None) -> tuple:
-    key = (cpu_family(row.get("cpu_models")), row.get("cpu_layout"), row.get("target"),
+    key = (row.get("cpu_key"), row.get("cpu_layout"), row.get("target"),
            row.get("vectorize"), row.get("fma"))
     return key if scope == "cpu" else key + (row.get("threads"),)
 
@@ -1044,11 +1107,12 @@ class Store:
                      ("binary_sha256", "TEXT"), ("attest_tier", "TEXT"),
                      ("attest_repo", "TEXT"), ("attest_workflow", "TEXT"),
                      ("attest_run_url", "TEXT"), ("attest_at", "TEXT"),
-                     ("cpu_layout", "TEXT"), ("cpu_layout_guess", "TEXT"),
+                     ("cpu_layout", "TEXT"), ("cpu_layout_guess", "TEXT"), ("cpu_key", "TEXT"),
                      ("cpus_offline", "INTEGER"))
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, aliases_path: Path | None = ALIASES_PATH):
         self.path = path
+        self.aliases = load_aliases(aliases_path)
         with self.connect() as db:
             db.executescript(SCHEMA_PATH.read_text())
             # Bring a database made by an older build up to date. Names are
@@ -1064,14 +1128,12 @@ class Store:
             db.execute("CREATE INDEX IF NOT EXISTS runs_binary "
                        "ON runs(binary_sha256)")
             self._migrate_verified_builds(db)
-            # Runs from before the layout was reported, and any whose guess a
-            # better rule might now make: only those naming several designs
-            # can have one.
-            for r in db.execute("SELECT id FROM runs WHERE cpu_layout IS NULL "
-                                "AND cpu_layout_guess IS NULL "
-                                "AND COALESCE(cpus_offline, 0) = 0 "
-                                "AND cpu_models LIKE '% + %'").fetchall():
-                self._guess_layout(db, r["id"])
+            db.execute("CREATE INDEX IF NOT EXISTS runs_cpu_key ON runs(cpu_key)")
+            # Every run, every start: the merge list may have changed since,
+            # or the rules, and a run from before either is classified the way
+            # one uploaded now would be.
+            for r in db.execute("SELECT id FROM runs").fetchall():
+                self._classify(db, r["id"])
 
     @staticmethod
     def _migrate_verified_builds(db: sqlite3.Connection) -> None:
@@ -1154,23 +1216,26 @@ class Store:
                 f"INSERT INTO cores ({','.join(ccols)}) "
                 f"VALUES ({','.join('?' * len(ccols))})",
                 [[run_id] + [c.get(col) for col in ccols[1:]] for c in cores])
-            if not run.get("cpu_layout"):
-                self._guess_layout(db, run_id)
+            self._classify(db, run_id)
         return run_id, token
 
-    @staticmethod
-    def _guess_layout(db: sqlite3.Connection, run_id: int) -> None:
-        run = db.execute("SELECT cpu_models, cpus, cpus_offline FROM runs WHERE id = ?",
-                         (run_id,)).fetchone()
-        # Its sweep covered only the CPUs that were up, so counting it would
-        # describe a smaller machine than the one named.
-        if run["cpus_offline"]:
-            return
-        rows = db.execute("SELECT id, scope, cpu, score FROM cores WHERE run_id = ?",
-                          (run_id,)).fetchall()
-        guess = guess_layout([dict(r) for r in rows], run["cpu_models"], run["cpus"])
-        if guess:
-            db.execute("UPDATE runs SET cpu_layout_guess = ? WHERE id = ?", (guess, run_id))
+    def _classify(self, db: sqlite3.Connection, run_id: int) -> None:
+        """Store what a run is compared as, and its core counts where it did
+        not report them; see classify()."""
+        run = db.execute("SELECT cpu_models, cpus, cpus_offline, cpu_layout, cpu_key, "
+                         "cpu_layout_guess FROM runs WHERE id = ?", (run_id,)).fetchone()
+        # The records are only read where a count could come from them.
+        rows = (db.execute("SELECT id, scope, cpu, score FROM cores WHERE run_id = ?",
+                           (run_id,)).fetchall()
+                if run["cpu_models"] and not run["cpu_layout"]
+                and named_designs(run["cpu_models"]) else [])
+        key, layout = classify(run["cpu_models"], run["cpus"], run["cpus_offline"],
+                               [dict(r) for r in rows], self.aliases)
+        if run["cpu_layout"]:
+            layout = None
+        if (key, layout) != (run["cpu_key"], run["cpu_layout_guess"]):
+            db.execute("UPDATE runs SET cpu_key = ?, cpu_layout_guess = ? WHERE id = ?",
+                       (key, layout, run_id))
 
     def delete(self, run_id: int, token: str | None = None,
                user_id: int | None = None) -> bool:
@@ -1208,7 +1273,7 @@ class Store:
                 f"WHERE run_id = ? ORDER BY id", (run_id,)).fetchall()
         out = dict(row)
         out["cores"] = [dict(c) for c in cores]
-        out["types"] = core_types(out["cores"], out["cpu_models"])
+        out["types"] = core_types(out["cores"], design_line(out))
         kind = {i: t["name"] for t in out["types"] for i in t["ids"]}
         for c in out["cores"]:
             c["type"] = kind.get(c["id"])
@@ -1217,40 +1282,40 @@ class Store:
     def types_of_run(self, run_id: int) -> list[dict]:
         """core_types() for one stored run, whatever a listing narrowed it to."""
         with self.connect() as db:
-            run = db.execute("SELECT cpu_models FROM runs WHERE id = ?",
+            run = db.execute("SELECT cpu_models, cpu_key FROM runs WHERE id = ?",
                              (run_id,)).fetchone()
             if run is None:
                 return []
             rows = db.execute("SELECT id, scope, cpu, score FROM cores "
                               "WHERE run_id = ?", (run_id,)).fetchall()
-        return core_types([dict(r) for r in rows], run["cpu_models"])
+        return core_types([dict(r) for r in rows], design_line(dict(run)))
 
-    def run_bests(self, cpu_models: list[str], scope: str,
+    def run_bests(self, cpu_keys: list[str], scope: str,
                   exprs: list[tuple[str, str, str]]) -> list[dict]:
-        """Every run of these CPU lines at one scope, one row each.
+        """Every comparable run of these CPUs at one scope, one row each.
 
         A row holds what peer_key() reads plus, for each (name, SQL, MIN|MAX)
         in `exprs`, that aggregate over the run's records -- its best core, or
         for the one-record total scope, its total.
         """
-        if not cpu_models:
+        if not cpu_keys:
             return []
         cols = ", ".join(f"{agg}({sql}) AS {name}" for name, sql, agg in exprs)
-        match, match_args = family_clause("r.cpu_models",
-                                          sorted({cpu_family(m) for m in cpu_models}))
+        marks = ",".join("?" * len(cpu_keys))
         with self.connect() as db:
             rows = db.execute(
-                f"SELECT r.id AS run_id, r.cpu_models, {LAYOUT_SQL} AS cpu_layout, r.target, r.vectorize, "
+                f"SELECT r.id AS run_id, r.cpu_key, r.cpus_offline, "
+                f"       {LAYOUT_SQL} AS cpu_layout, r.target, r.vectorize, "
                 f"       r.fma, r.threads, {cols} "
                 f"FROM cores c JOIN runs r ON r.id = c.run_id "
-                f"WHERE c.scope = ? AND {match} AND {COMPARABLE_SQL} "
-                f"GROUP BY r.id", [scope, *match_args]).fetchall()
+                f"WHERE c.scope = ? AND r.cpu_key IN ({marks}) AND {COMPARABLE_SQL} "
+                f"GROUP BY r.id", [scope, *cpu_keys]).fetchall()
         return [dict(r) for r in rows]
 
     def cpu_fit(self, run_id: int) -> dict | None:
         """How this run stands among its peers, per metric: whole machine and best core."""
         with self.connect() as db:
-            run = db.execute(f"SELECT r.cpu_models, {LAYOUT_SQL} AS cpu_layout, r.target, "
+            run = db.execute(f"SELECT r.cpu_models, r.cpu_key, {LAYOUT_SQL} AS cpu_layout, r.target, "
                              f"r.vectorize, r.fma, r.threads, r.cpus_offline "
                              f"FROM runs r WHERE r.id = ?", (run_id,)).fetchone()
             scopes = {r["scope"] for r in db.execute(
@@ -1260,14 +1325,14 @@ class Store:
         ranked = [m for m in METRICS if m["better"] != "none"]
         exprs = [(m["key"], f"c.{m['key']}", "MIN" if m["better"] == "low" else "MAX")
                  for m in ranked]
-        out: dict = {"cpu_models": run["cpu_models"], "scopes": {}}
+        out: dict = {"cpu_models": run["cpu_models"], "cpu_key": run["cpu_key"], "scopes": {}}
         # Per-thread rows are left out: each is a share of the whole machine's
         # memory and caches, and the total row already says what that came to.
         for scope in ("total", "cpu"):
             if scope not in scopes:
                 continue
             want = peer_key(dict(run), scope)
-            peers = [p for p in self.run_bests([run["cpu_models"]], scope, exprs)
+            peers = [p for p in self.run_bests([run["cpu_key"]], scope, exprs)
                      if peer_key(p, scope) == want]
             mine = next((p for p in peers if p["run_id"] == run_id), None)
             if mine is None or len(peers) < 2:
@@ -1288,7 +1353,7 @@ class Store:
         compared with every other run's representative, chosen the same way.
         Rows with no peer are left unmarked.
         """
-        models = sorted({r["cpu_models"] for r in rows if r.get("cpu_models")})
+        models = sorted({r["cpu_key"] for r in rows if comparable(r)})
         if not models or sort == "mhz":
             return
         better = next(m["better"] for m in METRICS if m["key"] == sort)
@@ -1302,6 +1367,8 @@ class Store:
             vals = by_key.get(peer_key(r, scope), []) if comparable(r) else []
             if len(vals) > 1 and r.get("sort_value") is not None:
                 r["cpu_fit"] = standing(r["sort_value"], vals, better)
+                # Which rows share it, for the page to light them up together.
+                r["peers"] = json.dumps(peer_key(r, scope))
 
     def cpu_groups(self, *, sort: str, desc: bool, norm: str, limit: int,
                    offset: int, **filters) -> tuple[list[dict], int]:
@@ -1330,17 +1397,19 @@ class Store:
         out = []
         for members in grouped.values():
             first = members[0]
-            g = {k: first.get(k) for k in ("cpu_models", "cpu_layout", "cpus_offline", "target", "vectorize", "fma",
+            g = {k: first.get(k) for k in ("cpu_models", "cpu_key", "cpu_layout",
+                                            "cpus_offline", "target", "vectorize", "fma",
                                             "machine", "threads", "scope")}
             g["runs"] = len(members)
-            # The line the group shares, and the boards it was measured on.
-            # A lone run keeps its own title, board and all.
-            fam = cpu_family(first.get("cpu_models")) or ""
-            boards = {m["cpu_models"][len(fam):].strip(" ()")
-                      for m in members if m.get("cpu_models")}
-            g["boards"] = sorted(b for b in boards if b)
+            # The CPU the group shares, and the boards it was measured on --
+            # each one's own name for itself where it is not that CPU's. A
+            # lone run keeps its own title, board and all.
+            key = g["cpu_key"]
+            boards = {board_of(m["cpu_models"]) or m["cpu_models"] for m in members
+                      if m.get("cpu_models") and m["cpu_models"] != key}
+            g["boards"] = sorted(boards)
             if len(members) > 1:
-                g["cpu_models"] = fam
+                g["cpu_models"] = key
             g["run_id"] = first["run_id"] if len(members) == 1 else None
             g["sysnames"] = sorted({m["sysname"] for m in members if m.get("sysname")})
             g["mhz"] = median(m.get("mhz") for m in members)
@@ -1423,11 +1492,10 @@ class Store:
         # The exact CPU line, for one row of the board grouped by CPU: the
         # search box matches a part of it, and "Ryzen 7" is several CPUs.
         if cpu:
-            clause, clause_args = family_clause("r.cpu_models", [cpu_family(cpu)])
             # The runs a group was made of, which leaves out those that were
             # not compared: each of them is a row of its own.
-            where.append(f"{clause} AND {COMPARABLE_SQL}")
-            args += clause_args
+            where.append(f"r.cpu_key = ? AND {COMPARABLE_SQL}")
+            args.append(cpu)
         if layout is not None:
             where.append(f"{LAYOUT_SQL} = ?" if layout else f"{LAYOUT_SQL} IS NULL")
             if layout:
@@ -1499,7 +1567,7 @@ class Store:
             f"  WHERE {' AND '.join(where)}) "
             f"SELECT c.id, c.run_id, c.scope, c.cpu, c.mhz, c.mhz_src, "
             f"       c.{', c.'.join(CORE_COLUMNS[3:])}, "
-            f"       r.target, r.vectorize, r.fma, r.cpu_models, {LAYOUT_SQL} AS cpu_layout, r.cpus_offline, r.label, "
+            f"       r.target, r.vectorize, r.fma, r.cpu_models, r.cpu_key, {LAYOUT_SQL} AS cpu_layout, r.cpus_offline, r.label, "
             f"       r.created_at, r.mode, r.threads, r.compiler, r.machine, "
             # Which operating system produced it. The family alone is what the
             # board prints -- Linux, Windows, macOS -- so the release string

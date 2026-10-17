@@ -160,22 +160,37 @@ because the board is paged: ordering a page after it arrives would only sort the
 rows that happened to be on it. With `group=run` it also decides which record
 stands for an upload — per GHz that is its most efficient core, not its fastest.
 
-**The same CPU.** Runs are peers when they name the same `cpu_models`
-(the board in parentheses at its end set aside where the line names several
-core designs, so two boards on one big.LITTLE SoC are one CPU -- one design
-alone is a core in many chips, and keeps its board) and the same core layout, target, vectorize and FMA, and for the
-whole-machine and per-thread scopes the same thread count. A run measured with
-CPUs switched off (`system.cpus_offline`) is no one's peer: it is listed, but
-left out of every comparison, of `group=cpu` and of `/rank`'s populations. A board row's
-`cpu_fit` is where its value at `sort` stands among its peers' values, picked
-the same way:
-`{value, median, low, high, rank, of}`, absent with no peer. `group=cpu` folds
-the board into one row per set of peers, ordered by their median; `cpu=` (the
-line, board aside), `layout=` (empty for none) and `threads=` then list one
-row's runs. The layout is `system.cpu_layout` where the run reported it, and
-otherwise counted from its per-core scores where those settle it. `/rank`
-gives the same standing for every ranked metric, for the whole machine and the best core.
-The page shows it as a percentage of the median, signed so that + is better.
+**The same CPU.** Runs are peers when they are the same CPU with the same
+core layout, target, vectorize and FMA, and for the whole-machine and
+per-thread scopes the same thread count. The CPU is the `cpu_models` line,
+with the board in parentheses at its end set aside where the line names
+several core designs -- two boards on one big.LITTLE SoC are one CPU, while
+one design alone is a core in many chips and keeps its board. The layout
+("4x Cortex-A55 + 4x Cortex-A76") is `system.cpu_layout` where the run reported
+it; otherwise the hub counts it, from `system.cpus` for a line of one Arm core
+design and from the per-core scores for several, where those settle it.
+
+The **merge list**, [cpu-aliases.json](cpu-aliases.json), says which lines are
+another CPU under a different name: a vendor kernel that prints the chip's
+name ("Rockchip RK3588S CoolPi") where mainline names its cores. Each entry is
+`{"line", "cpu", "layout", "why"}`; a run whose line, board aside, is `line`
+is compared as `cpu`, with `layout` as its core counts where it reported none.
+The hub reads the file when it starts and classifies every stored run again,
+so an edit takes effect on the next restart; a malformed file stops it from
+starting.
+
+A run measured with CPUs switched off (`system.cpus_offline`) is no one's
+peer: it is listed, but left out of every comparison, of `group=cpu` and of
+`/rank`'s populations. A board row's `cpu_fit` is where its value at `sort`
+stands among its peers' values, picked the same way:
+`{value, median, low, high, rank, of}`, absent with no peer, and `peers` names
+the set it was drawn from, so the page can light those rows up together.
+`group=cpu` folds the board into one row per set of peers, ordered by their
+median; `cpu=` (the row's `cpu_key`), `layout=` (empty for none) and
+`threads=` then list one row's runs. `/rank` gives the same standing for every
+ranked metric, for the whole machine and the best core. The page shows it as a
+percentage of the median, signed so that + is better, coloured only on the
+rows of the CPU under the pointer.
 
 **Kinds of core.** A run's per-core records are grouped by score: sorted, a
 step of more than 15% starts a new kind. Where the CPU line names several

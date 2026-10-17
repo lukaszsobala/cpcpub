@@ -1,0 +1,8 @@
+[
+  {
+    "line": "Rockchip RK3588S CoolPi",
+    "cpu": "Cortex-A55 + Cortex-A76",
+    "layout": "4x Cortex-A55 + 4x Cortex-A76",
+    "why": "CoolPi's vendor kernel names the chip, not its cores. The RK3588S is the RK3588's four A55 and four A76 cores in a smaller package."
+  }
+]
