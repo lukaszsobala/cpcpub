@@ -90,7 +90,7 @@ link "$work/proto.apk" --proto-format
 
 javac --release 11 -encoding UTF-8 -Xlint:all,-options -Werror \
     -classpath "$platform" -d "$work/classes" \
-    "$work"/gen/je/qd/cpcpub/R.java "$here"/src/je/qd/cpcpub/*.java
+    "$work"/gen/io/github/lukaszsobala/cpcpub/R.java "$here"/src/io/github/lukaszsobala/cpcpub/*.java
 "$bt/d8" --release --min-api "$min_sdk" --lib "$platform" --output "$work/dex" \
     $(find "$work/classes" -name '*.class')
 

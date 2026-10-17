@@ -32,7 +32,7 @@ a = Analysis(
 )
 # The window icon, by the name the window asks the icon theme for; frozen, the
 # window adds this folder to the theme's search path.
-a.datas += [("icons/je.qd.cpcpub.Gui.svg", os.path.join(icons, "cpcpub.svg"), "DATA")]
+a.datas += [("icons/io.github.lukaszsobala.cpcpub.Gui.svg", os.path.join(icons, "cpcpub.svg"), "DATA")]
 
 pyz = PYZ(a.pure)
 exe = EXE(

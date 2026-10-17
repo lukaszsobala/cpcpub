@@ -20,7 +20,7 @@ INT-thr and MEM, as on the hub and the desktop -- or every column with
 **Detailed** ticked, which is remembered. Tap a heading for what that column
 means; with Detailed on, the score and the columns it is a geometric mean of
 are in bold. Its scrollbar sits under the last row, not over it. Every result is
-also kept in `Android/data/je.qd.cpcpub/files/results/`, and can be saved
+also kept in `Android/data/io.github.lukaszsobala.cpcpub/files/results/`, and can be saved
 elsewhere or shared as JSON. **Past results** lists them, newest first, with
 the score and whether each is on a hub, and opens one again.
 
@@ -51,7 +51,7 @@ the one for the device's own ABI, which is where the app runs it from.
 
 The app uploads a result itself instead of passing `--submit` to the
 benchmark. The benchmark has no TLS of its own: it hands an https URL to
-`curl`, and Android has no `curl`. [Hub.java](src/je/qd/cpcpub/Hub.java)
+`curl`, and Android has no `curl`. [Hub.java](src/io/github/lukaszsobala/cpcpub/Hub.java)
 makes the same request `submit_document()` in
 [bench.c](../bench/src/bench.c) makes, and in the same way:
 

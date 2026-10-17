@@ -1,4 +1,4 @@
-package je.qd.cpcpub;
+package io.github.lukaszsobala.cpcpub;
 
 import android.app.Notification;
 import android.app.NotificationChannel;

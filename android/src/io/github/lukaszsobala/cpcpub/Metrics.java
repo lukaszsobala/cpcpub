@@ -1,4 +1,4 @@
-package je.qd.cpcpub;
+package io.github.lukaszsobala.cpcpub;
 
 import java.util.ArrayList;
 import java.util.HashMap;

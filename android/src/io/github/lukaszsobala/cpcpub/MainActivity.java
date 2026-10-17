@@ -1,4 +1,4 @@
-package je.qd.cpcpub;
+package io.github.lukaszsobala.cpcpub;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -72,8 +72,10 @@ public final class MainActivity extends Activity {
     private static final int PHASES_PER_PASS = 15;
     private static final double SETUP_SECONDS_PER_PASS = 0.1;
     /** The policy of whoever publishes this app, not of the hub it uploads to,
-     *  so not derived from the hub URL. The port reaches it over IPv4 as well. */
-    private static final String PRIVACY_URL = "https://cpcpub.qd.je:30210/privacy.html";
+     *  so not derived from the hub URL; kept in the repository, where its
+     *  address outlives any hub's. */
+    private static final String PRIVACY_URL =
+        "https://github.com/lukaszsobala/cpcpub/blob/main/PRIVACY.md";
     private static final int SAVE_REQUEST = 1;
     private static final int NOTIFY_REQUEST = 2;
     // The cool-down choices, in seconds, and the one a new install starts on:

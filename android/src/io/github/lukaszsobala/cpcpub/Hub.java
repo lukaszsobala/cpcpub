@@ -1,4 +1,4 @@
-package je.qd.cpcpub;
+package io.github.lukaszsobala.cpcpub;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;

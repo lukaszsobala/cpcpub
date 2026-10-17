@@ -2,7 +2,7 @@
 <!-- What software centres show for the window. @VERSION@ and @DATE@ are
      filled in by build.py from the release being packaged. -->
 <component type="desktop-application">
-  <id>je.qd.cpcpub.Gui</id>
+  <id>io.github.lukaszsobala.cpcpub.Gui</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>cpcpub</name>
@@ -21,8 +21,8 @@
       result can be uploaded to a results hub to compare with other machines.
     </p>
   </description>
-  <launchable type="desktop-id">je.qd.cpcpub.Gui.desktop</launchable>
-  <icon type="stock">je.qd.cpcpub.Gui</icon>
+  <launchable type="desktop-id">io.github.lukaszsobala.cpcpub.Gui.desktop</launchable>
+  <icon type="stock">io.github.lukaszsobala.cpcpub.Gui</icon>
   <url type="homepage">https://github.com/lukaszsobala/cpcpub</url>
   <url type="bugtracker">https://github.com/lukaszsobala/cpcpub/issues</url>
   <developer id="io.github.lukaszsobala">

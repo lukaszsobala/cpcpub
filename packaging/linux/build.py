@@ -42,7 +42,7 @@ import tempfile
 
 TOP = pathlib.Path(__file__).resolve().parents[2]
 HERE = pathlib.Path(__file__).resolve().parent
-APP_ID = "je.qd.cpcpub.Gui"
+APP_ID = "io.github.lukaszsobala.cpcpub.Gui"
 MAINTAINER = "Łukasz Sobala <61153692+lukaszsobala@users.noreply.github.com>"
 HOMEPAGE = "https://github.com/lukaszsobala/cpcpub"
 LICENSE = "GPL-3.0-or-later"

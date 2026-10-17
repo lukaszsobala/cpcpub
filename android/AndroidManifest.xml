@@ -22,7 +22,7 @@
   permission only makes its notification visible.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="je.qd.cpcpub">
+    package="io.github.lukaszsobala.cpcpub">
 
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>

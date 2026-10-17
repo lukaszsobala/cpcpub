@@ -35,7 +35,7 @@ gi.require_version("Gtk", "4.0")
 # the stubs finds no source behind them (a warning). Neither is a fault here.
 from gi.repository import Gio, GLib, GObject, Gtk, Pango  # noqa: E402 # pyright: ignore
 
-APP_ID = "je.qd.cpcpub.Gui"
+APP_ID = "io.github.lukaszsobala.cpcpub.Gui"
 
 # A frozen copy is the Windows build: PyInstaller's executable, with GTK and
 # the icon unpacked beside it in sys._MEIPASS.

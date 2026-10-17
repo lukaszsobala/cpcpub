@@ -76,13 +76,13 @@ PY
 # Where the tools are there anyway: the apt images install them above.
 if command -v desktop-file-validate >/dev/null; then
     say "desktop entry"
-    desktop-file-validate /usr/share/applications/je.qd.cpcpub.Gui.desktop
+    desktop-file-validate /usr/share/applications/io.github.lukaszsobala.cpcpub.Gui.desktop
     echo "valid"
 fi
 if command -v appstreamcli >/dev/null; then
     say "metainfo"
     appstreamcli validate --no-net --pedantic \
-        /usr/share/metainfo/je.qd.cpcpub.Gui.metainfo.xml
+        /usr/share/metainfo/io.github.lukaszsobala.cpcpub.Gui.metainfo.xml
 fi
 
 say "the window runs the benchmark"
