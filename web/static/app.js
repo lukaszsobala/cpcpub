@@ -265,24 +265,32 @@ function kindName(kind, scope, n) {
   return `${kind} ${noun} ×${n}`;
 }
 
-// How far a run is behind the best of the runs it is compared with, from a
-// standing ({value, low, high, rank}): "Top" for the best -- ties included --
-// and "−8%" for one that reached 92% of it. Nothing for a metric with no
-// better end, which has no best.
+// Where a run stands among the runs it is compared with, from a standing
+// ({value, low, high, rank}). "Top" for the best and for anything within
+// TOP_BAND of it, which is as close as two runs of one machine come anyway;
+// "2nd" and "3rd" for the next places, counted as ties usually are -- two
+// runs sharing Top make the next one 3rd; and past those, how far behind the
+// best it is: "−8%" for one that reached 92% of it. Nothing for a metric with
+// no better end, which has no best. `gap` is the percentage behind, always.
+const TOP_BAND = 1;         // percent behind the best that still reads as Top
 const BEHIND_BAD = 5;       // percent behind the best that is worth a colour
+
+function gapBehind(value, best, better) {
+  if (!best || !value) return null;
+  return 100 - (better === "low" ? best / value : value / best) * 100;
+}
 
 function behind(f, better) {
   if (!f || better === "none" || f.value === null || f.value === undefined) return null;
-  if (f.rank === 1) return { text: "Top", pct: 0, top: true };
-  const best = better === "low" ? f.low : f.high;
-  if (!best || !f.value) return null;
-  const pct = (better === "low" ? best / f.value : f.value / best) * 100 - 100;
-  const gap = Math.abs(pct);
-  return { text: `−${gap < 1 ? "<1" : gap.toFixed(0)}%`, pct, top: false };
+  const gap = f.rank === 1 ? 0 : gapBehind(f.value, better === "low" ? f.low : f.high, better);
+  if (gap === null) return null;
+  if (gap < TOP_BAND) return { text: "Top", gap, top: true, placed: true };
+  if (f.rank <= 3) return { text: ordinal(f.rank), gap, top: false, placed: true };
+  return { text: `−${gap.toFixed(0)}%`, gap, top: false, placed: false };
 }
 
 function behindClass(b) {
-  return b.top ? "good" : -b.pct >= BEHIND_BAD ? "bad" : null;
+  return b.top ? "good" : b.gap >= BEHIND_BAD ? "bad" : null;
 }
 
 // Per-GHz normalisation. Rates divide by clock and latencies in ns become
@@ -619,8 +627,9 @@ function sortHeader(label, unit, key) {
 
 function fitHeader() {
   const th = el("th", "num", "vs CPU");
-  th.title = "against the best run on the same CPU with the same build, at the " +
-             "metric the board is sorted by: Top is that run, −8% is 8% behind it";
+  th.title = "against the runs on the same CPU with the same build, at the metric " +
+             `the board is sorted by: Top is the best or within ${TOP_BAND}% of it, then ` +
+             "2nd and 3rd, then how far behind the best (−8%)";
   return th;
 }
 
@@ -661,8 +670,9 @@ function fitCell(row) {
   td.textContent = b.text;
   const cls = behindClass(b);
   if (cls) td.classList.add(cls);
-  td.title = `${ordinal(f.rank)} of ${f.of} runs on this CPU; the best is ` +
-             fmt(m.better === "low" ? f.low : f.high);
+  td.title = `${ordinal(f.rank)} of ${f.of} runs on this CPU` +
+             (b.gap >= 0.05 ? `, ${b.gap.toFixed(1)}% behind the best` : "") +
+             `; the best is ${fmt(m.better === "low" ? f.low : f.high)}`;
   return td;
 }
 
@@ -908,12 +918,12 @@ function renderGroup(tbody, g, number) {
   const m = state.metrics.find((x) => x.key === state.sort);
   if (m && g.runs > 1 && m.better !== "none") {
     const [worst, best] = m.better === "low" ? [g.high, g.low] : [g.low, g.high];
-    const b = behind({ value: worst, low: g.low, high: g.high, rank: worst === best ? 1 : 2 },
-                     m.better);
-    if (b) {
-      spread.textContent = b.top ? "even" : b.text;
-      spread.title = b.top ? "these runs all came out the same"
-                           : `the worst of these runs, against the best`;
+    const gap = gapBehind(worst, best, m.better);
+    if (gap !== null) {
+      const even = gap < TOP_BAND;
+      spread.textContent = even ? "even" : `−${gap.toFixed(0)}%`;
+      spread.title = even ? `these runs came out within ${TOP_BAND}% of each other`
+                          : "how far the worst of these runs is behind the best";
     }
   }
   tr.append(spread);
@@ -1290,7 +1300,7 @@ function sameCpu(scopes) {
       const b = f ? behind(f, m.better) : null;
       const td = el("td", "num fit");
       if (b) {
-        td.textContent = b.top ? b.text : `${b.text} · ${ordinal(f.rank)}`;
+        td.textContent = b.placed ? b.text : `${b.text} · ${ordinal(f.rank)}`;
         const cls = behindClass(b);
         if (cls) td.classList.add(cls);
         td.title = `${fmt(f.value)}; these runs went from ${fmt(f.low)} to ${fmt(f.high)}, ` +
@@ -1305,7 +1315,8 @@ function sameCpu(scopes) {
   scroller.append(table);
   wrap.append(scroller);
   wrap.append(el("p", "note legend",
-    "Against the best of those runs: Top is the best, −8% is 8% behind it."));
+    `Against those runs: Top is the best or within ${TOP_BAND}% of it, then 2nd and ` +
+    "3rd, then how far behind the best (−8%)."));
   return wrap;
 }
 

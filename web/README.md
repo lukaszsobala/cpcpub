@@ -189,8 +189,9 @@ the set it was drawn from, so the page can light those rows up together.
 `group=cpu` folds the board into one row per set of peers, ordered by their
 median; `cpu=` (the row's `cpu_key`), `layout=` (empty for none) and
 `threads=` then list one row's runs. `/rank` gives the same standing for every
-ranked metric, for the whole machine and the best core. The page shows it against the
-best of those runs -- "Top" for the best, "−8%" for one 8% behind it --
+ranked metric, for the whole machine and the best core. The page shows "Top" for the best
+of those runs and anything within 1% of it, then "2nd" and "3rd", then how
+far behind the best a run is ("−8%"),
 coloured only on the rows of the CPU under the pointer.
 
 **Kinds of core.** A run's per-core records are grouped by score: sorted, a
