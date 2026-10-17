@@ -660,7 +660,7 @@ function sortHeader(label, unit, key) {
 }
 
 function fitHeader() {
-  const th = el("th", "num", "vs CPU");
+  const th = el("th", "num fitcol", "vs CPU");
   th.title = "against the runs on the same CPU with the same build, at the metric " +
              `the board is sorted by: Top is the best or within ${TOP_BAND}% of it, then ` +
              "2nd and 3rd, then how far behind the best (−8%)";
@@ -811,7 +811,8 @@ function renderBoard() {
             el("th", "wide", state.grouped ? "CPU" : "machine"),
             el("th", "", "OS"), el("th", "", "arch"), el("th", "", "build"));
   // Grouped, each row already is its CPU, so standing against it says nothing.
-  if (!state.grouped) hr.append(fitHeader());
+  // The column stays, empty, so the board does not shift as grouping toggles.
+  hr.append(state.grouped ? el("th", "num fitcol") : fitHeader());
   hr.append(sortHeader("MHz", "", "mhz"));
   for (const m of shownMetrics()) hr.append(sortHeader(m.label, unitOf(m), m.key));
   thead.append(hr);
@@ -902,7 +903,7 @@ function runRow(row, number, nested = false) {
   // also carries is a different question, and it is on the run's own page.
   tr.append(el("td", "", osName(row)), el("td", "", row.target || "—"),
             el("td", "flags", flagsText(row)));
-  if (!state.grouped) tr.append(fitCell(row));
+  tr.append(state.grouped ? el("td", "num fit") : fitCell(row));
   metricCells(tr, row);
   return tr;
 }
@@ -987,7 +988,7 @@ function renderGroup(tbody, g, number) {
   tr.append(name);
   const systems = (g.sysnames || []).map((s) => osName({ sysname: s })).join(", ");
   tr.append(el("td", "", systems || "—"), el("td", "", g.target || "—"),
-            el("td", "flags", flagsText(g)));
+            el("td", "flags", flagsText(g)), el("td", "num fit"));
   metricCells(tr, g);
   tbody.append(tr);
   if (!open) return;
