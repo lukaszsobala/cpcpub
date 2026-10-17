@@ -86,8 +86,12 @@
          how many of each core it has, once. Picking one narrows the board to
          that CPU; any other text is searched for as typed. -->
     <label class="grow">Search
-      <input type="search" name="q" list="cpu-list" autocomplete="off"
-             placeholder="pick a CPU, or type a model, label or machine">
+      <span class="search-box">
+        <input type="search" name="q" list="cpu-list" autocomplete="off"
+               placeholder="pick a CPU, or type a model, label or machine">
+        <button type="button" class="clear" id="search-clear"
+                title="clear the search" aria-label="Clear the search" hidden>×</button>
+      </span>
       <datalist id="cpu-list"></datalist>
     </label>
     <button type="submit">Search</button>

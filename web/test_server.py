@@ -859,6 +859,20 @@ class HubTest(unittest.TestCase):
         self.assertEqual([(g["cpu_layout"], g["runs"]) for g in page["groups"]],
                          [("3x Gue A + 5x Gue B", 2)])
 
+    def test_stats_list_guessed_layouts_apart(self):
+        # Neither run reports its layout, so both are the hub's guess: one CPU
+        # line, two core mixes, two entries.
+        for fast in (2, 4):
+            doc = document(mode="per-core")
+            doc["system"]["cpu_models"] = "Gst A + Gst B (Gst Board)"
+            doc["cores"] = [core(cpu=i, score=20000.0 if i < fast else 8000.0)
+                            for i in range(8)]
+            self.upload(doc)
+        _, stats = self.req("/api/stats")
+        self.assertEqual(sorted((c["cpu_layout"], c["n"]) for c in stats["cpus"]
+                                if c["cpu_key"] == "Gst A + Gst B"),
+                         [("2x Gst A + 6x Gst B", 1), ("4x Gst A + 4x Gst B", 1)])
+
     def test_runs_with_cpus_offline_are_not_compared(self):
         ids = [self.hybrid("Off CPU", [s])["id"] for s in (10000, 11000)]
         doc = document()

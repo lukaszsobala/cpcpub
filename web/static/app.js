@@ -2461,9 +2461,20 @@ async function boot() {
   // Picking a suggested CPU is a whole gesture too, so it searches at once;
   // text typed by hand still waits to be submitted.
   $("#filters").elements.q.addEventListener("input", (e) => {
+    $("#search-clear").hidden = !e.target.value;
     const text = e.target.value.trim();
     if (text === state.search || !state.cpus.has(text)) return;
     state.search = text;
+    loadBoard().catch((err) => alert(err.message));
+  });
+  // Clearing is a whole gesture as well: the board stops being searched at once.
+  $("#search-clear").addEventListener("click", () => {
+    const box = $("#filters").elements.q;
+    box.value = "";
+    $("#search-clear").hidden = true;
+    box.focus();
+    if (!state.search) return;
+    state.search = "";
     loadBoard().catch((err) => alert(err.message));
   });
   for (const name of ["scope", "target", "os", "vectorize", "fma", "verified",

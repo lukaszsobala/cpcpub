@@ -1652,11 +1652,13 @@ class Store:
                 "SELECT sysname, COUNT(*) AS n FROM runs WHERE sysname IS NOT NULL "
                 "GROUP BY sysname ORDER BY n DESC").fetchall()
             # Every CPU this hub can compare, with its core counts, for the CPU
-            # picker: one entry per peer set, as group=cpu draws them.
+            # picker: one entry per peer set, as group=cpu draws them. Grouped
+            # by the expression rather than its alias, which SQLite would read
+            # as the reported column alone and so fold guessed layouts together.
             cpus = db.execute(
                 f"SELECT r.cpu_key, {LAYOUT_SQL} AS cpu_layout, COUNT(*) AS n "
                 f"FROM runs r WHERE {COMPARABLE_SQL} "
-                f"GROUP BY r.cpu_key, cpu_layout ORDER BY r.cpu_key").fetchall()
+                f"GROUP BY r.cpu_key, {LAYOUT_SQL} ORDER BY r.cpu_key").fetchall()
             # The newest release this hub knows of, for the page to point at
             # when it explains what a release build is. By version and not by
             # when the manifest happened to be loaded: an operator catching up
