@@ -53,6 +53,10 @@ for d in mdpi:1 hdpi:1.5 xhdpi:2 xxhdpi:3 xxxhdpi:4; do
         --export-filename="$res/mipmap-$name/ic_launcher_foreground.png" >/dev/null 2>&1
 done
 echo "wrote android/res/mipmap-*/"
+# The monochrome layer Android 13 and later tint to the home screen's theme:
+# a vector, drawn from the SVG's shapes rather than rendered from it.
+python3 "$here/monochrome.py" "$svg" "$res/drawable/ic_launcher_monochrome.xml"
+echo "wrote android/res/drawable/ic_launcher_monochrome.xml"
 
 # The hub: the SVG itself as the page's icon, its comment saying where it came
 # from, and the opaque 180px square Safari and home screens take instead, since

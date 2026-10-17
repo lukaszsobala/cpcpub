@@ -35,6 +35,8 @@
         android:icon="@mipmap/ic_launcher"
         android:extractNativeLibs="true"
         android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="true"
         android:theme="@style/App">
         <activity

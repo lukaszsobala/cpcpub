@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nothing leaves the phone, in a cloud backup or a move to a new one: what
+     the app keeps is the form, the upload token in it, and a receipt for each
+     upload with its delete token, and a token goes where its owner pastes it, not
+     wherever the phone's data is copied. allowBackup="false" says the same to
+     Android 11 and earlier; from 12 on it no longer covers a device-to-device
+     transfer, and these rules do. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="."/>
+        <exclude domain="file" path="."/>
+        <exclude domain="database" path="."/>
+        <exclude domain="sharedpref" path="."/>
+        <exclude domain="external" path="."/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="."/>
+        <exclude domain="file" path="."/>
+        <exclude domain="database" path="."/>
+        <exclude domain="sharedpref" path="."/>
+        <exclude domain="external" path="."/>
+    </device-transfer>
+</data-extraction-rules>
