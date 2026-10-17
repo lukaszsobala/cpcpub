@@ -1056,11 +1056,11 @@ static void tally_add(core_tally_t *t, const char *name) {
     t->count[t->n++] = 1;
 }
 
-// "2x Cortex-A76 + 6x Cortex-A55", or nothing for a machine of one kind of
-// core: there the thread count already says everything the counts would.
+// "2x Cortex-A76 + 6x Cortex-A55", or "4x Cortex-A55" for a machine of one
+// kind of core: a design name alone does not say how many of it there are.
 static void tally_layout(const core_tally_t *t, char *out, size_t outsz) {
     out[0] = '\0';
-    if (t->n < 2) return;
+    if (t->n < 1) return;
     size_t used = 0;
     for (int i = 0; i < t->n && used + 1 < outsz; ++i) {
         used += (size_t)snprintf(out + used, outsz - used, "%s%dx %s",

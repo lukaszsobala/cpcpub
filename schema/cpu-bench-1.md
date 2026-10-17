@@ -58,10 +58,11 @@ value that repeats `build.target` is not a CPU model, and a reader is better off
 seeing the field missing than seeing `aarch64` in a column of CPU names.
 
 `system.cpu_layout` says how many of each core the machine has, in the order
-`cpu_models` names them: `2x Cortex-A76 + 6x Cortex-A55`. Read from the same
-per-CPU MIDR lines, so Arm only for now, and **absent** on a machine of one kind
-of core, where `system.cpus` already says it. It lets a hub tell a 4+4 part from a
-2+6 one, which `cpu_models` names identically.
+`cpu_models` names them: `2x Cortex-A76 + 6x Cortex-A55`, or `4x Cortex-A55` for
+one kind. Read from the same per-CPU MIDR lines, so Arm only for now, and
+**absent** elsewhere. It lets a hub tell a 4+4 part from a 2+6 one, which
+`cpu_models` names identically. Where the kernel names the chip rather than its
+cores, `cpu_models` carries that name and this still counts the cores.
 
 `system.cpus_offline` is how many CPUs the kernel lists as present but not
 online, the most seen at the start of the run or at its end; **absent** when
