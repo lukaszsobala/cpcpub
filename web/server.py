@@ -1891,11 +1891,25 @@ class Store:
 
 
 class RateLimiter:
+    """Hits per key -- a client's address, mostly -- over a sliding window.
+
+    A key with no hit inside the window is forgotten within one more window:
+    the privacy page promises that an address is held for the limit's sake no
+    longer than that, and that it is never written anywhere.
+    """
+
     def __init__(self, limit: int, window: float):
         self.limit = limit
         self.window = window
         self.hits: dict[str, deque[float]] = defaultdict(deque)
         self.lock = threading.Lock()
+        self.swept = time.monotonic()
+
+    def sweep(self, now: float) -> None:
+        """Forget every key whose last hit has left the window."""
+        for k in [k for k, q in self.hits.items() if not q or now - q[-1] > self.window]:
+            del self.hits[k]
+        self.swept = now
 
     def allow(self, key: str, limit: int | None = None) -> bool:
         """Whether `key` may act now. `limit` overrides the default for one
@@ -1906,6 +1920,8 @@ class RateLimiter:
             return True
         now = time.monotonic()
         with self.lock:
+            if now - self.swept > self.window:
+                self.sweep(now)
             q = self.hits[key]
             while q and now - q[0] > self.window:
                 q.popleft()

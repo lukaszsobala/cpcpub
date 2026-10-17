@@ -20,6 +20,7 @@ import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import server as srv
 
@@ -2039,6 +2040,20 @@ class PasswordTest(unittest.TestCase):
         self.assertFalse(limiter.allow("user:1", 2 * srv.ACCOUNT_RATE_FACTOR))
         # ...and the address it came from still has its own budget.
         self.assertTrue(limiter.allow("10.0.0.1"))
+
+    def test_an_address_is_forgotten_after_its_window(self):
+        # What the privacy page says: an address is held no longer than the
+        # limit needs it, whether or not it ever comes back.
+        limiter = srv.RateLimiter(2, 60.0)
+        clock = [1000.0]
+        with mock.patch.object(srv.time, "monotonic", lambda: clock[0]):
+            limiter.swept = clock[0]
+            self.assertTrue(limiter.allow("10.0.0.1"))
+            clock[0] += 30
+            self.assertTrue(limiter.allow("10.0.0.2"))
+            clock[0] += 31          # .1's hit has left the window, .2's has not
+            self.assertTrue(limiter.allow("10.0.0.3"))
+            self.assertEqual(sorted(limiter.hits), ["10.0.0.2", "10.0.0.3"])
 
 
 class ValidateTest(unittest.TestCase):
