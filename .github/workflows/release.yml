@@ -906,8 +906,16 @@ jobs:
           path: staged
 
       # The bytes about to go up are the ones the manifest job took digests of.
+      # SHA256SUMS names each file as the release will, flat; the packages wait
+      # in packages/ until they go up beside the binaries.
       - name: Check against the checksums
-        run: cd staged && sha256sum -c SHA256SUMS
+        run: |
+          set -eu
+          cd staged
+          while read -r digest name; do
+            name=${name#\*}
+            if [ -e "$name" ]; then echo "$digest  $name"; else echo "$digest  packages/$name"; fi
+          done < SHA256SUMS | sha256sum -c -
 
       # `gh` reads the token from the environment, so it never reaches a process
       # list or a log line. --clobber so re-running the workflow for a tag
