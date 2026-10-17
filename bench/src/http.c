@@ -63,6 +63,9 @@ typedef int sock_t;
 // Small helpers
 // ---------------------------------------------------------------------------
 
+#if defined(__GNUC__)
+__attribute__((format(printf, 2, 3)))
+#endif
 static int fail(http_reply_t *r, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

@@ -2160,7 +2160,7 @@ static void tsv_result(const char *variant, const char *scope, const result_t *r
     printf("%s\t%s", variant, scope);
     if (r->cpu >= 0) printf("\t%d", r->cpu); else printf("\t");
     tsv_num(r->mhz, 1);
-    printf("\t%s", r->mhz > 0.0 ? mhz_src_name(r->mhz_src)
+    printf("\t%s", r->mhz > 0.0 ? mhz_src_name((int)r->mhz_src)
                                 : "unknown");
     tsv_num(r->int_lat, 1);
     tsv_num(r->int_thr, 1);
@@ -2201,7 +2201,7 @@ static void json_result(const result_t *r, const char *scope, const char *indent
     jout("%s{ \"scope\": \"%s\"", indent, scope);
     if (r->cpu >= 0) jout(", \"cpu\": %d", r->cpu); else jout(", \"cpu\": null");
     j_num("mhz", r->mhz, 1);
-    j_str("mhz_src", r->mhz > 0.0 ? mhz_src_name(r->mhz_src)
+    j_str("mhz_src", r->mhz > 0.0 ? mhz_src_name((int)r->mhz_src)
                                   : "unknown");
     j_num("int_lat_mops", r->int_lat, 1);
     j_num("int_thr_mops", r->int_thr, 1);
