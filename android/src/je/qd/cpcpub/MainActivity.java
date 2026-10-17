@@ -209,8 +209,8 @@ public final class MainActivity extends Activity {
             "Baseline build only",
             "All four builds: with and without SIMD and FMA"},
             prefs.getInt("variants", 0));
-        page.addView(note("SIMD: several numbers per instruction. FMA: multiply "
-            + "and add in one. The baseline uses neither and compares with any "
+        page.addView(note("SIMD and FMA are processor shortcuts that do more "
+            + "work in each step. The baseline uses neither and compares with any "
             + "device; the others only with the same kind of chip."));
 
         page.addView(heading("Cool-down"));
