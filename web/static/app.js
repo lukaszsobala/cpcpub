@@ -499,6 +499,20 @@ function recordName(row) {
   return row.cpu === null || row.cpu === undefined ? what : `${what}${row.cpu}`;
 }
 
+// The label as the page prints it. An upload of several builds in one file has
+// each label ended with its build, "(scalar-nofma)", which the Build column
+// already says on the board -- and says the same on every row of a comparison
+// of one build, so it is dropped wherever the page has the build in view.
+// Stored labels are left alone: this only changes what is drawn.
+function shownLabel(row, buildShown = true) {
+  const label = row.label;
+  if (!label || !buildShown || row.vectorize == null || row.fma == null) return label;
+  const own = `${row.vectorize ? "vector" : "scalar"}-${row.fma ? "fma" : "nofma"}`;
+  const tail = ` (${own})`;
+  if (label === `(${own})`) return "";
+  return label.endsWith(tail) ? label.slice(0, -tail.length) : label;
+}
+
 function flagsText(row) {
   const v = row.vectorize ? "vec" : "scalar";
   const f = row.fma ? "fma" : "no-fma";
@@ -906,9 +920,9 @@ function runRow(row, number, nested = false) {
   } else {
     head.append(el("span", "expander blank", " "));
   }
-  head.append(runLink(row.run_id, nested ? row.label || `run ${row.run_id}` : machineName(row)));
+  head.append(runLink(row.run_id, nested ? shownLabel(row) || `run ${row.run_id}` : machineName(row)));
   name.append(head);
-  if (row.label && !nested) name.append(el("span", "label", row.label));
+  if (shownLabel(row) && !nested) name.append(el("span", "label", shownLabel(row)));
   if (row.cpus_offline && !nested) name.append(offlineNote(row));
   tr.append(name);
 
@@ -1151,9 +1165,13 @@ function renderSelection() {
   }
 
   const head = el("div", "cmp-head");
+  // The chips do not print the build, so a label's own build stays on it
+  // exactly when the comparison mixes builds -- the only time it tells them apart.
+  const sameBuild = builds.size <= 1;
   rows.forEach((r, i) => {
     const chip = el("div", `chip c${i % 6}`);
-    const named = r.label || machineName(r);
+    const label = shownLabel(r, sameBuild);
+    const named = label || machineName(r);
 
     // The label leads. It is the name its owner gave the machine, and it was
     // the one thing this panel did not print: four bars against four rows all
@@ -1173,7 +1191,7 @@ function renderSelection() {
     top.append(title, drop);
     chip.append(top);
 
-    if (r.label) chip.append(el("span", "chip-sub", machineName(r)));
+    if (label) chip.append(el("span", "chip-sub", machineName(r)));
     head.append(chip);
   });
   body.append(head);
