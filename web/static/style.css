@@ -223,8 +223,9 @@ tr.run-row:not(:hover):not(.peer-lit) td.fit { color: var(--muted); }
 /* compare ---------------------------------------------------------------- */
 .cmp-head { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 1.25rem; }
 .chip {
-  border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px;
-  padding: 0.5rem 0.75rem; background: var(--panel); font-size: 0.82rem;
+  border: 2px solid var(--chip, var(--line)); border-radius: 8px;
+  padding: 0.5rem 0.75rem; font-size: 0.82rem;
+  background: color-mix(in srgb, var(--chip, transparent) 16%, var(--panel));
   display: flex; flex-direction: column; gap: 0.15rem; min-width: 12rem;
 }
 .chip span { color: var(--muted); font-size: 0.75rem; }
@@ -238,12 +239,15 @@ tr.run-row:not(:hover):not(.peer-lit) td.fit { color: var(--muted); }
   color: var(--muted); font-size: 1rem; line-height: 1; flex: none;
 }
 .chip-x:hover { color: var(--warn); }
-.chip.c0 { border-left-color: var(--c0); }
-.chip.c1 { border-left-color: var(--c1); }
-.chip.c2 { border-left-color: var(--c2); }
-.chip.c3 { border-left-color: var(--c3); }
-.chip.c4 { border-left-color: var(--c4); }
-.chip.c5 { border-left-color: var(--c5); }
+/* each box wears its bar's colour: a tint over the whole box, an outline round
+   all of it and the name in the colour, so the box and its bars read as one. */
+.chip.c0 { --chip: var(--c0); }
+.chip.c1 { --chip: var(--c1); }
+.chip.c2 { --chip: var(--c2); }
+.chip.c3 { --chip: var(--c3); }
+.chip.c4 { --chip: var(--c4); }
+.chip.c5 { --chip: var(--c5); }
+.chip .chip-top .linkish { color: var(--chip, var(--accent)); }
 
 /* Detailed and Clear selection, on one line above the chips. */
 .cmpbar { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.9rem; }
