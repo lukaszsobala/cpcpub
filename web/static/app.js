@@ -748,29 +748,6 @@ function metricCells(tr, row) {
   for (const m of shownMetrics()) tr.append(el("td", "num", fmt(value(row, m))));
 }
 
-// The one mark a row can carry: the result named a binary that a release
-// published, so it is comparable with every other row naming that release.
-//
-// There is deliberately nothing stronger. A benchmark cannot vouch for its own
-// numbers -- a key inside a downloadable binary is a key anyone can read out of
-// it -- so the only stronger mark would have to be signed by someone who is not
-// the submitter, and every way of arranging that means running the benchmark
-// inside a CI job rather than with one command. That is not this tool.
-//
-// The tag is the newest release those exact bytes appear in, which is the hub's
-// answer and not the run's: a binary unchanged across four releases is one
-// binary, and labelling it with the oldest of them would split one population
-// of comparable runs into four that look like different builds.
-function trustBadge(row) {
-  if (!row.release_build) return null;
-  const mark = el("span", "claim", `${row.release_build} build`);
-  mark.title = `this result names the same program ${row.release_build} ` +
-               `published, so it compares directly with other ` +
-               `${row.release_build} results — that it does so is the ` +
-               `result's own word, not something checked here`;
-  return mark;
-}
-
 // A run as a link, #run=N, so it can be opened in a new tab, copied or
 // bookmarked like any other. A plain click opens it over the page.
 function runLink(id, text) {
@@ -786,9 +763,24 @@ function runLink(id, text) {
 
 function filterBySubmitter(name) {
   state.submitter = name || "";
+  if (state.openRun) closeRun();      // the run's page is where the link was
   showTab("board");
   syncHash();
   loadBoard().catch((e) => alert(e.message));
+}
+
+// A submitter as a link, #user=name, so one account's results can be opened in
+// a new tab or bookmarked like a run. A plain click narrows the board to them.
+function submitterLink(name) {
+  const a = el("a", "linkish", name);
+  a.href = `#user=${name}`;
+  a.title = `show only ${name}'s uploads`;
+  a.addEventListener("click", (e) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    filterBySubmitter(name);
+  });
+  return a;
 }
 
 function renderSubmitterChip() {
@@ -915,21 +907,9 @@ function runRow(row, number, nested = false) {
     head.append(el("span", "expander blank", " "));
   }
   head.append(runLink(row.run_id, nested ? row.label || `run ${row.run_id}` : machineName(row)));
-  const mark = trustBadge(row);
-  if (mark) head.append(mark);
   name.append(head);
   if (row.label && !nested) name.append(el("span", "label", row.label));
   if (row.cpus_offline && !nested) name.append(offlineNote(row));
-  // Who uploaded it, when anyone signed in did. Clicking narrows the board to
-  // that account -- one machine's owner usually has several, and reading them
-  // together is the reason to have accounts at all.
-  if (row.user) {
-    const by = el("button", "by", `by ${row.user}`);
-    by.type = "button";
-    by.title = `show only ${row.user}'s uploads`;
-    by.addEventListener("click", () => filterBySubmitter(row.user));
-    name.append(by);
-  }
   tr.append(name);
 
   // The family only -- Linux, Windows, macOS. The build number the upload
@@ -1194,14 +1174,6 @@ function renderSelection() {
     chip.append(top);
 
     if (r.label) chip.append(el("span", "chip-sub", machineName(r)));
-    chip.append(el("span", null,
-      recordName(r) + (r.user ? ` · uploaded by ${r.user}` : "")));
-    chip.append(el("span", null, [
-      osName(r, "system not reported"),
-      r.target || "arch not reported",
-      flagsText(r),
-      r.mhz ? Math.round(r.mhz) + " MHz" : "clock unknown",
-    ].join(" · ")));
     head.append(chip);
   });
   body.append(head);
@@ -1271,8 +1243,6 @@ async function showRun(id) {
   box.replaceChildren();
 
   const title = el("h2", null, machineName(run, `run ${run.id}`));
-  const mark = trustBadge(run);
-  if (mark) title.append(mark);
   box.append(title);
   const share = el("button", "linkish copylink", "copy link");
   share.type = "button";
@@ -1290,7 +1260,7 @@ async function showRun(id) {
   // on the way in, so it starts folded.
   box.append(metaList([
     ["uploaded", run.created_at && when(run.created_at)],
-    ["submitted by", run.user || "anonymous"],
+    ["submitted by", run.user ? submitterLink(run.user) : "anonymous"],
     ["system", [run.sysname, run.os_release, run.machine].filter(Boolean).join(" ")],
   ]));
 
