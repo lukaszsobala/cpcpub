@@ -423,6 +423,7 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
 }
 .authmsg { margin: 0.25rem 0 0; font-size: 0.85rem; min-height: 1.2em; }
 
+.foldname { cursor: pointer; }
 #board-chip {
   display: flex; align-items: baseline; gap: 0.5rem; margin-top: 0.85rem;
   font-size: 0.85rem;

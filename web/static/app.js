@@ -1032,7 +1032,11 @@ function renderGroup(tbody, g, number) {
     ex.title = open ? "hide the runs" : "show each run on this CPU";
     ex.setAttribute("aria-expanded", String(open));
     ex.addEventListener("click", () => toggleGroup(g).catch((e) => alert(e.message)));
-    head.append(ex, el("strong", null, machineName(g)));
+    // The name folds the row as well as the arrow: it is the bigger target.
+    // The arrow stays the keyboard's way in, being the one that is a button.
+    const cpu = el("strong", "foldname", machineName(g));
+    cpu.addEventListener("click", () => toggleGroup(g).catch((e) => alert(e.message)));
+    head.append(ex, cpu);
   } else {
     head.append(el("span", "expander blank", " "),
                 g.run_id ? runLink(g.run_id, machineName(g)) : machineName(g));
