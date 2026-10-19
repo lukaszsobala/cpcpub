@@ -676,23 +676,36 @@ async function toggleGroup(g) {
   renderBoard();
 }
 
+// How much of one CPU row's runs are ticked. A folded row's runs are not known
+// until they are fetched, except that a CPU of one run is told apart by its run
+// id, so a comparison arriving in a link ticks it without a request.
+function groupTicks(g) {
+  const kids = state.children.get(groupKey(g));
+  if (kids) return { on: kids.filter((r) => state.selected.has(r.id)).length, total: kids.length };
+  if (g.runs === 1 && g.run_id) {
+    const on = [...state.selected.values()].some((r) => r.run_id === g.run_id);
+    return { on: on ? 1 : 0, total: 1 };
+  }
+  return { on: 0, total: g.runs };
+}
+
 // The box on a CPU's row: ticks every run of that CPU, or unticks them when
 // they all are ticked. Ticking from a folded row unfolds it, so the runs it
-// just picked are in view rather than only in the comparison.
+// just picked are in view rather than only in the comparison. A CPU of one run
+// has nothing to unfold, and its row is the run.
 function groupBox(g) {
   const key = groupKey(g);
   const box = el("td");
   const cb = el("input", "row-pick");
   cb.type = "checkbox";
-  const runs = state.children.get(key) || [];
-  const on = runs.filter((r) => state.selected.has(r.id)).length;
-  cb.checked = runs.length > 0 && on === runs.length;
-  cb.indeterminate = on > 0 && on < runs.length;
+  const { on, total } = groupTicks(g);
+  cb.checked = total > 0 && on === total;
+  cb.indeterminate = on > 0 && on < total;
   cb.title = cb.checked ? "untick every run on this CPU" : "tick every run on this CPU";
   cb.addEventListener("change", async () => {
     try {
       const rows = await loadGroup(g);
-      state.expanded.add(key);
+      if (g.runs > 1) state.expanded.add(key);
       if (rows.length) await selectRows(rows, cb.checked);
       else renderBoard();
     } catch (e) {
@@ -701,6 +714,49 @@ function groupBox(g) {
   });
   box.append(cb);
   return box;
+}
+
+// The header's box on the board grouped by CPU: every run of every CPU shown,
+// the folded ones too, so it agrees with the box on each CPU's row. Ticking
+// fetches the runs of the CPUs not yet fetched but leaves them folded -- a page
+// of a hundred CPUs unfolded is not what ticking them all asks for.
+function groupedTickAll(box, groups) {
+  let on = 0;
+  let full = 0;
+  for (const g of groups) {
+    const t = groupTicks(g);
+    on += t.on;
+    if (t.total > 0 && t.on === t.total) full++;
+  }
+  box.checked = groups.length > 0 && full === groups.length;
+  box.indeterminate = on > 0 && full < groups.length;
+  box.disabled = !groups.length;
+  box.title = box.checked ? "untick every run shown" : "tick every run shown";
+  box.addEventListener("change", async () => {
+    try {
+      const want = box.checked;
+      let rows;
+      if (want) {
+        // A few at a time: one request per CPU, and a hundred at once is a
+        // burst a small hub should not be handed.
+        const todo = groups.filter((g) => !state.children.has(groupKey(g)));
+        const pool = Array.from({ length: 6 }, async () => {
+          for (let g = todo.shift(); g; g = todo.shift()) await loadGroup(g);
+        });
+        await Promise.all(pool);
+        rows = groups.flatMap((g) => state.children.get(groupKey(g)) || []);
+      } else {
+        // Nothing needs fetching to untick: a run that was never fetched was
+        // ticked, if at all, by a link, and is found among the selection.
+        rows = groups.flatMap((g) => state.children.get(groupKey(g)) ||
+          [...state.selected.values()].filter((r) => g.run_id && r.run_id === g.run_id));
+      }
+      if (rows.length) await selectRows(rows, want);
+      else renderBoard();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
 }
 
 function selectBox(row) {
@@ -899,20 +955,20 @@ function renderBoard() {
       if (state.expanded.has(row.run_id)) renderRecords(tbody, row);
     });
   }
-  tickAllBox(allBox, state.pickable);
+  if (state.grouped) groupedTickAll(allBox, state.rows);
+  else tickAllBox(allBox, state.pickable);
 }
 
 // The header's box: ticks every run the board is showing, or unticks them all
 // when they already are. The records unfolded under a run are not among them --
-// a run beside its own records is the same machine twice. On the board grouped
-// by CPU the runs are those of the CPUs unfolded, so it waits for one to be.
+// a run beside its own records is the same machine twice. The board grouped by
+// CPU has groupedTickAll instead.
 function tickAllBox(box, rows) {
   const on = rows.filter((r) => state.selected.has(r.id)).length;
   box.checked = rows.length > 0 && on === rows.length;
   box.indeterminate = on > 0 && on < rows.length;
   box.disabled = !rows.length;
-  box.title = !rows.length ? "unfold a CPU to tick its runs"
-    : box.checked ? "untick every run shown" : "tick every run shown";
+  box.title = box.checked ? "untick every run shown" : "tick every run shown";
   box.addEventListener("change", () =>
     selectRows(rows, box.checked).catch((e) => alert(e.message)));
 }
@@ -1023,7 +1079,7 @@ function renderGroup(tbody, g, number) {
   const key = groupKey(g);
   const open = state.expanded.has(key);
   const tr = el("tr", "run-row cpu-row");
-  tr.append(el("td", "num", number), g.runs > 1 ? groupBox(g) : el("td"));
+  tr.append(el("td", "num", number), groupBox(g));
   const name = el("td", "wide");
   const head = el("div", "run-head");
   if (g.runs > 1) {
