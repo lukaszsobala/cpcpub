@@ -650,25 +650,57 @@ function groupKey(g) {
 
 // The runs one row of the CPU board stands for, under the same filters and in
 // the same order, picked out by the exact CPU line rather than the search box.
+async function loadGroup(g) {
+  const key = groupKey(g);
+  if (state.children.has(key)) return state.children.get(key);
+  const p = new URLSearchParams(state.params);
+  p.delete("group");
+  p.delete("offset");
+  p.set("cpu", g.cpu_key);
+  p.set("layout", g.cpu_layout || "");
+  p.set("target", g.target);
+  p.set("vectorize", String(g.vectorize));
+  p.set("fma", String(g.fma));
+  if (g.scope !== "cpu" && g.threads !== null) p.set("threads", String(g.threads));
+  p.set("limit", String(MAX_PAGE));
+  const { cores } = await api("/api/cores?" + p.toString());
+  state.children.set(key, cores);
+  return cores;
+}
+
 async function toggleGroup(g) {
   const key = groupKey(g);
   if (state.expanded.delete(key)) return renderBoard();
-  if (!state.children.has(key)) {
-    const p = new URLSearchParams(state.params);
-    p.delete("group");
-    p.delete("offset");
-    p.set("cpu", g.cpu_key);
-    p.set("layout", g.cpu_layout || "");
-    p.set("target", g.target);
-    p.set("vectorize", String(g.vectorize));
-    p.set("fma", String(g.fma));
-    if (g.scope !== "cpu" && g.threads !== null) p.set("threads", String(g.threads));
-    p.set("limit", String(MAX_PAGE));
-    const { cores } = await api("/api/cores?" + p.toString());
-    state.children.set(key, cores);
-  }
+  await loadGroup(g);
   state.expanded.add(key);
   renderBoard();
+}
+
+// The box on a CPU's row: ticks every run of that CPU, or unticks them when
+// they all are ticked. Ticking from a folded row unfolds it, so the runs it
+// just picked are in view rather than only in the comparison.
+function groupBox(g) {
+  const key = groupKey(g);
+  const box = el("td");
+  const cb = el("input", "row-pick");
+  cb.type = "checkbox";
+  const runs = state.children.get(key) || [];
+  const on = runs.filter((r) => state.selected.has(r.id)).length;
+  cb.checked = runs.length > 0 && on === runs.length;
+  cb.indeterminate = on > 0 && on < runs.length;
+  cb.title = cb.checked ? "untick every run on this CPU" : "tick every run on this CPU";
+  cb.addEventListener("change", async () => {
+    try {
+      const rows = await loadGroup(g);
+      state.expanded.add(key);
+      if (rows.length) await selectRows(rows, cb.checked);
+      else renderBoard();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+  box.append(cb);
+  return box;
 }
 
 function selectBox(row) {
@@ -991,7 +1023,7 @@ function renderGroup(tbody, g, number) {
   const key = groupKey(g);
   const open = state.expanded.has(key);
   const tr = el("tr", "run-row cpu-row");
-  tr.append(el("td", "num", number), el("td"));
+  tr.append(el("td", "num", number), g.runs > 1 ? groupBox(g) : el("td"));
   const name = el("td", "wide");
   const head = el("div", "run-head");
   if (g.runs > 1) {
