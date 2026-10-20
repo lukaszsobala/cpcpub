@@ -198,17 +198,17 @@ th.sorted .sorth { color: var(--accent); }
 /* What sits under a row's name -- its label, its submitter, "median of 3
    runs" -- lines up with the name rather than with the arrow before it. */
 .run-row td.wide > :not(.run-head) { margin-left: 1.4rem; }
-.run-row.nested td.wide > :not(.run-head) { margin-left: 2.8rem; }
+.run-row.nested td.wide > :not(.run-head) { margin-left: 2.2rem; }
 .child-row td { color: var(--muted); border-bottom-style: dotted; }
 .child-row .childname { padding-left: 1.4rem; }
 .child-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
 /* a kind of core, averaged, and the cores it folds */
 .kind-row td { color: var(--ink); }
 .kind-row .expander { margin-right: 0.3rem; }
-.child-row.deeper .childname { padding-left: 2.8rem; }
+.child-row.deeper .childname { padding-left: 2.2rem; }
 /* a run listed under its CPU on the grouped board */
 .run-row.nested td { border-bottom-style: dotted; }
-.run-row.nested .run-head { padding-left: 1.4rem; }
+.run-row.nested .run-head { padding-left: 0.8rem; }
 .cpu-row strong { font-weight: 600; }
 /* where a run stands among its CPU's runs */
 .fit { color: var(--muted); }
@@ -316,11 +316,12 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
 }
 .mine-row {
   display: grid; grid-template-columns: auto 1rem minmax(0, 1fr);
-  column-gap: 0.55rem; align-items: baseline;
+  column-gap: 0.45rem; align-items: baseline;
 }
 /* Against the first line of the row, which is the name, however many lines
    a narrow screen wraps the rest of it onto. */
-.mine-row > .pick { align-self: start; margin: 0.22rem 0 0; }
+.mine-row > .pick { align-self: start; margin: 0.12rem 0 0; }
+.mine-row > .pick, .batch .check input { width: 1.15rem; height: 1.15rem; cursor: pointer; }
 .mine-row > .expander { align-self: start; }
 .mine-main {
   display: flex; align-items: baseline; gap: 0.3rem 0.7rem; flex-wrap: wrap;
@@ -332,7 +333,12 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
   color: var(--muted); font-size: 0.8rem; white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.mine-body { border-left: 1px solid var(--line); padding-left: 0.75rem; margin-top: 0.4rem; }
+/* A level down starts under the arrow above it rather than under the name:
+   the arrow's column is the indent, and that is enough to read as nested. */
+.mine-row > .mine-body {
+  grid-column: 2 / -1; border-left: 1px solid var(--line);
+  padding-left: 0.4rem; margin-top: 0.4rem;
+}
 .mine-body > .mine-row + .mine-row {
   border-top: 1px dotted var(--line); margin-top: 0.4rem; padding-top: 0.4rem;
 }
