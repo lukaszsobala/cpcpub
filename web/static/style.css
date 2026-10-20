@@ -7,12 +7,18 @@
   --accent: #2f6f4f;
   --warn: #8a4b1e;
   --ok: #2f6f4f;
-  --c0: #2f6f4f;
-  --c1: #3a6ea5;
-  --c2: #8a4b1e;
-  --c3: #6b4b8a;
-  --c4: #a53a52;
-  --c5: #4a7a7a;
+  /* One colour per run in a comparison, which holds at most eight
+     (MAX_COMPARE in app.js), in a fixed order. Picked for telling neighbours
+     apart, colour-blind readers included, rather than to match the page; each
+     mode has its own steps rather than one set lightened. */
+  --c0: #2a78d6;
+  --c1: #eb6834;
+  --c2: #1baf7a;
+  --c3: #eda100;
+  --c4: #e87ba4;
+  --c5: #008300;
+  --c6: #6250d6;
+  --c7: #e34948;
   color-scheme: light dark;
 }
 
@@ -26,12 +32,14 @@
     --accent: #6fbf95;
     --warn: #e0a06a;
     --ok: #6fbf95;
-    --c0: #6fbf95;
-    --c1: #7aa8dd;
-    --c2: #e0a06a;
-    --c3: #b295d8;
-    --c4: #e08497;
-    --c5: #79b8b8;
+    --c0: #3987e5;
+    --c1: #d95926;
+    --c2: #199e70;
+    --c3: #c98500;
+    --c4: #d55181;
+    --c5: #008300;
+    --c6: #9085e9;
+    --c7: #e66767;
   }
 }
 
@@ -247,7 +255,13 @@ tr.run-row:not(:hover):not(.peer-lit) td.fit { color: var(--muted); }
 .chip.c3 { --chip: var(--c3); }
 .chip.c4 { --chip: var(--c4); }
 .chip.c5 { --chip: var(--c5); }
-.chip .chip-top .linkish { color: var(--chip, var(--accent)); }
+.chip.c6 { --chip: var(--c6); }
+.chip.c7 { --chip: var(--c7); }
+/* The name takes its colour, mixed towards the ink: the lighter of the eight
+   (the yellow, the pink) are bars' colours and too pale to read as text. */
+.chip .chip-top .linkish {
+  color: color-mix(in oklab, var(--chip, var(--accent)) 62%, var(--ink));
+}
 
 /* Detailed and Clear selection, on one line above the chips. */
 .cmpbar { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.9rem; }
@@ -272,6 +286,8 @@ tr.run-row:not(:hover):not(.peer-lit) td.fit { color: var(--muted); }
 .fill.c3 { background: var(--c3); }
 .fill.c4 { background: var(--c4); }
 .fill.c5 { background: var(--c5); }
+.fill.c6 { background: var(--c6); }
+.fill.c7 { background: var(--c7); }
 .bar-val { width: 6rem; text-align: right; font-variant-numeric: tabular-nums; font-size: 0.82rem; }
 .bar-rel { width: 3.5rem; text-align: right; color: var(--muted); font-size: 0.78rem; }
 

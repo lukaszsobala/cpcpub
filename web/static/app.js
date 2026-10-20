@@ -43,6 +43,15 @@ const state = {
 // MAX_PAGE as well, so asking for more by hand gets the same answer as asking
 // for the cap; the picker offers the sizes worth choosing between.
 const MAX_PAGE = 500;
+// The most runs one comparison holds. Two --variants uploads side by side is
+// eight; past that a stack of bars is read by counting down it rather than by
+// its colour, and the page has eight colours that stay apart (--c0..--c7).
+const MAX_COMPARE = 8;
+const FULL_NOTE = `A comparison holds at most ${MAX_COMPARE} runs.`;
+
+function compareFull() {
+  return state.selected.size >= MAX_COMPARE;
+}
 const PAGE_SIZES = [25, 50, 100, 250, MAX_PAGE];
 
 // The page reads this one to prove a write came from the page rather than from
@@ -705,11 +714,12 @@ function groupBox(g) {
   cb.checked = total > 0 && on === total;
   cb.indeterminate = on > 0 && on < total;
   cb.title = cb.checked ? "untick every run on this CPU" : "tick every run on this CPU";
+  const removes = takesOut(cb, on);
   cb.addEventListener("change", async () => {
     try {
       const rows = await loadGroup(g);
       if (g.runs > 1) state.expanded.add(key);
-      if (rows.length) await selectRows(rows, cb.checked);
+      if (rows.length) await selectRows(rows, !removes);
       else renderBoard();
     } catch (e) {
       alert(e.message);
@@ -735,9 +745,10 @@ function groupedTickAll(box, groups) {
   box.indeterminate = on > 0 && full < groups.length;
   box.disabled = !groups.length;
   box.title = box.checked ? "untick every run shown" : "tick every run shown";
+  const removes = takesOut(box, on);
   box.addEventListener("change", async () => {
     try {
-      const want = box.checked;
+      const want = !removes;
       let rows;
       if (want) {
         // A few at a time: one request per CPU, and a hundred at once is a
@@ -767,6 +778,10 @@ function selectBox(row) {
   const cb = el("input", "row-pick");
   cb.type = "checkbox";
   cb.checked = state.selected.has(row.id);
+  if (!cb.checked && compareFull()) {
+    cb.disabled = true;
+    cb.title = `${FULL_NOTE} Remove one to add another.`;
+  }
   cb.addEventListener("change", () =>
     toggleSelect(row, cb.checked).catch((e) => alert(e.message)));
   box.append(cb);
@@ -972,15 +987,42 @@ function tickAllBox(box, rows) {
   box.indeterminate = on > 0 && on < rows.length;
   box.disabled = !rows.length;
   box.title = box.checked ? "untick every run shown" : "tick every run shown";
+  const removes = takesOut(box, on);
   box.addEventListener("change", () =>
-    selectRows(rows, box.checked).catch((e) => alert(e.message)));
+    selectRows(rows, !removes).catch((e) => alert(e.message)));
+}
+
+// Whether a box over several runs takes them out when clicked rather than
+// putting them in. It does when they are all in, as any such box does -- and
+// also, once the comparison is full, when only some are: there is no room to
+// put the rest in, and a click that can only say so is a dead one. A box none
+// of whose runs are in has nothing to do while the comparison is full, and is
+// switched off with the reason on it.
+function takesOut(box, on) {
+  if (box.checked) return true;
+  if (!compareFull()) return false;
+  if (on > 0) {
+    box.title = "untick these runs: the comparison is full";
+    return true;
+  }
+  box.disabled = true;
+  box.title = `${FULL_NOTE} Remove one to add another.`;
+  return false;
 }
 
 async function selectRows(rows, on) {
   if (on) {
     // The board's runs are all of its scope, so one retarget covers them.
     await retargetSelection(rows[0].scope);
-    for (const r of rows) state.selected.set(r.id, r);
+    // Up to the cap, in the board's order, so what is left out is the bottom
+    // of what was asked for -- and said, rather than quietly dropped.
+    const fresh = rows.filter((r) => !state.selected.has(r.id));
+    const taken = fresh.slice(0, Math.max(0, MAX_COMPARE - state.selected.size));
+    for (const r of taken) state.selected.set(r.id, r);
+    if (taken.length < fresh.length) {
+      setTimeout(() => alert(`${FULL_NOTE} Added ${taken.length} of the ` +
+                             `${fresh.length} ticked.`), 0);
+    }
   } else {
     for (const r of rows) state.selected.delete(r.id);
     if (!state.selected.size) state.scopeNote = "";
@@ -1171,6 +1213,12 @@ async function toggleSelect(row, on) {
     // Ticking across scopes moves the whole comparison to the new one rather
     // than mixing the two.
     await retargetSelection(row.scope);
+    // The board disables the box once the comparison is full; this is for
+    // whatever else calls here.
+    if (!state.selected.has(row.id) && compareFull()) {
+      renderBoard();
+      throw new Error(`${FULL_NOTE} Remove one to add another.`);
+    }
     state.selected.set(row.id, row);
   } else {
     state.selected.delete(row.id);
@@ -1226,7 +1274,7 @@ function setDetailed(on) {
 
 function renderSelection() {
   const n = state.selected.size;
-  $("#selcount").textContent = n ? `(${n})` : "";
+  $("#selcount").textContent = n ? `(${n}${n >= MAX_COMPARE ? ` of ${MAX_COMPARE}` : ""})` : "";
   $("#clearsel").hidden = n === 0;
   // The bar controls a comparison, so it appears with one and not before.
   $("#compare-bar").hidden = n === 0;
@@ -1238,6 +1286,9 @@ function renderSelection() {
   warn.replaceChildren();
   if (state.scopeNote) warn.append(el("p", "warn", state.scopeNote));
   if (!n) return;
+  if (n >= MAX_COMPARE) {
+    warn.append(el("p", "note", `${FULL_NOTE} Remove one with its × to add another.`));
+  }
 
   const rows = [...state.selected.values()];
 
@@ -1264,7 +1315,7 @@ function renderSelection() {
   // exactly when the comparison mixes builds -- the only time it tells them apart.
   const sameBuild = builds.size <= 1;
   rows.forEach((r, i) => {
-    const chip = el("div", `chip c${i % 6}`);
+    const chip = el("div", `chip c${i % MAX_COMPARE}`);
     const label = shownLabel(r, sameBuild);
     const named = label || machineName(r);
 
@@ -1312,7 +1363,7 @@ function renderSelection() {
       const v = vals[i];
       const line = el("div", "bar-row");
       const bar = el("div", "bar");
-      const fill = el("div", `fill c${i % 6}`);
+      const fill = el("div", `fill c${i % MAX_COMPARE}`);
       // The bar is the measurement, not a verdict: its length is the value
       // against the largest in the selection, whichever way the metric runs.
       // Which end wins is said in words above the group, so a 384 ns latency
@@ -3035,12 +3086,19 @@ async function boot() {
     // rest of that scope come along, anything else is left behind rather than
     // silently compared against a whole machine.
     const scope = cores.length ? cores[0].scope : null;
-    const kept = cores.filter((c) => c.scope === scope);
+    const same = cores.filter((c) => c.scope === scope);
+    const kept = same.slice(0, MAX_COMPARE);
     for (const row of kept) state.selected.set(row.id, row);
-    state.scopeNote = kept.length < cores.length
-      ? `${cores.length - kept.length} row(s) in that link were a different ` +
-        `scope and were left out: one comparison holds one kind of record.`
-      : "";
+    const notes = [];
+    if (same.length < cores.length) {
+      notes.push(`${cores.length - same.length} row(s) in that link were a ` +
+                 `different scope and were left out: one comparison holds one ` +
+                 `kind of record.`);
+    }
+    if (kept.length < same.length) {
+      notes.push(`${FULL_NOTE} The first ${kept.length} in the link are shown.`);
+    }
+    state.scopeNote = notes.join(" ");
     if (scope && $("#filters").elements.scope.value !== scope) {
       $("#filters").elements.scope.value = scope;
       await loadBoard();
