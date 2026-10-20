@@ -84,6 +84,7 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$")
 MIN_PASSWORD = 8
 MAX_PASSWORD = 256          # scrypt costs the same either way; this bounds work
 SESSION_DAYS = 30
+RENAME_DAYS = 7             # how long an account keeps a name once it has changed it
 
 # Registration -------------------------------------------------------------
 #
@@ -789,7 +790,19 @@ def public_user(user: dict, *, runs: int | None = None,
         out["runs"] = runs
     if token:
         out["api_token"] = user["api_token"]
+        out["rename_after"] = rename_after(user)
     return out
+
+
+def rename_after(user: dict) -> str | None:
+    """When the account may next change its name; None if it may now."""
+    last = user.get("renamed_at")
+    if not last:
+        return None
+    due = datetime.fromisoformat(last.replace("Z", "+00:00")) + timedelta(days=RENAME_DAYS)
+    if due <= datetime.now(timezone.utc):
+        return None
+    return due.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 # ---------------------------------------------------------------------------
@@ -1156,6 +1169,8 @@ class Store:
             for col, decl in self.ADDED_COLUMNS:
                 if col not in have:
                     db.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
+            if "renamed_at" not in {r["name"] for r in db.execute("PRAGMA table_info(users)")}:
+                db.execute("ALTER TABLE users ADD COLUMN renamed_at TEXT")
             # After the ALTER, not in schema.sql: an older database has neither
             # column when the script runs, and an index over a column that does
             # not exist yet is an error rather than a no-op.
@@ -1803,6 +1818,41 @@ class Store:
                              (token,)).fetchone()
         return dict(row) if row else None
 
+    def rename_user(self, user_id: int, name: str) -> dict:
+        """Give an account a new name, once a week at most.
+
+        The clash check and the write share one transaction, so two accounts
+        reaching for one name cannot both pass it; the unique index over
+        lower(name) is still what has the last word. Changing only the case of
+        one's own name is a rename like any other -- it is not a clash with
+        oneself -- and counts against the week.
+        """
+        try:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                user = db.execute("SELECT * FROM users WHERE id = ?",
+                                  (user_id,)).fetchone()
+                if user is None:
+                    raise Denied("sign in first", HTTPStatus.UNAUTHORIZED)
+                user = dict(user)
+                if user["name"] == name:
+                    raise Invalid("that is already your name")
+                wait = rename_after(user)
+                if wait is not None:
+                    raise Denied(f"a name can be changed once every {RENAME_DAYS} "
+                                 f"days; this one can be changed again after {wait}",
+                                 HTTPStatus.TOO_MANY_REQUESTS)
+                clash = db.execute("SELECT id FROM users WHERE lower(name) = lower(?) "
+                                   "AND id != ?", (name, user_id)).fetchone()
+                if clash is not None:
+                    raise Denied("that name is taken", HTTPStatus.CONFLICT)
+                user["name"], user["renamed_at"] = name, iso_now()
+                db.execute("UPDATE users SET name = ?, renamed_at = ? WHERE id = ?",
+                           (user["name"], user["renamed_at"], user_id))
+        except sqlite3.IntegrityError:
+            raise Denied("that name is taken", HTTPStatus.CONFLICT)
+        return user
+
     def set_password(self, user_id: int, password: str) -> None:
         with self.connect() as db:
             db.execute("UPDATE users SET password_hash = ? WHERE id = ?",
@@ -2345,6 +2395,8 @@ class Handler(BaseHTTPRequestHandler):
                                   {"api_token": self.store.rotate_api_token(user["id"])})
         if action == "password":
             return self.change_password()
+        if action == "rename":
+            return self.rename_account()
         if action == "close":
             return self.close_account()
         return self.fail(HTTPStatus.NOT_FOUND, "no such endpoint")
@@ -2447,6 +2499,17 @@ class Handler(BaseHTTPRequestHandler):
         self.store.end_all_sessions(user["id"])
         csrf = self.start_session(user)
         self.send_json(HTTPStatus.OK, {"ok": True, "csrf": csrf})
+
+    def rename_account(self):
+        self.auth_allowed()
+        user = self.require_account()
+        body = self.read_json(MAX_AUTH_BODY)
+        if not password_matches(str(body.get("password", "")), user["password_hash"]):
+            raise Denied("wrong password", HTTPStatus.UNAUTHORIZED)
+        renamed = self.store.rename_user(user["id"], check_name(body.get("name")))
+        self.send_json(HTTPStatus.OK, {
+            "user": public_user(renamed, runs=self.store.run_count(user["id"]),
+                                token=True)})
 
     def close_account(self):
         self.auth_allowed()

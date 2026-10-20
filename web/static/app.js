@@ -1927,6 +1927,54 @@ function accountPanel() {
   pwForm.append(curLabel, nextLabel, pwGo, pwMsg);
   wrap.append(pwForm);
 
+  wrap.append(el("h3", null, "Change name"));
+  const waitUntil = u.rename_after ? new Date(u.rename_after) : null;
+  wrap.append(el("p", "note",
+    "A name can be changed once every 7 days, and not to one another account " +
+    "already has. Your runs keep their place and show the new name." +
+    (waitUntil ? ` You can change it again after ${waitUntil.toLocaleString()}.` : "")));
+  const nameForm = el("form", "authform");
+  const newName = el("input");
+  newName.autocomplete = "off";
+  newName.placeholder = "3 to 32 letters, digits, . _ -";
+  const newNameLabel = el("label", null, "New name");
+  newNameLabel.append(newName);
+  const nameCur = el("input");
+  nameCur.type = "password";
+  nameCur.autocomplete = "current-password";
+  const nameCurLabel = el("label", null, "Password");
+  nameCurLabel.append(nameCur);
+  const nameMsg = el("p", "authmsg");
+  const nameGo = el("button", null, "Change name");
+  nameGo.type = "submit";
+  nameGo.disabled = !!waitUntil && waitUntil > new Date();
+  nameForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    nameMsg.className = "authmsg";
+    const wanted = newName.value.trim();
+    if (!confirm(`Change your name from "${u.name}" to "${wanted}"? ` +
+                 "You will not be able to change it again for 7 days.")) return;
+    try {
+      const out = await api("/api/auth/rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: wanted, password: nameCur.value }),
+      });
+      if (state.submitter === u.name) state.submitter = out.user.name;
+      state.user = Object.assign(state.user, out.user);
+      renderWhoami();
+      renderAccount();
+      renderCommands();
+      renderMine();
+      await loadBoard();
+    } catch (err) {
+      nameMsg.className = "authmsg warn";
+      nameMsg.textContent = err.message;
+    }
+  });
+  nameForm.append(newNameLabel, nameCurLabel, nameGo, nameMsg);
+  wrap.append(nameForm);
+
   const danger = el("details", "more");
   danger.append(el("summary", null, "Close this account"));
   danger.append(el("p", "note",

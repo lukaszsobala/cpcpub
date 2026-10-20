@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS users (
     -- it is what the submit command carries. It grants uploading and deleting
     -- as this account and nothing else, and rotating it is one click.
     api_token     TEXT    NOT NULL UNIQUE,
-    created_at    TEXT    NOT NULL
+    created_at    TEXT    NOT NULL,
+    renamed_at    TEXT                -- when the name last changed; NULL if never
 );
 
 -- "someone@ThisBox" and "someone@thisbox" must not be two accounts: the board

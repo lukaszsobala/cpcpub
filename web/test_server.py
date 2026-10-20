@@ -18,6 +18,7 @@ import unittest
 import urllib.error
 import urllib.request
 from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -1602,6 +1603,66 @@ class AccountTest(unittest.TestCase):
         code, _ = b.call("/api/auth/password", "POST",
                          {"current": "not it", "password": "a new long password"})
         self.assertEqual(code, 401)
+
+    # -- changing the name -------------------------------------------------
+    def rename(self, b, name, password="a good long password"):
+        return b.call("/api/auth/rename", "POST", {"name": name, "password": password})
+
+    def test_rename_keeps_the_runs_and_the_session(self):
+        b, name, token = self.account()
+        _, up = self.anon().call("/api/runs", "POST", document(),
+                                 headers={"Authorization": f"Bearer {token}"})
+        new = name + "-new"
+        status, out = self.rename(b, new)
+        self.assertEqual(status, 200, out)
+        self.assertEqual(out["user"]["name"], new)
+        self.assertEqual(b.call("/api/auth/me")[1]["user"]["name"], new)
+        self.assertEqual(b.call(f"/api/runs/{up['id']}")[1]["user"], new)
+        self.assertEqual(self.anon().call(f"/api/users/{new}")[0], 200)
+        self.assertEqual(self.anon().call(f"/api/users/{name}")[0], 404)
+        # The old name is free to log in with no longer, the new one is not.
+        self.assertEqual(self.anon().call("/api/auth/login", "POST",
+                         {"name": new, "password": "a good long password"})[0], 200)
+
+    def test_rename_is_allowed_once_a_week(self):
+        b, name, _ = self.account()
+        self.assertEqual(self.rename(b, name + "-one")[0], 200)
+        code, err = self.rename(b, name + "-two")
+        self.assertEqual(code, 429)
+        self.assertIn("7 days", err["error"])
+        self.assertIsNotNone(b.call("/api/auth/me")[1]["user"]["rename_after"])
+        # Eight days on, it is allowed again.
+        old = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat(
+            timespec="seconds").replace("+00:00", "Z")
+        with self.server.store.connect() as db:
+            db.execute("UPDATE users SET renamed_at = ? WHERE name = ?",
+                       (old, name + "-one"))
+        self.assertEqual(self.rename(b, name + "-two")[0], 200)
+
+    def test_rename_refuses_a_name_another_account_has(self):
+        b, name, _ = self.account()
+        _, other, _ = self.account()
+        for taken in (other, other.upper()):
+            with self.subTest(taken):
+                code, err = self.rename(b, taken)
+                self.assertEqual(code, 409)
+                self.assertIn("taken", err["error"])
+        # A refused rename does not use up the week.
+        self.assertEqual(self.rename(b, name + "-free")[0], 200)
+
+    def test_rename_may_change_only_the_case(self):
+        b, name, _ = self.account()
+        code, out = self.rename(b, name.upper())
+        self.assertEqual(code, 200, out)
+        self.assertEqual(out["user"]["name"], name.upper())
+
+    def test_rename_needs_the_password_and_a_usable_name(self):
+        b, name, _ = self.account()
+        self.assertEqual(self.rename(b, name + "x", "not the password")[0], 401)
+        self.assertEqual(self.rename(b, "no spaces")[0], 400)
+        self.assertEqual(self.rename(b, name)[0], 400)
+        self.assertEqual(self.anon().call("/api/auth/rename", "POST",
+                         {"name": "whoever1", "password": "x"})[0], 401)
 
     # -- uploading as an account -------------------------------------------
     def test_upload_token_attributes_the_run(self):

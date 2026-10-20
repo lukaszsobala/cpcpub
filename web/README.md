@@ -148,7 +148,7 @@ python3 verified.py --db runs.sqlite3 --forget v0.1.0
 | `GET` | `/api/auth/policy` | what registering here costs: `{open, invite_required, bits}` |
 | `GET` | `/api/auth/challenge` | the same, plus a single-use puzzle to register with |
 | `POST` | `/api/auth/register` | `{name, password, challenge, nonce}`, plus `invite` where required |
-| `POST` | `/api/auth/login` `/logout` `/token` `/password` `/close` | sign in; sign out; reissue the upload token; change password; delete the account |
+| `POST` | `/api/auth/login` `/logout` `/token` `/password` `/rename` `/close` | sign in; sign out; reissue the upload token; change password; change the account's name (`{name, password}`; once every 7 days, refused with 409 if taken); delete the account |
 | `GET` | `/api/auth/me` | the signed-in account, or `{"user": null}` |
 
 `norm` is which reading of `sort` to rank on: `abs` (default) for the figure as
