@@ -73,6 +73,14 @@ MAX_OFFSET = 1 << 30        # how far into a listing paging may go; past the end
                             # is an empty page, not an error
 MAX_TEXT = 200
 MAX_NOTES = 2000
+MAX_EDIT_BODY = 3 * (MAX_TEXT + MAX_NOTES) + 256   # a label and notes, escaped
+# How long apart two variants of one --variants run may land and still be
+# called one upload. A variant takes minutes on a laptop and can take most of
+# an hour on a machine with a hundred cores to walk; this is the far side of
+# that, not a guess at the usual.
+UPLOAD_GAP = timedelta(hours=3)
+# What `cpcpub --variants --submit` ends each variant's label with.
+VARIANT_TAG_RE = re.compile(r"(?:^| )\((?:scalar|vector)-(?:fma|nofma)\)$")
 MAX_VALUE = 1e12            # nothing this benchmark reports comes near this
 ACCOUNT_RATE_FACTOR = 4     # how much more room a signed-in submitter gets
 
@@ -233,6 +241,7 @@ RUN_COLUMNS = [
     "vectorize", "fma", "sysname", "os_release", "machine", "cpus",
     "cpu_models", "cpu_key", "cpu_layout", "cpus_offline", "threads", "seconds", "reps", "warmup", "mem_bytes", "pin",
     "clock", "seed", "dram_name", "dram_mhz_min", "dram_mhz_max", "checksum",
+    "upload_id",
 ]
 
 
@@ -799,10 +808,22 @@ def rename_after(user: dict) -> str | None:
     last = user.get("renamed_at")
     if not last:
         return None
-    due = datetime.fromisoformat(last.replace("Z", "+00:00")) + timedelta(days=RENAME_DAYS)
+    due = parse_iso(last) + timedelta(days=RENAME_DAYS)
     if due <= datetime.now(timezone.utc):
         return None
     return due.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def split_variant(label: str | None) -> tuple[str | None, bool]:
+    """A label without the variant tag a --variants upload ends it with, and
+    whether it had one. "box (vector-fma)" is ("box", True); "(scalar-fma)"
+    alone, an upload with no label of its own, is (None, True)."""
+    if not label:
+        return None, False
+    m = VARIANT_TAG_RE.search(label)
+    if not m:
+        return label, False
+    return label[:m.start()] or None, True
 
 
 # ---------------------------------------------------------------------------
@@ -812,6 +833,11 @@ def rename_after(user: dict) -> str | None:
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def parse_iso(s: str) -> datetime:
+    """A timestamp as iso_now() writes it, back into an aware datetime."""
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
 def sort_expr(sort: str, norm: str) -> str:
@@ -1156,7 +1182,7 @@ class Store:
                      ("attest_repo", "TEXT"), ("attest_workflow", "TEXT"),
                      ("attest_run_url", "TEXT"), ("attest_at", "TEXT"),
                      ("cpu_layout", "TEXT"), ("cpu_layout_guess", "TEXT"), ("cpu_key", "TEXT"),
-                     ("cpus_offline", "INTEGER"))
+                     ("cpus_offline", "INTEGER"), ("upload_id", "INTEGER"))
 
     def __init__(self, path: str, aliases_path: Path | None = ALIASES_PATH):
         self.path = path
@@ -1184,6 +1210,12 @@ class Store:
             # one uploaded now would be.
             for r in db.execute("SELECT id FROM runs").fetchall():
                 self._classify(db, r["id"])
+            # Runs stored before uploads were told apart, in the order they
+            # arrived, so each is joined to the upload before it exactly as it
+            # would have been then.
+            for r in db.execute("SELECT id FROM runs WHERE upload_id IS NULL "
+                                "ORDER BY id").fetchall():
+                self._join_upload(db, r["id"])
 
     @staticmethod
     def _migrate_verified_builds(db: sqlite3.Connection) -> None:
@@ -1267,7 +1299,89 @@ class Store:
                 f"VALUES ({','.join('?' * len(ccols))})",
                 [[run_id] + [c.get(col) for col in ccols[1:]] for c in cores])
             self._classify(db, run_id)
+            self._join_upload(db, run_id)
         return run_id, token
+
+    # What two variants of one upload share. Everything the run was told or
+    # found about the machine and the measurement; only the build differs.
+    SAME_UPLOAD = ("cpu_models", "machine", "sysname", "os_release",
+                   "binary_sha256", "mode", "threads", "seconds", "reps",
+                   "warmup", "mem_bytes", "pin", "seed", "notes")
+
+    def _join_upload(self, db: sqlite3.Connection, run_id: int) -> None:
+        """Set a run's upload_id: the upload just before it, if it continues
+        that one, else a new upload of its own.
+
+        The variants of a --variants run arrive as separate posts with nothing
+        to tie them together but their labels, which end in the variant's name.
+        A run continues the upload before it only when all of this holds: the
+        same account sent both, with no other run of that account between
+        them; both labels carry a variant tag and agree apart from it; the
+        machine, binary and settings are the same; the build is one that
+        upload does not have yet; and it landed within UPLOAD_GAP of the last.
+        Anonymous runs have no account to tie them by and are each their own.
+        """
+        cols = ", ".join(("id", "user_id", "label", "upload_id", "created_at")
+                         + self.SAME_UPLOAD)
+        run = db.execute(f"SELECT {cols} FROM runs WHERE id = ?", (run_id,)).fetchone()
+        upload = run_id
+        base, tagged = split_variant(run["label"])
+        prev = None
+        if run["user_id"] is not None and tagged:
+            prev = db.execute(f"SELECT {cols} FROM runs WHERE user_id = ? AND id < ? "
+                              f"ORDER BY id DESC LIMIT 1",
+                              (run["user_id"], run_id)).fetchone()
+        if prev is not None and prev["upload_id"] is not None:
+            prev_base, prev_tagged = split_variant(prev["label"])
+            gap = parse_iso(run["created_at"]) - parse_iso(prev["created_at"])
+            builds = db.execute("SELECT vectorize, fma FROM runs WHERE upload_id = ?",
+                                (prev["upload_id"],)).fetchall()
+            mine = db.execute("SELECT vectorize, fma FROM runs WHERE id = ?",
+                              (run_id,)).fetchone()
+            if (prev_tagged and prev_base == base
+                    and all(run[c] == prev[c] for c in self.SAME_UPLOAD)
+                    and timedelta(0) <= gap <= UPLOAD_GAP
+                    and tuple(mine) not in {tuple(b) for b in builds}):
+                upload = prev["upload_id"]
+        db.execute("UPDATE runs SET upload_id = ? WHERE id = ?", (upload, run_id))
+
+    @staticmethod
+    def _may_change(row: sqlite3.Row, token: str | None, user_id: int | None) -> bool:
+        """Whether the asker holds one of the two claims to a stored run.
+
+        The delete token proves whoever holds the upload's reply, and the
+        account id proves the run was uploaded under it. Either is enough on
+        its own; neither is checked against the other.
+        """
+        owns = user_id is not None and row["user_id"] == user_id
+        # compare_digest even though a token mismatch is not timed against
+        # anything an attacker controls the length of; it costs nothing.
+        holds = token is not None and secrets.compare_digest(
+            row["delete_token"], token)
+        return owns or holds
+
+    def edit_run(self, run_id: int, changes: dict, token: str | None = None,
+                 user_id: int | None = None) -> dict | None:
+        """Change a run's label and/or notes, for whoever could withdraw it.
+
+        `changes` holds only the fields to set; None clears one. Returns the
+        run's label and notes as they now stand, or None when there is no such
+        run or it is not the asker's.
+        """
+        with self.connect() as db:
+            row = db.execute("SELECT delete_token, user_id FROM runs WHERE id = ?",
+                             (run_id,)).fetchone()
+            if row is None or not self._may_change(row, token, user_id):
+                return None
+            # Names from the fixed pair below, never from the request.
+            sets = [f"{c} = ?" for c in ("label", "notes") if c in changes]
+            vals = [changes[c] for c in ("label", "notes") if c in changes]
+            if sets:
+                db.execute(f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
+                           vals + [run_id])
+            out = db.execute("SELECT id, label, notes FROM runs WHERE id = ?",
+                             (run_id,)).fetchone()
+        return dict(out)
 
     def _classify(self, db: sqlite3.Connection, run_id: int) -> None:
         """Store what a run is compared as, and its core counts where it did
@@ -1294,23 +1408,12 @@ class Store:
 
     def delete(self, run_id: int, token: str | None = None,
                user_id: int | None = None) -> bool:
-        """Withdraw a run, for whoever can show one of the two claims to it.
-
-        The delete token proves whoever holds the upload's reply, and the
-        account id proves the run was uploaded under it. Either is enough on
-        its own; neither is checked against the other.
-        """
+        """Withdraw a run, for whoever can show one of the two claims to it;
+        see _may_change()."""
         with self.connect() as db:
             row = db.execute("SELECT delete_token, user_id FROM runs WHERE id = ?",
                              (run_id,)).fetchone()
-            if row is None:
-                return False
-            owns = user_id is not None and row["user_id"] == user_id
-            # compare_digest even though a token mismatch is not timed against
-            # anything an attacker controls the length of; it costs nothing.
-            holds = token is not None and secrets.compare_digest(
-                row["delete_token"], token)
-            if not (owns or holds):
+            if row is None or not self._may_change(row, token, user_id):
                 return False
             db.execute("DELETE FROM cores WHERE run_id = ?", (run_id,))
             db.execute("DELETE FROM runs WHERE id = ?", (run_id,))
@@ -1497,6 +1600,59 @@ class Store:
                 f"FROM runs r {where}ORDER BY r.id DESC LIMIT ? OFFSET ?",
                 args + [limit, offset]).fetchall()
         return [dict(r) for r in rows]
+
+    def uploads(self, user_id: int) -> list[dict]:
+        """One account's runs as its list shows them: by CPU, then by upload.
+
+        A CPU here is the line the run reported, as the list prints it, and not
+        a machine: two boxes with one chip are one entry, because nothing an
+        upload carries says which box it was and the hub does not guess. Each
+        CPU holds its uploads, newest first, and each upload its runs in the
+        order they arrived -- a --variants run's builds in the order it ran
+        them. CPUs come in the order of their newest upload.
+        """
+        with self.connect() as db:
+            rows = db.execute(
+                f"SELECT r.id, r.created_at, r.label, r.notes, r.mode, r.target, "
+                f"       r.vectorize, r.fma, r.threads, r.sysname, r.machine, "
+                f"       r.cpu_models, r.cpu_key, {LAYOUT_SQL} AS cpu_layout, "
+                f"       r.cpus_offline, COALESCE(r.upload_id, r.id) AS upload_id "
+                f"FROM runs r WHERE r.user_id = ? ORDER BY r.id DESC",
+                (user_id,)).fetchall()
+        uploads: dict[int, list[dict]] = {}
+        for r in rows:
+            run = dict(r)
+            base, tagged = split_variant(run["label"])
+            run["variant"] = (f"{'vector' if run['vectorize'] else 'scalar'}-"
+                              f"{'fma' if run['fma'] else 'nofma'}")
+            run["tagged"] = tagged
+            run["base_label"] = base
+            uploads.setdefault(run.pop("upload_id"), []).append(run)
+        cpus: dict[tuple, dict] = {}
+        for upload_id, runs in uploads.items():
+            runs.reverse()                  # oldest first: the order they ran
+            first = runs[0]
+            key = (first["cpu_models"], first["cpu_layout"],
+                   None if first["cpu_models"] else first["machine"])
+            cpu = cpus.get(key)
+            if cpu is None:
+                cpu = cpus[key] = {
+                    "cpu_models": first["cpu_models"], "cpu_layout": first["cpu_layout"],
+                    "cpu_key": first["cpu_key"], "machine": first["machine"],
+                    "cpus_offline": first["cpus_offline"], "runs": 0, "uploads": []}
+            labels = {r["base_label"] for r in runs}
+            cpu["uploads"].append({
+                "id": upload_id,
+                "created_at": first["created_at"],
+                "last_at": runs[-1]["created_at"],
+                # The label the upload was given, its variant tags aside; the
+                # first run's whole label where they no longer agree.
+                "label": first["base_label"] if len(labels) == 1 else first["label"],
+                "notes": first["notes"],
+                "runs": runs,
+            })
+            cpu["runs"] += len(runs)
+        return list(cpus.values())
 
     def core_filters(self, *, scope: str | None = "cpu", target: str | None = None,
                      vectorize: int | None = None, fma: int | None = None,
@@ -2192,6 +2348,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self.route("DELETE")
 
+    def do_PATCH(self):
+        self.route("PATCH")
+
     def route(self, method: str):
         # Per request: this handler instance serves every request on a
         # keep-alive connection, so the response headers cannot accumulate.
@@ -2261,6 +2420,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST":
                 return self.upload()
             return self.fail(HTTPStatus.METHOD_NOT_ALLOWED, "method not allowed")
+        if path == "/api/uploads" and method == "GET":
+            return self.send_json(HTTPStatus.OK, self.list_uploads(query))
 
         m = USER_RE.match(path)
         if m and method == "GET":
@@ -2288,7 +2449,52 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(HTTPStatus.OK, run)
             if method == "DELETE" and suffix is None:
                 return self.withdraw(run_id, query)
+            if method == "PATCH" and suffix is None:
+                return self.edit_run(run_id)
         return self.fail(HTTPStatus.NOT_FOUND, "no such endpoint")
+
+    def list_uploads(self, query: dict) -> dict:
+        """One account's runs grouped by CPU and upload, a page of CPUs at a
+        time -- paging by run would cut a CPU, or an upload, in half."""
+        who = self.who_filter(query)
+        if who is None:
+            raise Invalid("say whose uploads: user=<name>, or user=me")
+        limit = clamp_int(query.get("limit", ["50"])[0], 1, MAX_PAGE, 50)
+        offset = clamp_int(query.get("offset", ["0"])[0], 0, MAX_OFFSET, 0)
+        cpus = self.store.uploads(who) if who >= 0 else []
+        return {"cpus": cpus[offset:offset + limit], "limit": limit,
+                "offset": offset, "total": len(cpus),
+                "runs": sum(c["runs"] for c in cpus),
+                "uploads": sum(len(c["uploads"]) for c in cpus)}
+
+    def edit_run(self, run_id: int):
+        """Change a run's label or notes, for whoever could withdraw it.
+
+        The body names only what changes: `{"label": "..."}` leaves the notes
+        alone, and null or "" clears a field. The variant tag a --variants
+        upload ends its labels with is the caller's to keep: the page puts it
+        back on each run when it renames a whole upload.
+        """
+        body = self.read_json(MAX_EDIT_BODY)
+        user, how = self.identify()
+        if user is not None and how == "cookie":
+            self.check_csrf()
+        token = self.headers.get("X-Delete-Token")
+        if not token and user is None:
+            raise Denied("sign in, or send the run's delete token",
+                         HTTPStatus.UNAUTHORIZED)
+        changes = {}
+        if "label" in body:
+            changes["label"] = _text(body["label"], MAX_TEXT, "label")
+        if "notes" in body:
+            changes["notes"] = _text(body["notes"], MAX_NOTES, "notes")
+        if not changes:
+            raise Invalid("nothing to change: send label, notes or both")
+        out = self.store.edit_run(run_id, changes, token or None,
+                                  user["id"] if user else None)
+        if out is None:
+            raise Denied("no such run, or it is not yours to edit")
+        return self.send_json(HTTPStatus.OK, out)
 
     def withdraw(self, run_id: int, query: dict):
         """Delete a run for its owner, or for whoever holds its delete token."""

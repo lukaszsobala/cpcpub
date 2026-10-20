@@ -16,6 +16,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
@@ -1663,6 +1664,164 @@ class AccountTest(unittest.TestCase):
         self.assertEqual(self.rename(b, name)[0], 400)
         self.assertEqual(self.anon().call("/api/auth/rename", "POST",
                          {"name": "whoever1", "password": "x"})[0], 401)
+
+    # -- uploads: variants grouped, labels and notes edited ----------------
+    VARIANTS = ((False, False), (True, False), (False, True), (True, True))
+
+    def post(self, token=None, label=None, notes=None, vec=False, fma=False,
+             cpu="Test CPU 9000"):
+        """Upload one run as cpcpub would, as (status, reply)."""
+        doc = document()
+        doc["build"] = dict(doc["build"], vectorize=vec, fma=fma)
+        doc["system"] = dict(doc["system"], cpu_models=cpu)
+        q = urllib.parse.urlencode({k: v for k, v in
+                                    (("label", label), ("notes", notes)) if v})
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        return self.anon().call("/api/runs" + ("?" + q if q else ""), "POST", doc,
+                                headers=headers)
+
+    def variants(self, token, base, notes=None, cpu="Test CPU 9000", which=VARIANTS):
+        """A --variants upload: one run per build, each label ending in it."""
+        ids = []
+        for vec, fma in which:
+            tag = f"({'vector' if vec else 'scalar'}-{'fma' if fma else 'nofma'})"
+            status, out = self.post(token, f"{base} {tag}" if base else tag, notes,
+                                    vec, fma, cpu)
+            self.assertEqual(status, 201, out)
+            ids.append(out["id"])
+        return ids
+
+    def test_variants_of_one_upload_are_listed_together(self):
+        b, _, token = self.account()
+        box = self.variants(token, "box", "quiet fan")
+        solo = self.post(token, "solo")[1]["id"]
+        other = self.post(token, "elsewhere", cpu="Other CPU 1")[1]["id"]
+        status, out = b.call("/api/uploads?user=me")
+        self.assertEqual(status, 200, out)
+        self.assertEqual((out["total"], out["uploads"], out["runs"]), (2, 3, 6))
+        # CPUs by their newest upload; on each, its uploads newest first.
+        self.assertEqual([c["cpu_models"] for c in out["cpus"]],
+                         ["Other CPU 1", "Test CPU 9000"])
+        self.assertEqual(out["cpus"][0]["uploads"][0]["runs"][0]["id"], other)
+        here = out["cpus"][1]
+        self.assertEqual(here["runs"], 5)
+        self.assertEqual([u["id"] for u in here["uploads"]], [solo, box[0]])
+        grouped = here["uploads"][1]
+        self.assertEqual(grouped["label"], "box")
+        self.assertEqual(grouped["notes"], "quiet fan")
+        self.assertEqual([r["id"] for r in grouped["runs"]], box)
+        self.assertEqual([r["variant"] for r in grouped["runs"]],
+                         ["scalar-nofma", "vector-nofma", "scalar-fma", "vector-fma"])
+        self.assertTrue(all(r["tagged"] for r in grouped["runs"]))
+        self.assertFalse(here["uploads"][0]["runs"][0]["tagged"])
+        # Every run says which upload it came in.
+        self.assertEqual(b.call(f"/api/runs/{box[3]}")[1]["upload_id"], box[0])
+        # Paged by CPU, so a CPU's uploads are never split across pages.
+        page = b.call("/api/uploads?user=me&limit=1&offset=1")[1]
+        self.assertEqual(len(page["cpus"]), 1)
+        self.assertEqual(page["cpus"][0]["runs"], 5)
+
+    def test_what_starts_a_new_upload(self):
+        _, name, token = self.account()
+
+        def uploads():
+            out = self.anon().call(f"/api/uploads?user={name}")[1]
+            return [[r["id"] for r in u["runs"]] for c in out["cpus"] for u in c["uploads"]]
+
+        # A build the upload already has: the same command, run again.
+        first = self.variants(token, "box", which=self.VARIANTS[:2])
+        again = self.variants(token, "box", which=self.VARIANTS[:1])
+        self.assertEqual(uploads(), [again, first])
+        # A different label, or none of the variant tags.
+        relabelled = self.variants(token, "other box", which=self.VARIANTS[1:2])
+        plain = [self.post(token, "box", vec=True, fma=True)[1]["id"]]
+        self.assertEqual(uploads(), [plain, relabelled, again, first])
+        # Different notes.
+        a = self.variants(token, "", notes="one", which=self.VARIANTS[:1])
+        b = self.variants(token, "", notes="two", which=self.VARIANTS[1:2])
+        self.assertEqual(uploads()[:2], [b, a])
+        # Too long after the run before it.
+        c = self.variants(token, "late", which=self.VARIANTS[:1])
+        late = (datetime.now(timezone.utc) - srv.UPLOAD_GAP - timedelta(minutes=1))
+        with self.server.store.connect() as db:
+            db.execute("UPDATE runs SET created_at = ? WHERE id = ?",
+                       (late.isoformat(timespec="seconds").replace("+00:00", "Z"), c[0]))
+        d = self.variants(token, "late", which=self.VARIANTS[1:2])
+        self.assertEqual(uploads()[:2], [d, c])
+        # An unlabelled --variants upload is still one upload.
+        e = self.variants(token, "")
+        self.assertEqual(uploads()[0], e)
+
+    def test_only_the_same_account_continues_an_upload(self):
+        _, _, mine = self.account()
+        _, _, theirs = self.account()
+        first = self.variants(mine, "box", which=self.VARIANTS[:1])[0]
+        stranger = self.variants(theirs, "box", which=self.VARIANTS[1:2])[0]
+        anon = self.post(None, "box (scalar-fma)", fma=True)[1]["id"]
+        second = self.variants(mine, "box", which=self.VARIANTS[1:2])[0]
+        get = lambda i: self.anon().call(f"/api/runs/{i}")[1]["upload_id"]
+        self.assertEqual(get(stranger), stranger)
+        self.assertEqual(get(anon), anon)
+        # Another account's runs in between do not break this one's upload.
+        self.assertEqual(get(second), first)
+
+    def test_uploads_are_grouped_for_runs_stored_before_grouping(self):
+        _, _, token = self.account()
+        ids = self.variants(token, "older")
+        with self.server.store.connect() as db:
+            db.execute("UPDATE runs SET upload_id = NULL")
+        store = srv.Store(self.server.store.path)
+        with store.connect() as db:
+            got = [db.execute("SELECT upload_id FROM runs WHERE id = ?", (i,)).fetchone()[0]
+                   for i in ids]
+        self.assertEqual(got, [ids[0]] * 4)
+
+    def test_uploads_listing_needs_an_account_named(self):
+        anon = self.anon()
+        self.assertEqual(anon.call("/api/uploads")[0], 400)
+        self.assertEqual(anon.call("/api/uploads?user=me")[0], 401)
+        status, out = anon.call("/api/uploads?user=nobody-at-all")
+        self.assertEqual(status, 200)
+        self.assertEqual((out["cpus"], out["total"]), ([], 0))
+
+    def test_owner_edits_label_and_notes(self):
+        b, _, token = self.account()
+        run = self.post(token, "old label", "old notes")[1]["id"]
+        status, out = b.call(f"/api/runs/{run}", "PATCH", {"label": "  new label "})
+        self.assertEqual(status, 200, out)
+        self.assertEqual((out["label"], out["notes"]), ("new label", "old notes"))
+        status, out = b.call(f"/api/runs/{run}", "PATCH", {"notes": ""})
+        self.assertEqual((status, out["notes"]), (200, None))
+        stored = self.anon().call(f"/api/runs/{run}")[1]
+        self.assertEqual((stored["label"], stored["notes"]), ("new label", None))
+        # The upload token is the account too.
+        status, _ = self.anon().call(f"/api/runs/{run}", "PATCH", {"label": "by token"},
+                                     headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(status, 200)
+        self.assertEqual(b.call(f"/api/runs/{run}", "PATCH", {})[0], 400)
+        self.assertEqual(b.call(f"/api/runs/{run}", "PATCH", {"label": 5})[0], 400)
+
+    def test_only_the_owner_or_the_token_holder_may_edit(self):
+        owner, _, token = self.account()
+        run = self.post(token, "mine")[1]["id"]
+        stranger, _, _ = self.account()
+        self.assertEqual(stranger.call(f"/api/runs/{run}", "PATCH", {"label": "x"})[0], 403)
+        self.assertEqual(self.anon().call(f"/api/runs/{run}", "PATCH", {"label": "x"})[0], 401)
+        self.assertEqual(self.anon().call(f"/api/runs/{run}", "PATCH", {"label": "x"},
+                         headers={"X-Delete-Token": "not-the-token"})[0], 403)
+        # The page's own request, without the CSRF header another site lacks.
+        self.assertEqual(owner.call(f"/api/runs/{run}", "PATCH", {"label": "x"},
+                                    csrf=False)[0], 403)
+        self.assertEqual(self.anon().call(f"/api/runs/{run}")[1]["label"], "mine")
+        # An anonymous run, by its delete token.
+        status, up = self.post(None, "anonymous")
+        self.assertEqual(status, 201)
+        self.assertEqual(stranger.call(f"/api/runs/{up['id']}", "PATCH", {"label": "x"})[0], 403)
+        status, out = self.anon().call(f"/api/runs/{up['id']}", "PATCH", {"label": "renamed"},
+                                       headers={"X-Delete-Token": up["delete_token"]})
+        self.assertEqual((status, out["label"]), (200, "renamed"))
+        self.assertEqual(self.anon().call("/api/runs/999999", "PATCH", {"label": "x"},
+                         headers={"X-Delete-Token": "whatever"})[0], 403)
 
     # -- uploading as an account -------------------------------------------
     def test_upload_token_attributes_the_run(self):

@@ -41,7 +41,11 @@ curl -fsS -X POST 'http://my.server:8782/api/runs?label=my+box' \
 
 Submit `--full` runs where you can: only the pair of halves is interpretable.
 A `--variants` run uploads as one run per build variant, since results only
-compare between matching builds. A `--disp-sweep` dump is refused — it is a
+compare between matching builds. On an account, the hub ties them back into one upload as they
+arrive (same account, machine, binary and settings, labels that differ only in
+the variant tag, each build once, within three hours of each other), and *My
+uploads* lists them that way, by CPU. Labels and notes can be changed there
+afterwards. A `--disp-sweep` dump is refused — it is a
 diagnostic curve with no summary metrics to rank.
 
 **`build.flags` is verbatim.** It is whatever `CFLAGS` the binary was built
@@ -140,6 +144,8 @@ python3 verified.py --db runs.sqlite3 --forget v0.1.0
 | `GET` | `/api/runs?limit=&offset=&user=` | recent runs, optionally one submitter's |
 | `GET` | `/api/runs/<id>`, `/raw`, `/rank` | one run, with its kinds of core; the document as uploaded; per metric, the share of other runs its best record beats (one value per run: each one's best record in the same scope, same Vectorize and FMA, every CPU online), and its standing on the same CPU |
 | `DELETE` | `/api/runs/<id>` | withdraw; needs `X-Delete-Token` or a signed-in owner |
+| `PATCH` | `/api/runs/<id>` | change the label and/or notes (`{label, notes}`; only the keys sent change, `null` or `""` clears one); the same `X-Delete-Token` or signed-in owner as withdrawing |
+| `GET` | `/api/uploads?user=&limit=&offset=` | one account's runs by CPU, then by upload, a page of CPUs at a time; `user=me` for your own |
 | `GET` | `/api/cores?scope=&target=&os=&vectorize=&fma=&q=&cpu=&layout=&threads=&user=&verified=release&sort=&order=&norm=&limit=&offset=` | leaderboard rows: one per upload, each its best record at `sort`, with `cpu_fit` |
 | `GET` | `/api/cores?group=cpu&scope=…` | the same filters, one row per CPU: the medians of its runs |
 | `GET` | `/api/cores?run=<id>` / `?ids=1,2,3` | every record of one run, each with its `type` / named records |

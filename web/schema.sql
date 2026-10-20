@@ -47,8 +47,15 @@ CREATE TABLE IF NOT EXISTS runs (
     -- existing database gains this column by ALTER TABLE, which cannot add a
     -- reference in SQLite.
     user_id       INTEGER,
+    -- Label and notes can be changed after upload, by the run's account or by
+    -- whoever holds its delete token: the same two claims that can withdraw it.
     label         TEXT,
     notes         TEXT,
+    -- The upload this run arrived in: the id of its first run. A --variants
+    -- run posts one run per build variant, and the hub ties them back together
+    -- on arrival (see Store._join_upload) so an account's list can show one
+    -- upload rather than four unrelated rows. Its own id when it came alone.
+    upload_id     INTEGER,
 
     mode          TEXT    NOT NULL,   -- threads | per-core | full
     -- SHA-256 of the binary that produced the run, when it could take one.

@@ -11,7 +11,8 @@ const state = {
   total: 0,             // rows the board has in all, past this page
   mineLimit: 50,        // the same, for either list under My uploads
   mineOffset: 0,        // where the account half of My uploads starts
-  mineTotal: 0,
+  mineTotal: 0,         // CPUs on the account's list, which it is paged by
+  mineCounts: null,     // and the runs and uploads on them: {runs, uploads}
   localOffset: 0,       // and where this browser's own list starts
   accountRuns: null,    // this account's uploads, once fetched; null = not yet
   accountError: "",     // why that listing is missing, if it is
@@ -2115,10 +2116,10 @@ function takeFiles(files) {
 function pending() {
   const base = $("#label").value.trim();
   const out = [];
-  for (const f of state.files) {
-    if (!f.docs) continue;
+  state.files.forEach((f, file) => {
+    if (!f.docs) return;
     const many = f.docs.length > 1;
-    f.docs.forEach((doc, i) => {
+    f.docs.forEach((doc) => {
       const build = (doc && doc.build) || {};
       const variant = `${build.vectorize ? "vector" : "scalar"}-${build.fma ? "fma" : "nofma"}`;
       out.push({
@@ -2127,9 +2128,10 @@ function pending() {
         variant: many ? variant : null,
         label: many ? `${base ? base + " " : ""}(${variant})` : base,
         machine: (doc && doc.system && doc.system.cpu_models) || f.name,
+        file,                   // the runs of one file are one upload
       });
     });
-  }
+  });
   return out;
 }
 
@@ -2193,6 +2195,7 @@ async function doUpload(ev) {
   const go = $("#uploadgo");
   go.disabled = true;
   let stored = 0;
+  const firstOf = new Map();            // file -> its first stored run's id
   for (const job of jobs) {
     const p = new URLSearchParams();
     if (job.label) p.set("label", job.label);
@@ -2205,9 +2208,11 @@ async function doUpload(ev) {
       });
       stored++;
       out.append(uploadReceipt(job, res));
+      if (!firstOf.has(job.file)) firstOf.set(job.file, res.id);
       if (!res.user) {
         rememberRun({ id: res.id, token: res.delete_token, name: job.machine,
-                      at: new Date().toISOString().slice(0, 16).replace("T", " ") });
+                      at: new Date().toISOString(), label: job.label || "",
+                      notes, variant: job.variant, batch: firstOf.get(job.file) });
       }
     } catch (e) {
       out.append(el("p", "warn", `${job.machine}: ${e.message}`));
@@ -2294,19 +2299,66 @@ async function afterDelete() {
 // that were made before it.
 const minePicked = { account: new Set(), local: new Set() };
 
-function runCard(entry, picked, onPick) {
-  const card = el("div", "mine-card");
-  const cb = el("input");
+// Which CPUs are folded, which uploads are unfolded and which one is being
+// edited, by key -- kept outside the lists for the same reason as the ticks.
+// A CPU shows its uploads until it is folded; an upload shows its variants
+// only once it is opened, since a page of them all is four times the reading.
+const mineFolded = new Set();
+const mineOpen = new Set();
+let mineEditing = null;
+
+const VARIANT_TAIL = /(?:^| )\((?:scalar|vector)-(?:fma|nofma)\)$/;
+
+// A label without the "(vector-fma)" a --variants upload ends each run's with,
+// and whether it had one. The server's split_variant(), for labels the page
+// holds on its own.
+function splitLabel(label) {
+  const m = (label || "").match(VARIANT_TAIL);
+  if (!m) return { base: label || "", tagged: false };
+  return { base: label.slice(0, m.index), tagged: true };
+}
+
+// The label a run should carry once its upload is called `base`. The runs of a
+// --variants upload each end theirs in their build, as cpcpub names them, so
+// they stay told apart wherever the build is not on screen; a run that came
+// alone is left without one unless it already had it.
+function labelFor(base, run, many) {
+  if (!run.variant || !(many || run.tagged)) return base;
+  return `${base ? base + " " : ""}(${run.variant})`;
+}
+
+// A box for a set of runs: ticked when all of them are, a dash when some are,
+// and ticking it ticks or unticks the lot.
+function pickBox(ids, picked, redraw, what) {
+  const cb = el("input", "pick");
   cb.type = "checkbox";
-  cb.className = "pick";
-  cb.checked = picked.has(entry.id);
-  cb.setAttribute("aria-label", `select run ${entry.id}`);
-  cb.addEventListener("change", () => onPick(cb.checked));
-  const at = entry.at ? when(entry.at) : el("span");
+  const on = ids.filter((id) => picked.has(id)).length;
+  cb.checked = ids.length > 0 && on === ids.length;
+  cb.indeterminate = on > 0 && on < ids.length;
+  cb.setAttribute("aria-label", what);
+  cb.addEventListener("change", () => {
+    for (const id of ids) {
+      if (cb.checked) picked.add(id);
+      else picked.delete(id);
+    }
+    redraw();
+  });
+  return cb;
+}
+
+function foldArrow(open, toggle, show, hide) {
+  const ex = el("button", "expander", open ? "▾" : "▸");
+  ex.type = "button";
+  ex.title = open ? hide : show;
+  ex.setAttribute("aria-expanded", String(open));
+  ex.addEventListener("click", toggle);
+  return ex;
+}
+
+function mutedWhen(iso) {
+  const at = when(iso);
   at.className = "muted";
-  card.append(cb, entry.title, at);
-  if (entry.token) card.append(tokenBox(entry.token));
-  return card;
+  return at;
 }
 
 // Withdrawing whatever is ticked. One confirmation for the lot and then one
@@ -2342,25 +2394,235 @@ async function withdrawPicked(entries, picked, remove, redraw) {
   await afterDelete();
 }
 
+// Both halves of My uploads hold the same shape: a CPU, the uploads made on
+// it, and the runs each upload sent -- one, or one per build variant. `ctx`
+// is what differs between the halves: which ticks they keep, how a run is
+// withdrawn or edited, and whether the delete tokens are shown.
+//
+//   cpu    { key, name, uploads }
+//   upload { key, label, notes, at, runs, known }
+//   run    { id, at, variant, tagged, token }
+
+// The form that renames an upload and rewrites its notes. One label for the
+// upload, put on each of its runs with that run's build after it.
+function uploadEditor(up, ctx) {
+  const form = el("form", "mine-extra mine-edit");
+  const labelIn = el("input");
+  labelIn.type = "text";
+  labelIn.maxLength = 200;
+  labelIn.value = up.label || "";
+  labelIn.placeholder = "e.g. workstation, quiet, performance governor";
+  const notesIn = el("textarea");
+  notesIn.rows = 3;
+  notesIn.maxLength = 2000;
+  notesIn.value = up.notes || "";
+  notesIn.placeholder = "cooling, kernel, anything that explains the numbers";
+  const labelBox = el("label", null, "Label");
+  labelBox.append(labelIn);
+  const notesBox = el("label", null, "Notes");
+  notesBox.append(notesIn);
+  form.append(labelBox, notesBox);
+  if (up.runs.length > 1) {
+    form.append(el("p", "note",
+      `Changes all ${up.runs.length} runs of this upload. Each keeps its build ` +
+      `after the label, as in "${labelFor(labelIn.value.trim() || "label",
+                                           up.runs[0], true)}".`));
+  }
+  const save = el("button", null, "Save");
+  save.type = "submit";
+  const cancel = el("button", "secondary", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => {
+    mineEditing = null;
+    ctx.redraw();
+  });
+  const buttons = el("div", "buttons");
+  buttons.append(save, cancel);
+  const msg = el("p", "authmsg");
+  form.append(buttons, msg);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    save.disabled = true;
+    msg.className = "authmsg";
+    msg.textContent = "Saving…";
+    try {
+      await ctx.edit(up, labelIn.value.trim(), notesIn.value.trim());
+      mineEditing = null;
+      ctx.redraw();
+      // The board shows labels too, and searches them.
+      loadBoard({ keepPage: true }).catch(() => {});
+    } catch (err) {
+      save.disabled = false;
+      msg.className = "authmsg warn";
+      msg.textContent = err.message;
+    }
+  });
+  setTimeout(() => labelIn.focus(), 0);
+  return form;
+}
+
+// PATCH every run of an upload, each with its own label. One request a run:
+// a run that would not change is named rather than folded into the rest.
+async function patchUpload(up, label, notes, headers = () => ({})) {
+  const many = up.runs.length > 1;
+  const failed = [];
+  for (const run of up.runs) {
+    try {
+      await api(`/api/runs/${run.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...headers(run) },
+        body: JSON.stringify({ label: labelFor(label, run, many), notes }),
+      });
+    } catch (err) {
+      failed.push(`run ${run.id}: ${err.message}`);
+    }
+  }
+  if (failed.length) {
+    throw new Error(`${up.runs.length - failed.length} of ${up.runs.length} ` +
+                    `changed. Could not change ${failed.join("; ")}`);
+  }
+}
+
+// One variant of an upload, under it once it is unfolded.
+function runLine(run, ctx) {
+  const row = el("div", "mine-row mine-run");
+  row.append(pickBox([run.id], ctx.picked, ctx.redraw, `select run ${run.id}`),
+             el("span", "expander blank", " "));
+  const main = el("div", "mine-main");
+  main.append(runLink(run.id, run.variant || `run ${run.id}`),
+              el("span", "muted", `run ${run.id}`), mutedWhen(run.at));
+  row.append(main);
+  if (ctx.tokens && run.token) {
+    const tok = el("div", "mine-extra");
+    tok.append(tokenBox(run.token));
+    row.append(tok);
+  }
+  return row;
+}
+
+// One upload: its label, when it went up, its notes, and its runs folded
+// under it. `cpuName` is set when the upload is the only one on its CPU and so
+// stands on its own, named by the CPU, with its label under it.
+function uploadBlock(up, ctx, cpuName = null) {
+  const key = `${ctx.prefix}|${up.key}`;
+  const many = up.runs.length > 1;
+  const open = many && mineOpen.has(key);
+  const toggle = () => {
+    if (!mineOpen.delete(key)) mineOpen.add(key);
+    ctx.redraw();
+  };
+  const row = el("div", "mine-row mine-upload");
+  row.append(pickBox(up.runs.map((r) => r.id), ctx.picked, ctx.redraw,
+                     many ? `select all ${up.runs.length} runs of this upload`
+                          : `select run ${up.runs[0].id}`));
+  row.append(many ? foldArrow(open, toggle, "show each variant of this upload", "hide the variants")
+                  : el("span", "expander blank", " "));
+
+  const main = el("div", "mine-main");
+  const name = cpuName || up.label || "No label";
+  let title;
+  if (many) {
+    title = el("strong", "foldname", name);
+    title.addEventListener("click", toggle);
+  } else {
+    title = runLink(up.runs[0].id, name);
+  }
+  if (!cpuName && !up.label) title.classList.add("unlabelled");
+  main.append(title, mutedWhen(up.at));
+  if (many) main.append(el("span", "count", `${up.runs.length} variants`));
+  else if (up.runs[0].tagged) main.append(el("span", "count", up.runs[0].variant));
+  if (ctx.edit) {
+    const edit = el("button", "mine-editbtn", "Edit");
+    edit.type = "button";
+    edit.title = "change the label and notes";
+    edit.disabled = mineEditing === key;
+    edit.addEventListener("click", async () => {
+      edit.disabled = true;
+      try {
+        if (ctx.prepare) await ctx.prepare(up);
+        mineEditing = key;
+      } catch (err) {
+        alert(err.message);
+      }
+      ctx.redraw();
+    });
+    main.append(edit);
+  }
+  row.append(main);
+
+  if (cpuName && up.label) row.append(el("div", "mine-extra mine-label", up.label));
+  if (up.notes) row.append(el("div", "mine-extra mine-notes", up.notes));
+  if (!many && ctx.tokens && up.runs[0].token) {
+    const tok = el("div", "mine-extra");
+    tok.append(tokenBox(up.runs[0].token));
+    row.append(tok);
+  }
+  if (mineEditing === key) row.append(uploadEditor(up, ctx));
+  if (open) {
+    const body = el("div", "mine-extra mine-body");
+    for (const run of up.runs) body.append(runLine(run, ctx));
+    row.append(body);
+  }
+  return row;
+}
+
+// One CPU: a card. With one upload on it the card is that upload; with more,
+// the CPU heads the card and its uploads are listed under it, newest first.
+// Two machines with one chip are one CPU here -- nothing an upload carries
+// says which box it came from, so the list does not guess.
+function cpuBlock(cpu, ctx) {
+  const card = el("div", "mine-card");
+  if (cpu.uploads.length === 1) {
+    card.append(uploadBlock(cpu.uploads[0], ctx, cpu.name));
+    return card;
+  }
+  const key = `${ctx.prefix}|cpu|${cpu.key}`;
+  const open = !mineFolded.has(key);
+  const toggle = () => {
+    if (!mineFolded.delete(key)) mineFolded.add(key);
+    ctx.redraw();
+  };
+  const ids = cpu.uploads.flatMap((u) => u.runs.map((r) => r.id));
+  const row = el("div", "mine-row mine-cpu");
+  row.append(pickBox(ids, ctx.picked, ctx.redraw, `select all ${ids.length} runs on this CPU`),
+             foldArrow(open, toggle, "show the uploads on this CPU", "hide the uploads"));
+  const main = el("div", "mine-main");
+  const title = el("strong", "foldname", cpu.name);
+  title.addEventListener("click", toggle);
+  main.append(title,
+              el("span", "count", `${cpu.uploads.length} uploads · ${ids.length} runs`));
+  if (!open) main.append(el("span", "muted", "latest"), mutedWhen(cpu.uploads[0].at));
+  row.append(main);
+  if (open) {
+    const body = el("div", "mine-extra mine-body");
+    for (const up of cpu.uploads) body.append(uploadBlock(up, ctx));
+    row.append(body);
+  }
+  card.append(row);
+  return card;
+}
+
 // One half of My uploads: a bar that acts on whatever is ticked, then a card
-// per upload. Both halves are the same list with a different way of proving
-// the run is yours, so one function draws them both.
-function renderRunList(box, entries, picked, remove, redraw) {
-  const ids = new Set(entries.map((e) => e.id));
+// per CPU. Both halves are the same list with a different way of proving the
+// run is yours, so one function draws them both.
+function renderUploadList(box, cpus, ctx, remove) {
+  const runs = cpus.flatMap((c) => c.uploads.flatMap((u) => u.runs));
+  const ids = new Set(runs.map((r) => r.id));
   // Ticks for rows that are no longer here -- withdrawn in another tab, or off
   // the end of a smaller page -- would otherwise be counted forever.
-  for (const id of [...picked]) if (!ids.has(id)) picked.delete(id);
+  for (const id of [...ctx.picked]) if (!ids.has(id)) ctx.picked.delete(id);
+  const picked = ctx.picked;
 
   const bar = el("div", "batch");
   const all = el("label", "check");
   const allBox = el("input");
   allBox.type = "checkbox";
-  allBox.checked = entries.length > 0 && picked.size === entries.length;
-  allBox.indeterminate = picked.size > 0 && picked.size < entries.length;
+  allBox.checked = runs.length > 0 && picked.size === runs.length;
+  allBox.indeterminate = picked.size > 0 && picked.size < runs.length;
   allBox.addEventListener("change", () => {
     picked.clear();
-    if (allBox.checked) for (const e of entries) picked.add(e.id);
-    redraw();
+    if (allBox.checked) for (const r of runs) picked.add(r.id);
+    ctx.redraw();
   });
   all.append(allBox, el("span", null, "Select all"));
 
@@ -2370,27 +2632,59 @@ function renderRunList(box, entries, picked, remove, redraw) {
   go.disabled = !picked.size;
   go.addEventListener("click", () => {
     go.disabled = true;                 // no second click while the first runs
-    withdrawPicked(entries, picked, remove, redraw).catch((e) => alert(e.message));
+    withdrawPicked(runs, picked, remove, ctx.redraw).catch((e) => alert(e.message));
   });
   bar.append(all, go);
   box.append(bar);
 
-  for (const e of entries) {
-    box.append(runCard(e, picked, (on) => {
-      if (on) picked.add(e.id);
-      else picked.delete(e.id);
-      redraw();
-    }));
-  }
+  for (const cpu of cpus) box.append(cpuBlock(cpu, ctx));
 }
 
-function runTitle(id, name) {
-  return runLink(id, name || `run ${id}`);
+// The account's listing as the server groups it, in the list's own shape.
+function accountCpus(cpus) {
+  return cpus.map((c) => ({
+    key: JSON.stringify([c.cpu_models, c.cpu_layout, c.cpu_models ? null : c.machine]),
+    name: machineName(c),
+    uploads: c.uploads.map((u) => ({
+      key: String(u.id),
+      label: u.label || "",
+      notes: u.notes || "",
+      at: u.created_at,
+      runs: u.runs.map((r) => ({ id: r.id, at: r.created_at, variant: r.variant,
+                                 tagged: r.tagged })),
+    })),
+  }));
+}
+
+// This browser's anonymous uploads, grouped the same way here rather than on
+// the server, which cannot tell whose they are. An upload is the runs one file
+// sent, as recorded when it was sent; an entry from before that was recorded
+// stands alone.
+function localCpus(entries) {
+  const cpus = new Map();
+  for (const e of entries) {                // newest first
+    const name = e.name || `run ${e.id}`;
+    let cpu = cpus.get(name);
+    if (!cpu) cpus.set(name, cpu = { key: name, name, uploads: [], byKey: new Map() });
+    const k = String(e.batch ?? e.id);
+    let up = cpu.byKey.get(k);
+    if (!up) {
+      up = { key: k, label: splitLabel(e.label).base, notes: e.notes || "",
+             known: "label" in e, at: e.at, runs: [] };
+      cpu.byKey.set(k, up);
+      cpu.uploads.push(up);
+    }
+    up.runs.unshift({ id: e.id, at: e.at, token: e.token, variant: e.variant || null,
+                      tagged: Boolean(e.variant) });
+    up.at = e.at;                           // ends on the first run's time
+  }
+  return [...cpus.values()];
 }
 
 // The account half is fetched, so its drawing is kept apart from its loading:
 // ticking a box or withdrawing redraws from the last listing, and only a real
-// change asks the server for a new one.
+// change asks the server for a new one. It is paged by CPU, so a CPU's uploads
+// and an upload's variants are never split across two pages.
 let accountGen = 0;
 
 async function loadAccountRuns() {
@@ -2404,16 +2698,17 @@ async function loadAccountRuns() {
     return drawAccountRuns();
   }
   try {
-    const page = await api(`/api/runs?user=me&limit=${state.mineLimit}` +
+    const page = await api(`/api/uploads?user=me&limit=${state.mineLimit}` +
                            `&offset=${state.mineOffset}`);
     if (gen !== accountGen) return;     // a newer load is already on its way
-    state.accountRuns = page.runs;
-    state.mineTotal = page.total ?? page.runs.length;
+    state.accountRuns = page.cpus;
+    state.mineTotal = page.total ?? page.cpus.length;
+    state.mineCounts = { runs: page.runs, uploads: page.uploads };
     state.accountError = "";
     // Withdrawing a whole page leaves this one standing past the end of the
     // listing; step back to where the uploads now stop, and only backwards.
     const back = lastPage(state.mineTotal, state.mineLimit);
-    if (!page.runs.length && back < state.mineOffset) {
+    if (!page.cpus.length && back < state.mineOffset) {
       state.mineOffset = back;
       return loadAccountRuns();
     }
@@ -2425,6 +2720,16 @@ async function loadAccountRuns() {
   drawAccountRuns();
 }
 
+// A withdrawn run taken out of the last listing, and any upload or CPU it
+// leaves empty with it.
+function dropAccountRun(id) {
+  state.accountRuns = state.accountRuns
+    .map((c) => ({ ...c, uploads: c.uploads
+      .map((u) => ({ ...u, runs: u.runs.filter((r) => r.id !== id) }))
+      .filter((u) => u.runs.length) }))
+    .filter((c) => c.uploads.length);
+}
+
 function drawAccountRuns() {
   const box = $("#mine-account");
   box.replaceChildren();
@@ -2434,7 +2739,8 @@ function drawAccountRuns() {
       "withdrawable from any browser without a token."));
     return;
   }
-  box.append(el("h2", null, `On your account (${state.user.name})`));
+  const head = el("h2", null, `On your account (${state.user.name})`);
+  box.append(head);
   if (state.accountError) {
     box.append(el("p", "warn", state.accountError));
     return;
@@ -2447,19 +2753,31 @@ function drawAccountRuns() {
     box.append(el("p", "empty", "Nothing uploaded to this account yet."));
     return;
   }
-  const entries = state.accountRuns.map((run) => ({
-    id: run.id,
-    at: run.created_at,
-    title: runTitle(run.id, machineName(run, `run ${run.id}`)),
-  }));
-  renderRunList(box, entries, minePicked.account,
-                // Taken out of the listing as it goes rather than waiting for
-                // the refetch, so a withdrawn run is never redrawn as present.
-                (e) => api(`/api/runs/${e.id}`, { method: "DELETE" }).then(() => {
-                  state.accountRuns = state.accountRuns.filter((r) => r.id !== e.id);
-                  state.mineTotal = Math.max(0, state.mineTotal - 1);
-                }),
-                drawAccountRuns);
+  const n = state.mineCounts || {};
+  if (n.runs) {
+    box.append(el("p", "note",
+      `${n.runs} run${n.runs === 1 ? "" : "s"} in ${n.uploads} upload` +
+      `${n.uploads === 1 ? "" : "s"}, on ${state.mineTotal} ` +
+      `CPU${state.mineTotal === 1 ? "" : "s"}. An upload of several build ` +
+      `variants is one entry; open it for each variant's run.`));
+  }
+  const ctx = {
+    prefix: "a",
+    picked: minePicked.account,
+    redraw: drawAccountRuns,
+    tokens: false,
+    // A refusal leaves the form open with the reason in it; the listing is
+    // fetched again only once the change has landed.
+    edit: async (up, label, notes) => {
+      await patchUpload(up, label, notes);
+      await loadAccountRuns();
+    },
+  };
+  renderUploadList(box, accountCpus(state.accountRuns), ctx,
+                   // Taken out of the listing as it goes rather than waiting
+                   // for the refetch, so a withdrawn run is never redrawn.
+                   (e) => api(`/api/runs/${e.id}`, { method: "DELETE" })
+                     .then(() => dropAccountRun(e.id)));
   pager(box, { offset: state.mineOffset, limit: state.mineLimit,
                total: state.mineTotal },
         (offset) => {
@@ -2468,32 +2786,54 @@ function drawAccountRuns() {
         });
 }
 
+// Rewrite this browser's record of some uploads, by run id.
+function updateLocal(changes) {
+  const all = myRuns().map((e) => (changes.has(e.id) ? { ...e, ...changes.get(e.id) } : e));
+  localStorage.setItem("cpcpub-uploads", JSON.stringify(all));
+}
+
 function drawLocalRuns() {
   const box = $("#minelist");
   box.replaceChildren();
-  const all = myRuns();
-  if (!all.length) {
+  const cpus = localCpus(myRuns());
+  if (!cpus.length) {
     box.append(el("p", "empty", "No anonymous uploads from this browser."));
     return;
   }
-  if (state.localOffset >= all.length) {
-    state.localOffset = lastPage(all.length, state.mineLimit);
+  if (state.localOffset >= cpus.length) {
+    state.localOffset = lastPage(cpus.length, state.mineLimit);
   }
-  const shown = all.slice(state.localOffset, state.localOffset + state.mineLimit);
-  const entries = shown.map((entry) => ({
-    id: entry.id,
-    at: entry.at,
-    token: entry.token,
-    title: runTitle(entry.id, entry.name),
-  }));
-  renderRunList(box, entries, minePicked.local,
-                (e) => api(`/api/runs/${e.id}`, {
-                  method: "DELETE",
-                  headers: { "X-Delete-Token": e.token },
-                }),
-                drawLocalRuns);
+  const shown = cpus.slice(state.localOffset, state.localOffset + state.mineLimit);
+  const ctx = {
+    prefix: "l",
+    picked: minePicked.local,
+    redraw: drawLocalRuns,
+    tokens: true,
+    // Entries saved before this browser kept labels have none to start the
+    // form from, so the hub is asked for what the upload says now.
+    prepare: async (up) => {
+      if (up.known) return;
+      const run = await api(`/api/runs/${up.runs[0].id}`);
+      const s = splitLabel(run.label);
+      up.label = s.base;
+      up.notes = run.notes || "";
+      up.runs[0].tagged = s.tagged;
+      up.known = true;
+      updateLocal(new Map([[up.runs[0].id, { label: run.label || "", notes: up.notes }]]));
+    },
+    edit: async (up, label, notes) => {
+      await patchUpload(up, label, notes, (run) => ({ "X-Delete-Token": run.token }));
+      const many = up.runs.length > 1;
+      updateLocal(new Map(up.runs.map((r) => [r.id, { label: labelFor(label, r, many), notes }])));
+    },
+  };
+  renderUploadList(box, shown, ctx,
+                   (e) => api(`/api/runs/${e.id}`, {
+                     method: "DELETE",
+                     headers: { "X-Delete-Token": e.token },
+                   }));
   pager(box, { offset: state.localOffset, limit: state.mineLimit,
-               total: all.length },
+               total: cpus.length },
         (offset) => {
           state.localOffset = Math.max(0, offset);
           drawLocalRuns();
