@@ -475,14 +475,62 @@ function fillSystems(counts) {
   if (sel.value !== chosen) sel.value = "";
 }
 
-// A CPU line with how many of each core it has: "4× Cortex-A55 + 4× Cortex-A76
-// (Radxa ROCK 5B)". Where the line names the chip rather than its cores, as a
-// vendor kernel's does, the counts lead all the same and the line's own name
-// for the machine follows in their place: "4× Cortex-A55 + 4× Cortex-A76
-// (RK3588S CoolPi 4B Board)".
+// How fast each core design is, roughly: a higher tier is a faster core. Only
+// the order matters, and only between designs that share a chip, so this is a
+// rough guide to edit as needed rather than a benchmark of its own. Names are
+// as the benchmark spells them from a MIDR.
+const CORE_TIER = {
+  "ARM11-MPCore": 1, ARM1136: 1, ARM1156: 1, ARM1176: 1,
+  "Cortex-A5": 2, "Cortex-A7": 3, "Cortex-A32": 3, "Cortex-A8": 4,
+  "Cortex-A34": 4, "Cortex-A35": 4, "Cortex-A9": 5, "Cortex-A53": 5,
+  "Brahma-B53": 5, "Cortex-A55": 6, "Cortex-A65": 6, "Cortex-A65AE": 6,
+  "Neoverse-E1": 6, "Kryo-3XX-Silver": 6, "Kryo-4XX-Silver": 6,
+  "Cortex-A12": 7, "Cortex-A510": 7, "Cortex-A17": 8, "Cortex-A320": 8,
+  "Cortex-A520": 8, "Cortex-A520AE": 8, "C1-Nano": 8, "Cortex-A15": 9,
+  "Cortex-A57": 10, "Cortex-A72": 12, "Cortex-A73": 13, "Cortex-A75": 14,
+  "Kryo-3XX-Gold": 14, "Cortex-A76": 16, "Cortex-A76AE": 16,
+  "Neoverse-N1": 16, "Kryo-4XX-Gold": 16, "Cortex-A77": 17,
+  "Cortex-A78": 18, "Cortex-A78AE": 18, "Cortex-A78C": 18, "Cortex-A710": 19,
+  "Cortex-X1": 20, "Cortex-X1C": 20, "Cortex-A715": 20, "Neoverse-V1": 20,
+  "Neoverse-N2": 20, "Cortex-A720": 21, "Cortex-A720AE": 21,
+  "Cortex-A725": 22, "Cortex-X2": 22, "Neoverse-N3": 22, "C1-Pro": 23,
+  "Cortex-X3": 24, "Neoverse-V2": 24, "Cortex-X4": 26, "C1-Premium": 26,
+  "Neoverse-V3": 27, "Neoverse-V3AE": 27, "Cortex-X925": 28, "C1-Ultra": 29,
+};
+
+// A design's tier, or null where it is not known. Apple's cores are matched by
+// family, as each chip gives its efficiency and performance cores new names.
+function coreTier(name) {
+  if (name in CORE_TIER) return CORE_TIER[name];
+  if (/^(Icestorm|Blizzard|Sawtooth)\b/.test(name)) return 10;
+  if (/^(Firestorm|Avalanche|Everest)\b/.test(name)) return 30;
+  return null;
+}
+
+// A CPU line, or a layout, with its fastest core named first: "Cortex-A76 +
+// Cortex-A55" where the machine listed the A55s first because they are CPU 0.
+// Left as it is if any design in it is not in the table, so an unknown core is
+// never put in the wrong place. Only what is drawn changes; stored lines and
+// the keys runs are grouped by do not.
+function fastFirst(line) {
+  if (!line || !line.includes(" + ")) return line;
+  const board = line.match(/\s*\([^()]*\)$/);
+  const names = (board ? line.slice(0, board.index) : line).split(" + ");
+  const tiers = names.map((n) => coreTier(n.replace(/^\d+x /, "").trim()));
+  if (tiers.some((t) => t === null)) return line;
+  const order = names.map((n, i) => i).sort((a, b) => tiers[b] - tiers[a]);
+  return order.map((i) => names[i]).join(" + ") + (board ? board[0] : "");
+}
+
+// A CPU line with how many of each core it has: "4× Cortex-A76 + 4× Cortex-A55
+// (Radxa ROCK 5B)", fastest core first. Where the line names the chip rather
+// than its cores, as a vendor kernel's does, the counts lead all the same and
+// the line's own name for the machine follows in their place: "4× Cortex-A76 +
+// 4× Cortex-A55 (RK3588S CoolPi 4B Board)".
 function withCounts(line, layout) {
+  line = fastFirst(line);
   if (!layout) return line;
-  const parts = layout.split(" + ").map((p) => p.match(/^(\d+)x (.+)$/));
+  const parts = fastFirst(layout).split(" + ").map((p) => p.match(/^(\d+)x (.+)$/));
   if (parts.some((p) => !p)) return line;
   const counted = (p) => `${p[1]}× ${p[2]}`;
   const board = line.match(/\s*\([^()]*\)$/);
@@ -2691,7 +2739,7 @@ function accountCpus(cpus) {
 function localCpus(entries) {
   const cpus = new Map();
   for (const e of entries) {                // newest first
-    const name = e.name || `run ${e.id}`;
+    const name = e.name ? fastFirst(e.name) : `run ${e.id}`;
     let cpu = cpus.get(name);
     if (!cpu) cpus.set(name, cpu = { key: name, name, uploads: [], byKey: new Map() });
     const k = String(e.batch ?? e.id);
