@@ -2301,11 +2301,10 @@ async function afterDelete() {
 // that were made before it.
 const minePicked = { account: new Set(), local: new Set() };
 
-// Which CPUs are folded, which uploads are unfolded and which one is being
-// edited, by key -- kept outside the lists for the same reason as the ticks.
-// A CPU shows its uploads until it is folded; an upload shows its variants
-// only once it is opened, since a page of them all is four times the reading.
-const mineFolded = new Set();
+// Which CPUs and uploads are unfolded and which upload is being edited, by
+// key -- kept outside the lists for the same reason as the ticks. Everything
+// starts folded: the list is a line per CPU until one is opened, and an upload
+// shows its variants only once it is opened in turn.
 const mineOpen = new Set();
 let mineEditing = null;
 
@@ -2579,9 +2578,9 @@ function cpuBlock(cpu, ctx) {
     return card;
   }
   const key = `${ctx.prefix}|cpu|${cpu.key}`;
-  const open = !mineFolded.has(key);
+  const open = mineOpen.has(key);
   const toggle = () => {
-    if (!mineFolded.delete(key)) mineFolded.add(key);
+    if (!mineOpen.delete(key)) mineOpen.add(key);
     ctx.redraw();
   };
   const ids = cpu.uploads.flatMap((u) => u.runs.map((r) => r.id));
