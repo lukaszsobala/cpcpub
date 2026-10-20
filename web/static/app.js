@@ -368,6 +368,8 @@ const TARGETS = [
   ["x86_64", "Intel / AMD, 64-bit"],
   ["aarch64", "Arm, 64-bit"],
   ["armv7", "Arm, 32-bit (ARMv7)"],
+  ["armv6", "Arm, 32-bit (ARMv6)"],
+  ["arm", "Arm, 32-bit (older)"],
   ["riscv64", "RISC-V, 64-bit"],
   ["loongarch64", "LoongArch, 64-bit"],
   ["ppc64le", "POWER, little-endian"],

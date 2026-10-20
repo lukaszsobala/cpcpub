@@ -79,7 +79,10 @@ CREATE TABLE IF NOT EXISTS runs (
     compiler_version TEXT,            -- the toolchain's own version banner
     cc            TEXT,               -- driver invoked, e.g. riscv64-linux-gnu-gcc
     build_flags   TEXT,               -- the exact CFLAGS the binary was built with
-    target        TEXT,               -- x86_64 | aarch64 | riscv64 | loongarch64 | ppc64le | s390x
+    -- x86_64 | aarch64 | armv7 | armv6 | arm | riscv64 | loongarch64 | ppc64le |
+    -- ppc64 | s390x; where a run said "unknown", what its machine implies
+    -- (see server.known_target), the run's own word being kept in raw.
+    target        TEXT,
     vectorize     INTEGER,            -- build flags: results are only
     fma           INTEGER,            -- comparable when these two match
 
@@ -170,7 +173,7 @@ CREATE TABLE IF NOT EXISTS verified_builds (
     release_rank TEXT   NOT NULL,
     release_url TEXT,
     filename    TEXT,              -- the asset name, e.g. cpcpub-riscv64-rva23
-    target      TEXT,              -- x86_64 | aarch64 | riscv64 | loongarch64 | ppc64le | s390x
+    target      TEXT,              -- as runs.target
     march       TEXT,              -- the ISA baseline it was built for
     added_at    TEXT    NOT NULL,
     PRIMARY KEY (sha256, release)

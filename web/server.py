@@ -475,6 +475,31 @@ def check_consistency(rows: list[dict], threads: int | None) -> None:
         _agrees(row, "score", _geomean(score_terms(row, scale)), where)
 
 
+# What a build that could not name its own target was, read off the machine it
+# ran on. cpcpub names 32-bit Arm builds now (armv7, armv6, arm); builds from
+# before that said "unknown", and a target of "unknown" is a board nobody can
+# filter for or compare against. Only machines that leave little doubt are
+# here: a kernel that is armv6 runs nothing newer, and an armv7 one is armv7
+# userland on every distribution but one (below). A 64-bit machine is left as
+# it came, since an unnamed build there may well be a 32-bit one.
+TARGET_OF_MACHINE = {"armv6l": "armv6", "armv7l": "armv7", "armv8l": "arm"}
+# Raspberry Pi OS ships one 32-bit userland for every Pi, built for the ARMv6
+# of the first, so what its own compiler makes is ARMv6 code on an ARMv7 board.
+# Its kernels say so in their release: "+rpt-rpi-v7", "-rpi-v7l", "-v7+".
+RPI_OS_KERNEL_RE = re.compile(r"rpt-rpi|-rpi-v[78]|-v7l?\+$")
+
+
+def known_target(target: str | None, machine: str | None,
+                 release: str | None) -> str | None:
+    """A run's target, as it reported it or else as its machine implies."""
+    if target not in (None, "unknown"):
+        return target
+    guess = TARGET_OF_MACHINE.get(machine or "")
+    if guess == "armv7" and RPI_OS_KERNEL_RE.search(release or ""):
+        guess = "armv6"
+    return guess or target
+
+
 def validate(payload: object) -> tuple[dict, list[dict]]:
     """Turn an uploaded document into (run row, core rows) or raise Invalid."""
     if not isinstance(payload, dict):
@@ -501,7 +526,9 @@ def validate(payload: object) -> tuple[dict, list[dict]]:
         "cc": _text(build.get("cc"), 64, "build.cc"),
         # The exact flags matter for comparability and are long; keep them whole.
         "build_flags": _text(build.get("flags"), 1000, "build.flags"),
-        "target": _text(build.get("target"), 32, "build.target"),
+        "target": known_target(_text(build.get("target"), 32, "build.target"),
+                               _text(system.get("machine"), 64, "system.machine"),
+                               _text(system.get("release"), 64, "system.release")),
         "binary_sha256": _hex64(build.get("binary_sha256"), "build.binary_sha256"),
         "vectorize": _bool(build.get("vectorize"), "build.vectorize"),
         "fma": _bool(build.get("fma"), "build.fma"),
@@ -1210,6 +1237,12 @@ class Store:
             # one uploaded now would be.
             for r in db.execute("SELECT id FROM runs").fetchall():
                 self._classify(db, r["id"])
+            # Runs stored before the hub could tell what an unnamed target was.
+            for r in db.execute("SELECT id, target, machine, os_release FROM runs "
+                                "WHERE target IS NULL OR target = 'unknown'").fetchall():
+                target = known_target(r["target"], r["machine"], r["os_release"])
+                if target != r["target"]:
+                    db.execute("UPDATE runs SET target = ? WHERE id = ?", (target, r["id"]))
             # Runs stored before uploads were told apart, in the order they
             # arrived, so each is joined to the upload before it exactly as it
             # would have been then.

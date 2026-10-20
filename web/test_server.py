@@ -2277,6 +2277,40 @@ class PasswordTest(unittest.TestCase):
 
 
 class ValidateTest(unittest.TestCase):
+    def test_an_unnamed_target_is_read_off_the_machine(self):
+        def target(reported, machine, release="6.12.0"):
+            doc = document()
+            doc["build"] = dict(doc["build"], target=reported)
+            doc["system"] = dict(doc["system"], machine=machine, release=release)
+            return srv.validate(doc)[0]["target"]
+
+        self.assertEqual(target("unknown", "armv6l"), "armv6")
+        self.assertEqual(target("unknown", "armv7l"), "armv7")
+        self.assertEqual(target(None, "armv7l"), "armv7")
+        self.assertEqual(target("unknown", "armv8l"), "arm")
+        # Raspberry Pi OS builds ARMv6 code on every Pi.
+        self.assertEqual(target("unknown", "armv7l", "6.12.62+rpt-rpi-v7"), "armv6")
+        self.assertEqual(target("unknown", "armv7l", "5.10.103-v7l+"), "armv6")
+        # A 64-bit machine may be running a 32-bit build: not guessed at.
+        self.assertEqual(target("unknown", "aarch64"), "unknown")
+        self.assertEqual(target("unknown", "x86_64"), "unknown")
+        # What a build says of itself always stands.
+        self.assertEqual(target("armv6", "armv7l"), "armv6")
+        self.assertEqual(target("x86_64", "armv7l"), "x86_64")
+
+    def test_stored_unknown_targets_are_named_on_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "t.sqlite3")
+            store = srv.Store(path)
+            doc = document()
+            doc["system"] = dict(doc["system"], machine="armv6l")
+            run, cores = srv.validate(doc)
+            run_id, _ = store.insert(dict(run, target="unknown"), cores, "{}", None, None)
+            srv.Store(path)
+            with store.connect() as db:
+                got = db.execute("SELECT target FROM runs WHERE id = ?", (run_id,)).fetchone()[0]
+            self.assertEqual(got, "armv6")
+
     def test_scope_defaults_per_mode(self):
         doc = document("per-core")
         for c in doc["cores"]:
