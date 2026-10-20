@@ -2490,8 +2490,10 @@ function runLine(run, ctx) {
   row.append(pickBox([run.id], ctx.picked, ctx.redraw, `select run ${run.id}`),
              el("span", "expander blank", " "));
   const main = el("div", "mine-main");
-  main.append(runLink(run.id, run.variant || `run ${run.id}`),
-              el("span", "muted", `run ${run.id}`), mutedWhen(run.at));
+  // An entry this browser kept before it recorded variants has only its id.
+  if (run.variant) main.append(runLink(run.id, run.variant), el("span", "muted", `run ${run.id}`));
+  else main.append(runLink(run.id, `run ${run.id}`));
+  main.append(mutedWhen(run.at));
   row.append(main);
   if (ctx.tokens && run.token) {
     const tok = el("div", "mine-extra");
@@ -2501,37 +2503,33 @@ function runLine(run, ctx) {
   return row;
 }
 
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
 // One upload: its label, when it went up, its notes, and its runs folded
-// under it. `cpuName` is set when the upload is the only one on its CPU and so
-// stands on its own, named by the CPU, with its label under it.
-function uploadBlock(up, ctx, cpuName = null) {
+// under it -- one run or one per build variant, opened the same way either way.
+function uploadBlock(up, ctx) {
   const key = `${ctx.prefix}|${up.key}`;
-  const many = up.runs.length > 1;
-  const open = many && mineOpen.has(key);
+  const open = mineOpen.has(key);
   const toggle = () => {
     if (!mineOpen.delete(key)) mineOpen.add(key);
     ctx.redraw();
   };
   const row = el("div", "mine-row mine-upload");
   row.append(pickBox(up.runs.map((r) => r.id), ctx.picked, ctx.redraw,
-                     many ? `select all ${up.runs.length} runs of this upload`
-                          : `select run ${up.runs[0].id}`));
-  row.append(many ? foldArrow(open, toggle, "show each variant of this upload", "hide the variants")
-                  : el("span", "expander blank", " "));
+                     `select the ${plural(up.runs.length, "run")} of this upload`),
+             foldArrow(open, toggle, "show the runs of this upload", "hide the runs"));
 
   const main = el("div", "mine-main");
-  const name = cpuName || up.label || "No label";
-  let title;
-  if (many) {
-    title = el("strong", "foldname", name);
-    title.addEventListener("click", toggle);
-  } else {
-    title = runLink(up.runs[0].id, name);
-  }
-  if (!cpuName && !up.label) title.classList.add("unlabelled");
-  main.append(title, mutedWhen(up.at));
-  if (many) main.append(el("span", "count", `${up.runs.length} variants`));
-  else if (up.runs[0].tagged) main.append(el("span", "count", up.runs[0].variant));
+  // A browser entry from before labels were kept here may well have one; it is
+  // fetched when the upload is edited, and not claimed absent until then.
+  const title = el("strong", "foldname",
+                   up.label || (up.known === false ? "Label not recorded" : "No label"));
+  title.addEventListener("click", toggle);
+  if (!up.label) title.classList.add("unlabelled");
+  main.append(title, mutedWhen(up.at),
+              el("span", "count", plural(up.runs.length, "variant")));
   if (ctx.edit) {
     const edit = el("button", "mine-editbtn", "Edit");
     edit.type = "button";
@@ -2551,13 +2549,7 @@ function uploadBlock(up, ctx, cpuName = null) {
   }
   row.append(main);
 
-  if (cpuName && up.label) row.append(el("div", "mine-extra mine-label", up.label));
   if (up.notes) row.append(el("div", "mine-extra mine-notes", up.notes));
-  if (!many && ctx.tokens && up.runs[0].token) {
-    const tok = el("div", "mine-extra");
-    tok.append(tokenBox(up.runs[0].token));
-    row.append(tok);
-  }
   if (mineEditing === key) row.append(uploadEditor(up, ctx));
   if (open) {
     const body = el("div", "mine-extra mine-body");
@@ -2567,16 +2559,12 @@ function uploadBlock(up, ctx, cpuName = null) {
   return row;
 }
 
-// One CPU: a card. With one upload on it the card is that upload; with more,
-// the CPU heads the card and its uploads are listed under it, newest first.
-// Two machines with one chip are one CPU here -- nothing an upload carries
-// says which box it came from, so the list does not guess.
+// One CPU: a card headed by the CPU, its uploads listed under it newest first,
+// however many there are. Two machines with one chip are one CPU here --
+// nothing an upload carries says which box it came from, so the list does not
+// guess.
 function cpuBlock(cpu, ctx) {
   const card = el("div", "mine-card");
-  if (cpu.uploads.length === 1) {
-    card.append(uploadBlock(cpu.uploads[0], ctx, cpu.name));
-    return card;
-  }
   const key = `${ctx.prefix}|cpu|${cpu.key}`;
   const open = mineOpen.has(key);
   const toggle = () => {
@@ -2585,13 +2573,13 @@ function cpuBlock(cpu, ctx) {
   };
   const ids = cpu.uploads.flatMap((u) => u.runs.map((r) => r.id));
   const row = el("div", "mine-row mine-cpu");
-  row.append(pickBox(ids, ctx.picked, ctx.redraw, `select all ${ids.length} runs on this CPU`),
+  row.append(pickBox(ids, ctx.picked, ctx.redraw, `select all ${plural(ids.length, "run")} on this CPU`),
              foldArrow(open, toggle, "show the uploads on this CPU", "hide the uploads"));
   const main = el("div", "mine-main");
   const title = el("strong", "foldname", cpu.name);
   title.addEventListener("click", toggle);
-  main.append(title,
-              el("span", "count", `${cpu.uploads.length} uploads · ${ids.length} runs`));
+  main.append(title, el("span", "count",
+    `${plural(cpu.uploads.length, "upload")} · ${plural(ids.length, "run")}`));
   if (!open) main.append(el("span", "muted", "latest"), mutedWhen(cpu.uploads[0].at));
   row.append(main);
   if (open) {

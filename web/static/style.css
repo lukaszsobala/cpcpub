@@ -328,7 +328,6 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
 }
 .mine-main .muted { font-size: 0.78rem; }
 .mine-row > .mine-extra { grid-column: 3; margin-top: 0.2rem; min-width: 0; }
-.mine-label { font-size: 0.88rem; }
 .mine-notes {
   color: var(--muted); font-size: 0.8rem; white-space: pre-wrap;
   overflow-wrap: anywhere;
