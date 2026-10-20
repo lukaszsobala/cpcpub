@@ -1015,14 +1015,10 @@ async function selectRows(rows, on) {
     // The board's runs are all of its scope, so one retarget covers them.
     await retargetSelection(rows[0].scope);
     // Up to the cap, in the board's order, so what is left out is the bottom
-    // of what was asked for -- and said, rather than quietly dropped.
+    // of what was asked for. The Compare tab's "(8 of 8)" says it is full.
     const fresh = rows.filter((r) => !state.selected.has(r.id));
     const taken = fresh.slice(0, Math.max(0, MAX_COMPARE - state.selected.size));
     for (const r of taken) state.selected.set(r.id, r);
-    if (taken.length < fresh.length) {
-      setTimeout(() => alert(`${FULL_NOTE} Added ${taken.length} of the ` +
-                             `${fresh.length} ticked.`), 0);
-    }
   } else {
     for (const r of rows) state.selected.delete(r.id);
     if (!state.selected.size) state.scopeNote = "";
@@ -2094,14 +2090,11 @@ function renderVerifiedNote() {
   box.replaceChildren();
   const p = el("p", "note");
   p.append(
-    el("span", null, "Every result on this board is "),
+    el("span", null, "Results are "),
     el("strong", null, "self-reported"),
-    el("span", null, ", including yours. A benchmark cannot prove it was run: " +
-                     "any key it carried to sign its own numbers would sit in " +
-                     "a program anyone can download and read. So nothing here " +
-                     "is a verdict on your numbers — what the board does check " +
-                     "is which build produced them, which is what makes two " +
-                     "results comparable. Use a published binary and they are."));
+    el("span", null, ": nobody checks the numbers. The board does show which " +
+                     "results come from a published binary, and those compare " +
+                     "fairly with each other, so use one if you can."));
   box.append(p);
 
   if (state.release) {
@@ -2126,12 +2119,10 @@ function renderCommands() {
     (token ? ` --token ${token}` : "") + " --label \"my box\"";
 
   $("#shell-note").textContent = token
-    ? "This carries your upload token, so the run lands on your account. The " +
-      "token identifies you: $CPCPUB_TOKEN keeps it out of shell history and " +
-      "out of the process list on a shared machine."
-    : "Sign in first and this carries your upload token, so the result lands " +
-      "on your account. Without one it still works — the run goes up " +
-      "anonymously and the reply carries a delete token to keep.";
+    ? "The command includes your upload token, so the result goes to your " +
+      "account. Keep the token private."
+    : "Sign in to have results saved to your account. Without signing in, " +
+      "the upload is anonymous and you get a delete token to keep.";
 
   $("#cmd-curl").textContent =
     `curl -fsS -X POST "${location.origin}/api/runs?label=my+box" \\\n` +
@@ -2200,7 +2191,7 @@ function renderPicked() {
   if (jobs.length) {
     box.append(el("p", "ok", jobs.length === 1
       ? `Ready: ${jobs[0].machine}`
-      : `Ready: ${jobs.length} runs, uploaded one after another.`));
+      : `Ready: ${jobs.length} runs`));
     const ul = el("ul", "picked-list");
     for (const j of jobs) {
       const li = el("li", null, j.machine);
@@ -2210,9 +2201,8 @@ function renderPicked() {
     box.append(ul);
     if (jobs.length > 1) {
       box.append(el("p", "note",
-        "That file holds one document per build variant. Each goes up as its " +
-        "own run, because results are only comparable between builds with " +
-        "matching vectorize and FMA flags."));
+        "The file has one result per build variant. Each is uploaded as its " +
+        "own run."));
     }
   }
   $("#uploadgo").textContent = jobs.length > 1 ? `Upload ${jobs.length} runs` : "Upload";
@@ -2289,19 +2279,17 @@ async function doUpload(ev) {
 function uploadReceipt(job, res) {
   const card = el("div", "receipt");
   card.append(el("p", "ok",
-    `Stored run ${res.id}${job.variant ? ` (${job.variant})` : ""} — one ` +
-    `leaderboard row holding all ${res.records} records.`));
+    `Uploaded as run ${res.id}${job.variant ? ` (${job.variant})` : ""}.`));
   const line = el("p");
-  line.append(runLink(res.id, "See where it lands"));
+  line.append(runLink(res.id, "See it on the board"));
   card.append(line);
   if (res.user) {
     card.append(el("p", "muted",
-      `On your account as ${res.user}. Withdraw it any time from My uploads, ` +
-      `in this browser or another.`));
+      `Saved to your account (${res.user}). You can remove it from My uploads.`));
   } else {
     card.append(el("p", "muted",
-      "Uploaded anonymously. This delete token is the only way to withdraw " +
-      "it — it is saved in this browser, under My uploads:"));
+      "Uploaded anonymously. Keep this delete token: it's the only way to " +
+      "remove the run. It's also saved in this browser, under My uploads:"));
     card.append(tokenBox(res.delete_token));
   }
   return card;

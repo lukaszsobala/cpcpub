@@ -129,13 +129,10 @@
 <section id="upload" class="tab">
   <ol class="steps">
     <li>
-      <h2>Measure and submit, in one command</h2>
+      <h2>Run and submit with one command</h2>
       <p class="note">
-        On the machine you want on the board, with nothing else running —
-        anything else using the CPU drags every number here down.
-        <code>--full</code> is the form worth uploading: the totals say what the
-        whole machine does at once, the per-core figures what one core does on
-        its own.
+        Run it on the machine. Close other programs first:
+        they may make the result less accurate (too low).
       </p>
       <div class="cmd"><pre id="cmd-submit"></pre><button type="button" class="copy" data-copy="cmd-submit">Copy</button></div>
       <p class="note" id="shell-note"></p>
@@ -143,11 +140,11 @@
     </li>
 
     <li>
-      <h2>Or send a result from this browser</h2>
+      <h2>Or upload a result file</h2>
       <p class="note">
-        For a machine that cannot reach this hub itself: measure there with
-        <code>cpcpub --full --json &gt; run.json</code>, carry the file over,
-        and drop it here.
+        If the machine can't reach this site, run
+        <code>cpcpub --full --json &gt; run.json</code> on it, then bring the
+        file here.
       </p>
       <div class="drop" id="drop" tabindex="0" role="button"
            aria-label="Choose or drop a cpcpub result file">
@@ -175,7 +172,7 @@
   </ol>
 
   <details class="more shell">
-    <summary>Uploading a file you already have, with curl</summary>
+    <summary>Upload a file with curl</summary>
     <div class="cmd"><pre id="cmd-curl"></pre><button type="button" class="copy" data-copy="cmd-curl">Copy</button></div>
   </details>
 </section>

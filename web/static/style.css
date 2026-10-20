@@ -197,26 +197,41 @@ th.sorted .sorth { color: var(--accent); }
 
 /* one row per upload, with its records folded underneath ------------------ */
 .run-head { display: flex; align-items: baseline; gap: 0.4rem; }
+/* The arrow is drawn, not typed: fonts give ▸ and ▾ different sizes and sit
+   both low. The glyph stays in the button, unseen, so the button keeps the
+   line's height and baseline, and the triangle is centred on that line. */
 .expander {
   background: none; border: 0; padding: 0; cursor: pointer; font: inherit;
-  color: var(--muted); width: 1rem; flex: none; text-align: left;
+  color: transparent; width: 1rem; flex: none; text-align: left;
+  position: relative; overflow: hidden;
 }
-.expander:hover { color: var(--ink); }
+button.expander::before {
+  content: ""; position: absolute; left: 0.1rem; top: 50%;
+  width: 0.5rem; height: 0.5rem; margin-top: -0.25rem;
+  background: var(--muted); clip-path: polygon(20% 0, 90% 50%, 20% 100%);
+  transition: transform 0.12s;
+}
+button.expander[aria-expanded="true"]::before { transform: rotate(90deg); }
+button.expander:hover::before { background: var(--ink); }
 .expander.blank { cursor: default; }
+@media (forced-colors: active) {
+  .expander { color: ButtonText; }
+  button.expander::before { display: none; }
+}
 /* What sits under a row's name -- its label, its submitter, "median of 3
    runs" -- lines up with the name rather than with the arrow before it. */
 .run-row td.wide > :not(.run-head) { margin-left: 1.4rem; }
-.run-row.nested td.wide > :not(.run-head) { margin-left: 2.2rem; }
+.run-row.nested td.wide > :not(.run-head) { margin-left: 1.8rem; }
 .child-row td { color: var(--muted); border-bottom-style: dotted; }
 .child-row .childname { padding-left: 1.4rem; }
 .child-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
 /* a kind of core, averaged, and the cores it folds */
 .kind-row td { color: var(--ink); }
 .kind-row .expander { margin-right: 0.3rem; }
-.child-row.deeper .childname { padding-left: 2.2rem; }
+.child-row.deeper .childname { padding-left: 1.8rem; }
 /* a run listed under its CPU on the grouped board */
 .run-row.nested td { border-bottom-style: dotted; }
-.run-row.nested .run-head { padding-left: 0.8rem; }
+.run-row.nested .run-head { padding-left: 0.4rem; }
 .cpu-row strong { font-weight: 600; }
 /* where a run stands among its CPU's runs */
 .fit { color: var(--muted); }
@@ -338,7 +353,7 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
    a narrow screen wraps the rest of it onto. */
 .mine-row > .pick { align-self: start; margin: 0.12rem 0 0; }
 .mine-row > .pick, .batch .check input { width: 1.15rem; height: 1.15rem; cursor: pointer; }
-.mine-row > .expander { align-self: start; }
+.mine-row > .expander { align-self: baseline; }
 .mine-main {
   display: flex; align-items: baseline; gap: 0.3rem 0.7rem; flex-wrap: wrap;
   min-width: 0;
@@ -349,11 +364,11 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
   color: var(--muted); font-size: 0.8rem; white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* A level down starts under the arrow above it rather than under the name:
-   the arrow's column is the indent, and that is enough to read as nested. */
+/* A level down steps in 1rem, its rule halfway along: the line beside it is
+   what reads as nested, not the depth of the step. */
 .mine-row > .mine-body {
-  grid-column: 2 / -1; border-left: 1px solid var(--line);
-  padding-left: 0.4rem; margin-top: 0.4rem;
+  grid-column: 1 / -1; border-left: 1px solid var(--line);
+  margin-left: 0.5rem; padding-left: 0.5rem; margin-top: 0.4rem;
 }
 .mine-body > .mine-row + .mine-row {
   border-top: 1px dotted var(--line); margin-top: 0.4rem; padding-top: 0.4rem;
