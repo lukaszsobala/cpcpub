@@ -545,6 +545,8 @@ typedef struct {
     double mul_thr_mops;   // integer 64-bit multiplies per second
     double fp_lat_mflops;
     double fp_thr_mflops;
+    double fp32_lat_mflops;   // single precision; not part of the score
+    double fp32_thr_mflops;
     double mem_gbps;
     double mem_lat_ns;     // one dependent chain
     double mem_mlp_ns;     // CHASE_WAYS chains in flight, per access
@@ -801,6 +803,33 @@ static void *worker(void *arg) {
                        (double)it * (double)(FP_OPS_PER_STEP * LANES) / 1e6 / elapsed);
         for (int i = 0; i < LANES; ++i) {
             w->checksum ^= (uint64_t)(int64_t)(f.x[i] * 1e6);
+        }
+    }
+
+    // ---- FP32 latency and throughput: the two above in single precision ----
+    // Same coefficient, same starting values, same fixed point; reported
+    // separately and kept out of the score.
+    const float co32 = 0.5f;
+    for (int rep = 0; rep < reps; ++rep) {
+        fp32_ctx_t f;
+        f.c = co32;
+        for (int i = 0; i < LANES; ++i) { f.x[i] = 1.0f + (float)i; f.b[i] = 1.0f + 0.25f * (float)i; }
+        phase_begin(w, rep);
+        const uint64_t it = run_timed(ks->fp32_lat, &f, w->seconds, 1024, &elapsed);
+        keep_best_rate(&w->fp32_lat_mflops,
+                       (double)it * (double)FP_OPS_PER_STEP / 1e6 / elapsed);
+        w->checksum ^= (uint64_t)(int64_t)((double)f.x[0] * 1e6);
+    }
+    for (int rep = 0; rep < reps; ++rep) {
+        fp32_ctx_t f;
+        f.c = co32;
+        for (int i = 0; i < LANES; ++i) { f.x[i] = 1.0f + (float)i; f.b[i] = 1.0f + 0.25f * (float)i; }
+        phase_begin(w, rep);
+        const uint64_t it = run_timed(ks->fp32_thr, &f, w->seconds, 1024, &elapsed);
+        keep_best_rate(&w->fp32_thr_mflops,
+                       (double)it * (double)(FP_OPS_PER_STEP * LANES) / 1e6 / elapsed);
+        for (int i = 0; i < LANES; ++i) {
+            w->checksum ^= (uint64_t)(int64_t)((double)f.x[i] * 1e6);
         }
     }
 
@@ -1909,6 +1938,8 @@ static void print_legend(void) {
         {"FP-lat",   "FP latency",              "one dependent multiply-add chain, Mflop/s"},
         {"FP-thr",   "FP throughput",           "8 independent chains, Mflop/s"},
         {"fILP",     "FP ops in flight",        "FP-thr / FP-lat"},
+        {"FP32-lat", "FP32 latency",            "FP-lat in single precision, Mflop/s; not in the score"},
+        {"FP32-thr", "FP32 throughput",         "FP-thr in single precision, Mflop/s; not in the score"},
         {"MEM",      "memory bandwidth",        "sequential read+write sweep, GB/s"},
         {"MEMlat",   "memory latency",          "random dependent pointer chase, ns"},
         {"MLP",      "memory parallelism",      "MEMlat / latency with 8 chases in flight"},
@@ -2054,6 +2085,7 @@ typedef struct {
     // the weakest source of any row it folds in.
     enum { MHZ_READ, MHZ_GIVEN, MHZ_RATED, MHZ_ESTIMATED } mhz_src;
     double int_lat, int_thr, mul_thr, fp_lat, fp_thr;
+    double fp32_lat, fp32_thr;   // single precision, outside the score
     double mem_gbps, mem_lat_ns, mem_lat8_ns;
     double ilp, filp, mlp;
     double disp_thr, disp_cap, disp_gain, disp_span;
@@ -2092,6 +2124,8 @@ static result_t summarize(const worker_t *w, int cpu) {
     r.mul_thr = w->mul_thr_mops;
     r.fp_lat  = w->fp_lat_mflops;
     r.fp_thr  = w->fp_thr_mflops;
+    r.fp32_lat = w->fp32_lat_mflops;
+    r.fp32_thr = w->fp32_thr_mflops;
     r.mem_gbps    = w->mem_gbps;
     r.mem_lat_ns  = w->mem_lat_ns;
     r.mem_lat8_ns = w->mem_mlp_ns;
@@ -2149,7 +2183,7 @@ static const char *mhz_src_name(int src) {
     "variant\tscope\tcpu\tmhz\tmhz_src\tint_lat_mops\tint_thr_mops\tilp" \
     "\tmul_thr_mmul_s\tfp_lat_mflops\tfp_thr_mflops\tfilp\tmem_gbps" \
     "\tmem_lat_ns\tmem_lat8_ns\tmlp\tdisp_thr_mcall_s\tdisp_cap_calls" \
-    "\tdisp_gain\tdisp_span\tscore\n"
+    "\tdisp_gain\tdisp_span\tscore\tfp32_lat_mflops\tfp32_thr_mflops\n"
 
 static void tsv_num(double v, int ok) {
     if (ok && v > 0.0) printf("\t%.6g", v);
@@ -2178,6 +2212,8 @@ static void tsv_result(const char *variant, const char *scope, const result_t *r
     tsv_num(r->disp_gain, 1);
     tsv_num(r->disp_span, r->disp_status != DISP_NA);
     tsv_num(r->score, 1);
+    tsv_num(r->fp32_lat, 1);
+    tsv_num(r->fp32_thr, 1);
     printf("\n");
 }
 
@@ -2221,6 +2257,8 @@ static void json_result(const result_t *r, const char *scope, const char *indent
     j_num("disp_gain", r->disp_gain, 1);
     j_num("disp_span", r->disp_span, r->disp_status != DISP_NA);
     j_num("score", r->score, 1);
+    j_num("fp32_lat_mflops", r->fp32_lat, 1);
+    j_num("fp32_thr_mflops", r->fp32_thr, 1);
     jout(" }");
 }
 
@@ -2329,6 +2367,8 @@ static void aggregate(const result_t *rows, int n, result_t *tot) {
         tot->mul_thr   += r->mul_thr;
         tot->fp_lat    += r->fp_lat;
         tot->fp_thr    += r->fp_thr;
+        tot->fp32_lat  += r->fp32_lat;
+        tot->fp32_thr  += r->fp32_thr;
         tot->mem_gbps  += r->mem_gbps;
         tot->disp_thr  += r->disp_thr;
         tot->disp_gain += r->disp_gain;
@@ -2461,17 +2501,26 @@ static void text_threads(const suite_t *s, size_t mem_per_thread) {
         printf("%-9s %-23s %8s %11.1f %11s\n", "score", "composite",
                "geomean", t->score, "-");
     }
+    // Below the score, because they are not in it: the same FP kernels in
+    // single precision, for cores whose FPU has no double-precision unit.
+    if (t->fp32_thr > 0.0) {
+        printf("single precision, not in the score\n");
+        printf("%-9s %-23s %8s %11s %11.1f\n",
+               "FP32-lat", "FP32 latency", "Mflop/s", "-", t->fp32_lat / n);
+        printf("%-9s %-23s %8s %11.1f %11.1f\n",
+               "FP32-thr", "FP32 throughput", "Mflop/s", t->fp32_thr, t->fp32_thr / n);
+    }
 }
 
-#define PER_CORE_FMT "%4s %6s  %8s %8s %5s %8s  %8s %8s %5s  %7s %7s %5s  %8s %7s  %8s\n"
+#define PER_CORE_FMT "%4s %6s  %8s %8s %5s %8s  %8s %8s %5s  %7s %7s %5s  %8s %7s  %8s | %8s %8s\n"
 
 static void text_per_core_header(void) {
     printf(PER_CORE_FMT, "CPU", "MHz", "INT-lat", "INT-thr", "ILP", "MUL-thr",
            "FP-lat", "FP-thr", "fILP", "MEM", "MEMlat", "MLP",
-           "DISP-thr", "DISPcap", "score");
+           "DISP-thr", "DISPcap", "score", "FP32-lat", "FP32-thr");
     printf(PER_CORE_FMT, "", "", "Mop/s", "Mop/s", "x", "Mmul/s",
            "Mflop/s", "Mflop/s", "x", "GB/s", "ns", "x",
-           "Mcall/s", "calls", "geomean");
+           "Mcall/s", "calls", "geomean", "Mflop/s", "Mflop/s");
 }
 
 static void text_per_core_row(const result_t *r) {
@@ -2481,12 +2530,12 @@ static void text_per_core_row(const result_t *r) {
         snprintf(mhzbuf, sizeof(mhzbuf), "~%.0f", r->mhz);
     else                       snprintf(mhzbuf, sizeof(mhzbuf), "%.0f", r->mhz);
     disp_cap_str(r->disp_status, r->disp_cap, capbuf, sizeof(capbuf));
-    printf("%4d %6s  %8.1f %8.1f %5.2f %8.1f  %8.1f %8.1f %5.2f  %7.2f %7.1f %5.2f  %8.1f %7s  %8.1f\n",
+    printf("%4d %6s  %8.1f %8.1f %5.2f %8.1f  %8.1f %8.1f %5.2f  %7.2f %7.1f %5.2f  %8.1f %7s  %8.1f | %8.1f %8.1f\n",
            r->cpu, mhzbuf,
            r->int_lat, r->int_thr, r->ilp, r->mul_thr,
            r->fp_lat, r->fp_thr, r->filp,
            r->mem_gbps, r->mem_lat_ns, r->mlp,
-           r->disp_thr, capbuf, r->score);
+           r->disp_thr, capbuf, r->score, r->fp32_lat, r->fp32_thr);
     fflush(stdout);
 }
 
@@ -2960,23 +3009,28 @@ static void text_variant_table(const variant_t **sel, const result_t *rows,
     printf("\n%s across variants  (%s)\n",
            whole_machine ? "whole machine" : "fastest core",
            whole_machine ? "the total row" : "best row of the per-core sweep");
-    printf("%-14s %9s %9s %9s %9s %8s %9s %7s\n", "variant",
-           "INT-thr", "MUL-thr", "FP-lat", "FP-thr", "MEM", "score", "vs base");
-    printf("%-14s %9s %9s %9s %9s %8s %9s %7s\n", "",
-           "Mop/s", "Mmul/s", "Mflop/s", "Mflop/s", "GB/s", "geomean", "x");
+    printf("%-14s %9s %9s %9s %9s %8s %9s %7s | %9s %9s\n", "variant",
+           "INT-thr", "MUL-thr", "FP-lat", "FP-thr", "MEM", "score", "vs base",
+           "FP32-lat", "FP32-thr");
+    printf("%-14s %9s %9s %9s %9s %8s %9s %7s | %9s %9s\n", "",
+           "Mop/s", "Mmul/s", "Mflop/s", "Mflop/s", "GB/s", "geomean", "x",
+           "Mflop/s", "Mflop/s");
     const double base = rows[0].score;
     for (int i = 0; i < n; ++i) {
         const result_t *r = &rows[i];
         printf("%-14s %9.1f %9.1f %9.1f %9.1f %8.2f %9.1f", sel[i]->k->name,
                r->int_thr, r->mul_thr, r->fp_lat, r->fp_thr, r->mem_gbps,
                r->score);
-        if (base > 0.0 && r->score > 0.0) printf(" %7.3f\n", r->score / base);
-        else                              printf(" %7s\n", "-");
+        if (base > 0.0 && r->score > 0.0) printf(" %7.3f", r->score / base);
+        else                              printf(" %7s", "-");
+        printf(" | %9.1f %9.1f\n", r->fp32_lat, r->fp32_thr);
     }
     if (g_verbose) {
         printf("\n  FP-lat is the column FMA contraction is meant to move: one\n"
                "  multiply-add per iteration becomes one instruction, so the\n"
-               "  dependent chain shortens by a multiply's latency. Vectorization\n"
+               "  dependent chain shortens by a multiply's latency. FP32-lat is\n"
+               "  the same chain in single precision, and the one that moves on\n"
+               "  an FPU whose FMA is single-precision only. Vectorization\n"
                "  moves the throughput columns instead, and only where the ISA has\n"
                "  a vector unit to move them with.\n"
                "  Compare variants within one machine. Across machines, compare\n"

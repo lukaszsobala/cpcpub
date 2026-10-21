@@ -82,7 +82,7 @@ def core(scope="cpu", cpu: int | None = 0, *, threads=1.0, **over):
         "mem_lat_ns": 100.0, "mem_lat8_ns": 12.0, "mlp": None,
         "disp_thr_mcall_s": 1000.0, "disp_cap_calls": 500.0,
         "disp_prediction": "measured", "disp_gain": 5.0, "disp_span": 7.0,
-        "score": None,
+        "score": None, "fp32_lat_mflops": 1500.0, "fp32_thr_mflops": 11000.0,
     }
     rec.update(over)
 
@@ -1383,6 +1383,40 @@ class VerifiedBuildsMigrationTest(unittest.TestCase):
         srv.Store(self.db)
         before = srv.Store(self.db).verified_builds()
         self.assertEqual(before, srv.Store(self.db).verified_builds())
+
+
+class CoresMigrationTest(unittest.TestCase):
+    """A database whose `cores` table predates the FP32 columns."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = str(Path(self.tmp.name) / "old.sqlite3")
+        srv.Store(self.db)
+        # Named here rather than read from ADDED_CORE_COLUMNS, so emptying
+        # that list fails this test instead of quietly making it vacuous.
+        with sqlite3.connect(self.db) as db:
+            for col in ("fp32_lat", "fp32_thr"):
+                db.execute(f"ALTER TABLE cores DROP COLUMN {col}")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_an_old_database_takes_an_upload_and_keeps_the_new_fields(self):
+        store = srv.Store(self.db)
+        doc = document()
+        run, cores = srv.validate(doc)
+        run_id = store.insert(run, cores, json.dumps(doc), None, None)[0]
+        with sqlite3.connect(self.db) as db:
+            got = db.execute("SELECT fp32_lat, fp32_thr FROM cores "
+                             "WHERE run_id = ? ORDER BY id", (run_id,)).fetchall()
+        self.assertEqual(got, [(1500.0, 11000.0)] * len(doc["cores"]))
+
+    def test_migrating_twice_is_a_no_op(self):
+        srv.Store(self.db)
+        srv.Store(self.db)
+        with sqlite3.connect(self.db) as db:
+            have = {r[1] for r in db.execute("PRAGMA table_info(cores)")}
+        self.assertLessEqual(set(srv.CORE_COLUMNS), have)
 
 
 class ConsistencyTest(unittest.TestCase):

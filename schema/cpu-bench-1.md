@@ -126,7 +126,16 @@ always present; anything not measured is `null`, never absent and never `0`.
 `scope` (`cpu`|`thread`|`total`), `cpu`, `mhz`, `mhz_src`, `int_lat_mops`,
 `int_thr_mops`, `ilp`, `mul_thr_mmul_s`, `fp_lat_mflops`, `fp_thr_mflops`,
 `filp`, `mem_gbps`, `mem_lat_ns`, `mem_lat8_ns`, `mlp`, `disp_thr_mcall_s`,
-`disp_cap_calls`, `disp_prediction`, `disp_gain`, `disp_span`, `score`.
+`disp_cap_calls`, `disp_prediction`, `disp_gain`, `disp_span`, `score`,
+`fp32_lat_mflops`, `fp32_thr_mflops`.
+
+`fp32_lat_mflops` and `fp32_thr_mflops` are the two FP kernels again in single
+precision — same step, same lanes, same fixed point. They are **not** in
+`score` and do not change it. They are there for cores whose FPU is
+single-precision only (Cortex-M33, ESP32), where `fp_*` measures a soft-float
+library and these measure the hardware; on a core with a double-precision FPU
+the two pairs usually read close to each other. The hub stores both and does
+not rank them yet.
 
 `mhz_src` says how much the clock beside it is worth: `measured` was sampled
 off the machine while the core was under load, `given` was asserted by whoever
@@ -205,17 +214,17 @@ Five edits, in one commit, because a partial change is invisible at runtime:
    headline set plus whatever is being sorted on, and the rest are one select
    away.
 4. `cores` in [web/schema.sql](../web/schema.sql) — the column.
-5. `Store.ADDED_COLUMNS` in [web/server.py](../web/server.py) — the migration
-   that adds the column to a database made by an older build.
+5. `Store.ADDED_CORE_COLUMNS` in [web/server.py](../web/server.py) — the
+   migration that adds the column to a database made by an older build.
+   (`Store.ADDED_COLUMNS` is the same for a new `runs` column.)
 
 Then the record key list above, `make testdata`, and `make check`.
 
-> **Gap worth knowing about.** `ADDED_COLUMNS` migrates `runs` only. `schema.sql`
-> creates `cores` with `IF NOT EXISTS`, so a new metric column never reaches an
-> existing database and the next upload fails on the unknown column. Nothing
-> catches this yet — the contract test checks a *fresh* database, which always
-> has every column. Adding a metric today means migrating `cores` by hand, or
-> teaching `ADDED_COLUMNS` about both tables.
+`schema.sql` creates `cores` with `IF NOT EXISTS`, so it never widens a table
+that is already there; step 5 is what does. The contract test checks a *fresh*
+database, which always has every column, so it cannot notice a missed step 5 —
+`CoresMigrationTest` in [web/test_server.py](../web/test_server.py) does, for the
+columns listed there.
 
 ## Changing the version
 

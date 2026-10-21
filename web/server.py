@@ -198,6 +198,10 @@ CORE_FIELDS = [
     ("disp_gain",        "disp_gain",       "num"),
     ("disp_span",        "disp_span",       "num"),
     ("score",            "score",           "num"),
+    # Single precision, outside the score. Stored and served with the record,
+    # but not in METRICS yet: how to rank and show it is still open.
+    ("fp32_lat_mflops",  "fp32_lat",        "num"),
+    ("fp32_thr_mflops",  "fp32_thr",        "num"),
 ]
 CORE_COLUMNS = [col for _, col, _ in CORE_FIELDS]
 
@@ -1210,6 +1214,11 @@ class Store:
                      ("attest_run_url", "TEXT"), ("attest_at", "TEXT"),
                      ("cpu_layout", "TEXT"), ("cpu_layout_guess", "TEXT"), ("cpu_key", "TEXT"),
                      ("cpus_offline", "INTEGER"), ("upload_id", "INTEGER"))
+    # The same for `cores`, which schema.sql cannot widen either: CREATE TABLE
+    # IF NOT EXISTS leaves an existing table as it was, so without this a new
+    # metric's column never reaches an old database and every upload after it
+    # fails on the INSERT.
+    ADDED_CORE_COLUMNS = (("fp32_lat", "REAL"), ("fp32_thr", "REAL"))
 
     def __init__(self, path: str, aliases_path: Path | None = ALIASES_PATH):
         self.path = path
@@ -1222,6 +1231,10 @@ class Store:
             for col, decl in self.ADDED_COLUMNS:
                 if col not in have:
                     db.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
+            have = {r["name"] for r in db.execute("PRAGMA table_info(cores)")}
+            for col, decl in self.ADDED_CORE_COLUMNS:
+                if col not in have:
+                    db.execute(f"ALTER TABLE cores ADD COLUMN {col} {decl}")
             if "renamed_at" not in {r["name"] for r in db.execute("PRAGMA table_info(users)")}:
                 db.execute("ALTER TABLE users ADD COLUMN renamed_at TEXT")
             # After the ALTER, not in schema.sql: an older database has neither

@@ -132,7 +132,7 @@ the small line below it the parameters the benchmark will get, cut to the
 width of the window. The button at its end copies the whole command, binary
 included, for a terminal — without the token, which the window passes in the
 environment. The command is also echoed into the log when a run starts. One pass
-of the suite is nine warm-ups and fifteen measured phases — eight phases at the
+of the suite is eleven warm-ups and seventeen measured phases — ten phases at the
 full `--time`, and an indirect-dispatch ladder of fourteen points at half of it
 — plus about a tenth of a second setting up. `--per-core` runs one pass per CPU
 in turn and `--full` adds the threaded pass to that, so the CPU count is most
