@@ -1,0 +1,212 @@
+# Build the microcontroller firmware: one file per chip, for the Raspberry Pi
+# RP2040 and RP2350 and the Espressif ESP32 family (mcu/README.md).
+#
+# Two ways in. release.yml calls this with the tag it is releasing, and
+# attaches what comes out beside the desktop binaries, so a user flashes a file
+# rather than installing an SDK. On a pull request or a push to main that
+# touches the benchmark's sources or the ports, it builds the same files and
+# keeps them as run artifacts only: nothing else compiles the firmware, so this
+# is what notices a change to measure.c that breaks a chip.
+#
+# One build per chip covers every board with that chip, which is why these two
+# and not Zephyr: a Zephyr build is per board, there are hundreds, and
+# mcu/README.md has the two commands for building one.
+#
+# What a firmware file is not: a verified build. A desktop result carries the
+# digest of the binary that measured it, and a hub matches that against
+# release.yml's verified-builds.json; firmware has no file to hash once it is
+# in flash, so its document carries no digest and this workflow publishes none
+# for the manifest. The files are in SHA256SUMS like the packages, as
+# downloads to check.
+#
+# Each build is checked before it is kept (mcu/check-firmware.py): no compiler
+# warning in this repository's code, and every kernel of all four compilations
+# placed in RAM -- a kernel left in flash would measure the flash cache, and
+# nothing else would notice.
+#
+# The toolchains are pinned so that a release build is reproducible from this
+# file: the pico-sdk by tag and commit, Raspberry Pi's RISC-V toolchain by
+# digest, ESP-IDF as its official image by tag and digest. The Arm toolchain
+# is Ubuntu 24.04's, GCC 13, as for the desktop's cross builds. Bumping any of
+# them is a change to this file, and the build flags and compiler version a
+# document reports then say which one measured it.
+#
+# Secrets: none. Permissions are read-only, and the checkouts do not keep the
+# token in .git/config.
+
+name: firmware
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "what --version reports: the tag release.yml is building"
+        required: true
+        type: string
+      ref:
+        description: "what to check out: the tag, or the commit a trial run of release.yml was dispatched on"
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - "bench/src/**"
+      - "mcu/**"
+      - ".github/workflows/firmware.yml"
+  push:
+    branches: [main]
+    paths:
+      - "bench/src/**"
+      - "mcu/**"
+      - ".github/workflows/firmware.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  # Called by release.yml, the tag; otherwise "dev", as a tree built by hand.
+  VERSION: ${{ inputs.version || 'dev' }}
+
+jobs:
+  pico:
+    name: ${{ matrix.chip }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - chip: rp2040
+            board: pico
+            platform: rp2040
+          - chip: rp2350-arm
+            board: pico2
+            platform: rp2350-arm-s
+          - chip: rp2350-riscv
+            board: pico2
+            platform: rp2350-riscv
+            riscv: true
+    env:
+      PICO_SDK_TAG: "2.3.1"
+      PICO_SDK_COMMIT: 079c6f39023649b154152db30f1d781e884879bc
+      # Raspberry Pi's build of GCC 15 for Hazard3: Ubuntu's riscv64-unknown-elf
+      # GCC has no C library to link a 32-bit build against.
+      RISCV_TOOLCHAIN_URL: https://github.com/raspberrypi/pico-sdk-tools/releases/download/v2.2.0-4/riscv-toolchain-15-x86_64-lin.tar.gz
+      RISCV_TOOLCHAIN_SHA256: 813baded4ac345e169d8d1c7e242e38f28ebf95a8b9b386539fa023835d55589
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Install the toolchain and the pico-sdk
+        env:
+          RISCV: ${{ matrix.riscv }}
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+          arm-none-eabi-gcc --version | head -1
+          # Only TinyUSB of the SDK's submodules: the USB console. The others
+          # are the Pico W's radio stacks, which nothing here uses.
+          sdk="$RUNNER_TEMP/pico-sdk"
+          git clone --quiet --depth 1 --branch "$PICO_SDK_TAG" \
+            https://github.com/raspberrypi/pico-sdk "$sdk"
+          test "$(git -C "$sdk" rev-parse HEAD)" = "$PICO_SDK_COMMIT"
+          git -C "$sdk" submodule update --quiet --init --depth 1 lib/tinyusb
+          echo "PICO_SDK_PATH=$sdk" >> "$GITHUB_ENV"
+          if [ "$RISCV" = "true" ]; then
+            tc="$RUNNER_TEMP/riscv-toolchain"
+            mkdir -p "$tc"
+            curl -fsSL -o "$RUNNER_TEMP/riscv.tar.gz" "$RISCV_TOOLCHAIN_URL"
+            echo "$RISCV_TOOLCHAIN_SHA256  $RUNNER_TEMP/riscv.tar.gz" | sha256sum -c -
+            tar -xzf "$RUNNER_TEMP/riscv.tar.gz" -C "$tc"
+            "$tc/bin/riscv32-unknown-elf-gcc" --version | head -1
+            echo "PICO_TOOLCHAIN_PATH=$tc" >> "$GITHUB_ENV"
+          fi
+
+      # The SDK fetches and builds picotool for itself, at the version this SDK
+      # release names, to turn the ELF into a UF2.
+      - name: Build
+        env:
+          BOARD: ${{ matrix.board }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euxo pipefail
+          cmake -S mcu/pico -B build -DCMAKE_BUILD_TYPE=Release \
+            -DPICO_BOARD="$BOARD" -DPICO_PLATFORM="$PLATFORM" \
+            -DCPCPUB_VERSION="$VERSION"
+          cmake --build build -j "$(nproc)" 2>&1 | tee build.log
+
+      - name: Check and stage
+        env:
+          CHIP: ${{ matrix.chip }}
+        run: |
+          set -eux
+          objdump=$(sed -n 's/^CMAKE_OBJDUMP:FILEPATH=//p' build/CMakeCache.txt)
+          python3 mcu/check-firmware.py "$objdump" build/cpcpub.elf build.log
+          mkdir dist
+          cp build/cpcpub.uf2 "dist/cpcpub-$CHIP.uf2"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ matrix.chip }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  esp32:
+    name: ${{ matrix.chip }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    container:
+      image: espressif/idf:v6.0.3@sha256:54278f2c01e6e759502e2f04c9103589c17528923426f4d63193490c7a08f555
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        chip: [esp32, esp32s2, esp32s3, esp32c3, esp32c6, esp32p4]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Build
+        env:
+          CHIP: ${{ matrix.chip }}
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh" >/dev/null
+          set -x
+          idf.py -C mcu/esp32 -B build set-target "$CHIP"
+          idf.py -C mcu/esp32 -B build -DCPCPUB_VERSION="$VERSION" build 2>&1 | tee build.log
+
+      # One image from offset 0 -- bootloader, partition table and the
+      # application, each at its own offset inside it -- so flashing it is one
+      # write to 0x0 on every chip, with esptool or from a browser.
+      - name: Check and stage
+        env:
+          CHIP: ${{ matrix.chip }}
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh" >/dev/null
+          set -x
+          objdump=$(sed -n 's/^CMAKE_OBJDUMP:FILEPATH=//p' build/CMakeCache.txt)
+          python3 mcu/check-firmware.py "$objdump" build/cpcpub.elf build.log
+          mkdir dist
+          (cd build && python -m esptool --chip "$CHIP" merge-bin \
+             -o "../dist/cpcpub-$CHIP.bin" @flash_args)
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ matrix.chip }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

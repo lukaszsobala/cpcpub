@@ -59,6 +59,12 @@
 # these jobs do, so a dispatch for a tag older than the packaging fails there
 # rather than packaging an old release with today's files.
 #
+# The microcontroller firmware -- a file per chip for the RP2040, the RP2350
+# and the ESP32 family -- is built by firmware.yml, called below, and goes up
+# beside the binaries, listed in SHA256SUMS. It is not in the manifest: a
+# firmware result carries no digest for a hub to match (see the top of that
+# file), so there is nothing for verified-builds.json to say about it.
+#
 # A trial run: dispatched with `publish` off, on a branch and with the tag it
 # will become (gh workflow run release.yml --ref BRANCH -f tag=vX.Y.Z -f
 # publish=false), it builds that branch for every target, stamped with that
@@ -797,10 +803,18 @@ jobs:
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
+  firmware:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/firmware.yml
+    with:
+      version: ${{ github.event.inputs.tag || github.ref_name }}
+      ref: ${{ (github.event_name == 'push' || inputs.publish) && (github.event.inputs.tag || github.ref_name) || github.sha }}
+
   # Everything a release is, checked and left as one artifact -- for a trial
   # run, the end of the line.
   manifest:
-    needs: [build, packages]
+    needs: [build, packages, firmware]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -814,6 +828,11 @@ jobs:
         with:
           pattern: packages-*
           path: staged/packages
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: firmware-*
+          path: staged/firmware
           merge-multiple: true
 
       # Digests are taken here, over the exact bytes about to be uploaded --
@@ -880,10 +899,11 @@ jobs:
           assert published == listed, (published, listed)
           print(f"{len(listed)} binaries agree between SHA256SUMS and the manifest")
           PY
-          # The packages join the checksum file only now, once the binaries in
-          # it have been checked against the manifest: they are downloads to
-          # check like any other, but not builds a hub can verify.
+          # The packages and the firmware join the checksum file only now, once
+          # the binaries in it have been checked against the manifest: they are
+          # downloads to check like any other, but not builds a hub can verify.
           (cd packages && sha256sum -- *) | tee -a SHA256SUMS
+          (cd firmware && sha256sum -- *) | tee -a SHA256SUMS
 
       - uses: actions/upload-artifact@v7
         with:
@@ -906,15 +926,20 @@ jobs:
           path: staged
 
       # The bytes about to go up are the ones the manifest job took digests of.
-      # SHA256SUMS names each file as the release will, flat; the packages wait
-      # in packages/ until they go up beside the binaries.
+      # SHA256SUMS names each file as the release will, flat; the packages and
+      # the firmware wait in packages/ and firmware/ until they go up beside the
+      # binaries.
       - name: Check against the checksums
         run: |
           set -eu
           cd staged
           while read -r digest name; do
             name=${name#\*}
-            if [ -e "$name" ]; then echo "$digest  $name"; else echo "$digest  packages/$name"; fi
+            for dir in . packages firmware; do
+              if [ -e "$dir/$name" ]; then echo "$digest  $dir/$name"; continue 2; fi
+            done
+            # Not staged anywhere: named as it is, so the check reports it missing.
+            echo "$digest  $name"
           done < SHA256SUMS | sha256sum -c -
 
       # `gh` reads the token from the environment, so it never reaches a process
@@ -930,7 +955,7 @@ jobs:
             || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
                  --title "$TAG" --generate-notes
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            cpcpub-* packages/* SHA256SUMS verified-builds.json
+            cpcpub-* packages/* firmware/* SHA256SUMS verified-builds.json
 
       - name: Say how to trust these
         run: |
@@ -951,4 +976,9 @@ jobs:
           told anything by the submitter. It is not proof -- that field is
           self-reported like every other one -- but two results carrying the
           same digest were produced by the same machine code.
+
+          The microcontroller firmware (\`.uf2\`, \`.bin\`) is checked against
+          \`SHA256SUMS\` the same way, but its results are never marked
+          verified: firmware carries no digest of itself. See
+          [mcu/README.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$TAG/mcu/README.md).
           EOF

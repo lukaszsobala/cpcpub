@@ -27,6 +27,35 @@ Nordic nRF, NXP, Microchip, the Pico again, and hundreds more, one or several
 CPUs. That includes the Cortex-M7 parts, such as the STM32H7 and the Teensy 4,
 whose FPU does double precision in hardware.
 
+## Ready-made firmware
+
+Each [release](https://github.com/lukaszsobala/cross-platform-benchmark/releases/latest)
+carries a file for every chip in the table, so nothing needs building: `cpcpub-rp2040.uf2`,
+`cpcpub-rp2350-arm.uf2` and `cpcpub-rp2350-riscv.uf2`, and `cpcpub-esp32.bin`,
+`-esp32s2`, `-esp32s3`, `-esp32c3`, `-esp32c6` and `-esp32p4`. Check what you
+downloaded against the release's `SHA256SUMS`, as for the desktop binaries.
+
+- **Pico, Pico 2**: hold BOOTSEL while plugging the board in and copy the
+  `.uf2` to the drive that appears.
+- **ESP32**: each `.bin` is the whole flash image, written at 0x0 on every chip:
+
+  ```sh
+  pip install esptool
+  esptool --chip esp32s3 write-flash 0x0 cpcpub-esp32s3.bin
+  ```
+
+  or from Chrome or Edge, with nothing installed, through Espressif's
+  [browser flasher](https://espressif.github.io/esptool-js/) at address 0x0.
+  These files use the chip's UART0 as the console, which is what a board's
+  USB port reaches on most development boards; a board wired only to the
+  chip's own USB port needs a build with that console chosen (below).
+
+Then run it as under [Running a board](#running-a-board). The files are built
+by [firmware.yml](../.github/workflows/firmware.yml), which also builds them on
+every pull request that touches the benchmark. A result from one is not marked
+verified on a hub, as a desktop release binary's is: firmware has no file to
+hash once it is in flash, so its document carries no digest to match.
+
 ## Raspberry Pi RP2040 and RP2350
 
 Needs the [pico-sdk](https://github.com/raspberrypi/pico-sdk) 2.0 or newer,
@@ -208,3 +237,4 @@ Zephyr, whatever else the board is; there is no `binary_sha256`. See
 | [zephyr/](zephyr/) | the Zephyr port as a Zephyr application; its platform layer is `bench/src/platform_zephyr.h` |
 | [host/](host/) | a port that runs the front end on a desktop, for testing it: `make check` holds its document to the same contract as `bench/cpcpub`'s |
 | [cpcpub-serial.py](cpcpub-serial.py) | runs a board from a desktop and saves the result |
+| [check-firmware.py](check-firmware.py) | what CI checks a build for: no warnings in this repository's code, and every kernel in RAM. `check-firmware.py OBJDUMP ELF BUILD-LOG` |

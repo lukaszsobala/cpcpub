@@ -76,7 +76,8 @@ On a microcontroller — the Raspberry Pi RP2040 and RP2350, Arm or RISC-V, the
 Espressif ESP32 family, and any board the Zephyr RTOS supports — the same
 kernels run as firmware, take the same
 options over the serial console, and print the same tables and the same JSON
-document.
+document. Each release carries ready-made firmware for the Pico and ESP32
+chips, one file per chip.
 [mcu/cpcpub-serial.py](mcu/cpcpub-serial.py) runs a board from a desktop and
 saves its result; [mcu/README.md](mcu/README.md) covers building, flashing and
 what the numbers mean on a chip with no cache and, mostly, no FPU.
