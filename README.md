@@ -72,9 +72,10 @@ package on Linux and in the setup on Windows; on Android the app is
 make gui            # or gui/cpcpub-gui.py
 ```
 
-On a microcontroller — the Raspberry Pi RP2040 and RP2350, Arm or RISC-V — the
-same kernels run as firmware, take the same options over the USB serial
-console, and print the same tables and the same JSON document.
+On a microcontroller — the Raspberry Pi RP2040 and RP2350, Arm or RISC-V, and
+the Espressif ESP32 family — the same kernels run as firmware, take the same
+options over the serial console, and print the same tables and the same JSON
+document.
 [mcu/cpcpub-serial.py](mcu/cpcpub-serial.py) runs a board from a desktop and
 saves its result; [mcu/README.md](mcu/README.md) covers building, flashing and
 what the numbers mean on a chip with no cache and, mostly, no FPU.

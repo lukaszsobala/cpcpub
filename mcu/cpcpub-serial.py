@@ -121,13 +121,22 @@ def open_port(path: str, baud: int):
 
 def run(port, command: str, silence: float, show) -> list[dict]:
     """Type `command`, follow the output to the next prompt, return the documents."""
-    # Whatever the board printed before now -- its banner, if it has just
-    # started -- is shown and dropped, so it cannot be mistaken for a reply.
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline:
+    # Whatever the board printed before now is shown and dropped, so it cannot
+    # be mistaken for a reply. A board that is quiet for a second is sitting at
+    # its prompt already. One that is talking may be booting -- opening the port
+    # resets many ESP32 boards -- and anything typed before its console driver
+    # is up is lost, so then the wait is for the prompt itself.
+    seen = ""
+    quiet_until = time.monotonic() + 1.0
+    boot_until = time.monotonic() + 15.0
+    while time.monotonic() < (boot_until if seen else quiet_until):
         data = port.read(0.2)
         if data:
-            show(data.decode("utf-8", "replace"))
+            text = data.decode("utf-8", "replace")
+            show(text)
+            seen = (seen + text)[-len(PROMPT):]
+            if seen.endswith(PROMPT):
+                break
     port.write(command.encode() + b"\r")
 
     docs: list[dict] = []

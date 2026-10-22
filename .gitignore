@@ -9,6 +9,11 @@ bench/.build-flags
 # desktop binary.
 /mcu/pico/build*/
 /mcu/host/cpcpub-mcu-host
+# ESP-IDF writes its configuration and lock file into the project directory.
+/mcu/esp32/build*/
+/mcu/esp32/sdkconfig
+/mcu/esp32/sdkconfig.old
+/mcu/esp32/dependencies.lock
 
 # The hub's database, wherever it is put -- `make serve` writes
 # web/runs.sqlite3, `web/verified.py --db ...` writes whatever you name. The

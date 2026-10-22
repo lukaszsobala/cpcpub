@@ -18,6 +18,10 @@
 
 #include "port.h"
 
+int main(void) {
+    frontend_run();
+}
+
 void port_init(void) {
     stdio_init_all();
 #if LIB_PICO_STDIO_USB

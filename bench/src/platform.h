@@ -29,6 +29,8 @@
 // so its backend is a file of its own rather than a fourth column here.
 #if defined(CPCPUB_PICO)
 #include "platform_pico.h"
+#elif defined(CPCPUB_ESP)
+#include "platform_esp.h"
 #else
 
 #include <pthread.h>
@@ -431,6 +433,6 @@ static inline int plat_sysinfo(plat_sysinfo_t *si) {
 #endif
 }
 
-#endif  // CPCPUB_PICO
+#endif  // CPCPUB_PICO, CPCPUB_ESP
 
 #endif  // CPCPUB_PLATFORM_H

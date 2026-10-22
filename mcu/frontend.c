@@ -425,11 +425,34 @@ static void variant_table(const variant_t **sel, const result_t *rows, int n,
 // document and the console.
 #define HEAP_MARGIN ((size_t)16 << 10)
 
+// Whether `n` workers' buffers of `per` bytes fit at once, taken the way the
+// workers take them: every buffer, then every selector array on top, with the
+// margin held back too. A heap made of several regions -- an ESP32's is -- can
+// have the bytes and not the blocks, and asking it is the only way to know.
+static int fits(int n, size_t per) {
+    void *margin = malloc(HEAP_MARGIN);
+    void *buf[MAX_CORES] = { NULL }, *idx[MAX_CORES] = { NULL };
+    int ok = margin != NULL;
+    for (int i = 0; ok && i < n; ++i) ok = (buf[i] = plat_aligned_alloc(4096, per)) != NULL;
+    for (int i = 0; ok && i < n; ++i) ok = (idx[i] = malloc(DISP_LADDER_BYTES)) != NULL;
+    for (int i = 0; i < n; ++i) {
+        free(idx[i]);
+        plat_aligned_free(buf[i]);
+    }
+    free(margin);
+    return ok;
+}
+
 static size_t size_buffers(int n) {
     const size_t heap = port_heap_bytes();
     const size_t fixed = HEAP_MARGIN + (size_t)n * DISP_LADDER_BYTES;
     if (n < 1 || heap <= fixed) return 0;
-    return ((heap - fixed) / (size_t)n) & ~(size_t)4095;
+    size_t per = ((heap - fixed) / (size_t)n) & ~(size_t)4095;
+    // An eighth smaller at a time until the blocks are there, not just the bytes.
+    while (per >= PLAT_MEM_MIN_BYTES && !fits(n, per)) {
+        per = (per - per / 8) & ~(size_t)4095;
+    }
+    return per;
 }
 
 // ---------------------------------------------------------------------------
@@ -632,7 +655,7 @@ static int parse(int argc, char **argv, cfg_t *c, const variant_t **sel,
 // The loop
 // ---------------------------------------------------------------------------
 
-int main(void) {
+void frontend_run(void) {
     port_init();
     port_info_t pi;
     port_info(&pi);

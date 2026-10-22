@@ -81,18 +81,21 @@ hub **rejects** it: it is a diagnostic curve with no summary metrics to rank.
 (`emit_json` in [mcu/frontend.c](../mcu/frontend.c)), with the records written
 by the same `json_result`, and the contract test holds it to every rule here.
 Where there is no operating system, `system` describes what stands in for one:
-`sysname` is the SDK (`pico-sdk`), `release` its version, and `machine` the chip
-(`RP2040`, `RP2350`); `cpu_models` is the core and the chip (`Cortex-M0+
-(RP2040)`), `cpu_layout` counts the cores. `build.target` is `armv6m`
-(Cortex-M0+), `armv8m` (Cortex-M33) or `riscv32` (Hazard3).
+`sysname` is the SDK (`pico-sdk`, `esp-idf`), `release` its version, and
+`machine` the chip (`RP2040`, `RP2350`, `ESP32-S3`); `cpu_models` is the core
+and the chip (`Cortex-M0+ (RP2040)`, `Xtensa LX7 (ESP32-S3)`), `cpu_layout`
+counts the cores. `build.target` is `armv6m` (Cortex-M0+), `armv8m`
+(Cortex-M33), `xtensa` (the ESP32, S2 and S3) or `riscv32` (Hazard3 and the
+RISC-V ESP32s).
 `build.binary_sha256` is absent: firmware is not a file a release publishes the
 digest of. `config.pin` is always `true`, because each worker runs on the core
 it was started on and nothing can move it. `mhz` is `measured` by the chip's
-own frequency counter.
+own frequency counter or cycle counter.
 
 What the memory phases measure is different there, which is why it says so in
 the document rather than in a column: on-chip SRAM with no cache in front of
-it, so `mem_lat_ns` is an SRAM access and not a trip to DRAM.
+it (behind an L1 cache on the ESP32-P4), so `mem_lat_ns` is an SRAM access and
+not a trip to DRAM.
 
 ## `build.binary_sha256`
 

@@ -20,9 +20,13 @@
 // Pi RP2040 or RP2350 a program runs from flash through a small XIP cache, so a
 // kernel there would measure that cache as much as the core -- and both cores
 // share it. `.time_critical.*` is the section the pico-sdk's linker script
-// copies into SRAM at boot, which takes the flash out of the measurement.
+// copies into SRAM at boot, which takes the flash out of the measurement. An
+// ESP32 runs from flash through a cache too, and `.iram1.*` is ESP-IDF's
+// section for code that lives in instruction RAM instead.
 #if defined(CPCPUB_PICO)
 #define CPCPUB_HOT __attribute__((section(".time_critical.cpcpub")))
+#elif defined(CPCPUB_ESP)
+#define CPCPUB_HOT __attribute__((section(".iram1.cpcpub")))
 #else
 #define CPCPUB_HOT
 #endif

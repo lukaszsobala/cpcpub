@@ -3,10 +3,10 @@
 // frontend.c is the same on every board: it reads the command line over the
 // serial console, sizes the buffers, runs the measurement in bench/src and
 // writes the results. Everything that differs between chips is behind the
-// functions below, and each port -- mcu/pico/port.c, and mcu/host/port.c for
-// testing the front end on a desktop -- defines all of them, together with the
-// three clock hooks measure.h asks every front end for (cpu_cur_mhz, dram_mhz,
-// rated_mhz).
+// functions below. Each port -- mcu/pico/port.c, mcu/esp32/main/port.c, and
+// mcu/host/port.c for testing the front end on a desktop -- defines all of
+// them, its own entry point, and the three clock hooks measure.h asks every
+// front end for (cpu_cur_mhz, dram_mhz, rated_mhz).
 
 #ifndef CPCPUB_MCU_PORT_H
 #define CPCPUB_MCU_PORT_H
@@ -14,6 +14,10 @@
 #include <stddef.h>
 
 #include "measure.h"
+
+// The front end itself, which never returns. Each port's entry point --
+// main(), or app_main() under ESP-IDF -- calls it and does nothing else.
+void frontend_run(void);
 
 // Bring up whatever the console needs and return once a host is there to read
 // it. Called once, first.

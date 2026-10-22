@@ -85,6 +85,10 @@ target_compile_definitions(cpcpub PRIVATE
     CPCPUB_VERSION="${CPCPUB_VERSION}"
     BUILD_CC="${BUILD_CC}"
     BUILD_FLAGS="${BUILD_FLAGS}"
+    # The fastest clock Raspberry Pi supports, as the ESP32 builds run at their
+    # rated maximum: 200 MHz on the RP2040 rather than the SDK's default 125,
+    # with the core voltage the SDK raises for it; the RP2350's 150 already is.
+    PICO_USE_FASTEST_SUPPORTED_CLOCK=1
     # The soft-float routines the FP kernels call, in SRAM with the kernels,
     # so FP-* measures the arithmetic rather than the flash cache.
     PICO_FLOAT_IN_RAM=1
