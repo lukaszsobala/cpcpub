@@ -384,7 +384,7 @@ def _obj(payload, key):
 # that is the whole of it -- there is no badge here and there must not be one.
 #
 # The formulas are core_score(), machine_score() and summarize() in
-# bench/src/bench.c; they are part of the cpu-bench/1 contract, and the real
+# bench/src/measure.c; they are part of the cpu-bench/1 contract, and the real
 # sample in testdata/full-run.json is checked against them by the hub's tests,
 # so a change to the benchmark's formulas cannot quietly start refusing every
 # honest upload.
@@ -407,7 +407,7 @@ def _f(row: dict, key: str) -> float:
 
 
 def _geomean(values: list[float]) -> float:
-    """As geomean() in bench.c: terms that are not positive drop out, rather
+    """As geomean() in measure.c: terms that are not positive drop out, rather
     than taking the whole mean to zero."""
     logs = [math.log(v) for v in values if v > 0.0]
     return math.exp(math.fsum(logs) / len(logs)) if logs else 0.0

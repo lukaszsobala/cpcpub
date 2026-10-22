@@ -206,7 +206,7 @@ EXPLAIN = {
 }
 
 # What the score is a geometric mean of -- core_score() and machine_score() in
-# bench/src/bench.c. The memory part is a rate there, 1000 / MEMlat/8, so its
+# bench/src/measure.c. The memory part is a rate there, 1000 / MEMlat/8, so its
 # column is the one that carries it.
 SCORE_PARTS = {
     "int_thr_mops", "mul_thr_mmul_s", "fp_thr_mflops", "mem_lat8_ns",

@@ -3,7 +3,7 @@
 // Auto-vectorization and FMA contraction are translation-unit flags, not
 // something a pragma can switch per function, so a binary that carries more
 // than one of them has to compile the kernels more than once. This header is
-// the interface: bench.c holds the driver and sees only kernel_set_t, while
+// the interface: measure.c holds the driver and sees only kernel_set_t, while
 // kernels.c is compiled once per variant with its own -ftree-vectorize /
 // -ffp-contract pair and defines one kernel_set_t per compilation.
 //

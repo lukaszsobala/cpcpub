@@ -7,8 +7,9 @@ are what keep them in agreement — the test enforces every rule stated here, an
 a live sample lives in [testdata/full-run.json](../testdata/full-run.json).
 
 Produced by `cpcpub --json` (also `--per-core --json`, `--full --json`).
-Written by `json_open` / `json_result` / `emit_json` in
-[bench/src/bench.c](../bench/src/bench.c); read by `validate()` in
+Written by `json_open` / `emit_json` in [bench/src/bench.c](../bench/src/bench.c)
+and, for each record, `json_result` in [bench/src/report.c](../bench/src/report.c);
+read by `validate()` in
 [web/server.py](../web/server.py).
 
 ## Shape
@@ -174,7 +175,7 @@ in the first case and the term drops, and anything else keeps it. Numbers are
 written at six significant figures, so the hub allows 0.1% either way.
 
 This is why the two halves must not drift: change `core_score()`,
-`machine_score()` or `summarize()` in [bench/src/bench.c](../bench/src/bench.c)
+`machine_score()` or `summarize()` in [bench/src/measure.c](../bench/src/measure.c)
 without changing `score_terms()` in [web/server.py](../web/server.py) and every
 honest upload starts being refused.
 [tests/test_contract.py](../tests/test_contract.py) runs the hub's check over a
@@ -205,7 +206,7 @@ the hub already stores every record it is computed from. It is listed in
 
 Five edits, in one commit, because a partial change is invisible at runtime:
 
-1. `json_result()` in [bench/src/bench.c](../bench/src/bench.c) — emit the key.
+1. `json_result()` in [bench/src/report.c](../bench/src/report.c) — emit the key.
 2. `CORE_FIELDS` in [web/server.py](../web/server.py) — JSON key → column.
 3. `METRICS` in [web/server.py](../web/server.py) — only if it should be
    rankable; this is what `/api/metrics` serves and what the front end builds
