@@ -20,6 +20,15 @@
 #define ARRAY_LEN(x) ((int)(sizeof(x) / sizeof((x)[0])))
 #endif
 
+// The smallest buffer the memory phases will measure; below it they are
+// skipped. Half a megabyte on a host, where anything less is a cache test and
+// not much of one. A platform whose memory is all on-chip SRAM, with no cache
+// in front of it, sets its own: there a small buffer measures the same thing a
+// large one would.
+#ifndef PLAT_MEM_MIN_BYTES
+#define PLAT_MEM_MIN_BYTES ((size_t)CHASE_WAYS * 65536)
+#endif
+
 // A clock the operator supplied with --mhz, in MHz, or 0. summarize() prefers
 // it to anything the machine says.
 extern double g_mhz_given;

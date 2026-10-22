@@ -24,6 +24,13 @@
 #ifndef CPCPUB_PLATFORM_H
 #define CPCPUB_PLATFORM_H
 
+// A microcontroller has none of what follows -- no threads library, no
+// scheduler, no clock_gettime -- and only measure.c's share of it to provide,
+// so its backend is a file of its own rather than a fourth column here.
+#if defined(CPCPUB_PICO)
+#include "platform_pico.h"
+#else
+
 #include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -423,5 +430,7 @@ static inline int plat_sysinfo(plat_sysinfo_t *si) {
     return 0;
 #endif
 }
+
+#endif  // CPCPUB_PICO
 
 #endif  // CPCPUB_PLATFORM_H

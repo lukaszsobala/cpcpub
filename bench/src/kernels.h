@@ -16,8 +16,19 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Where measured code lives. Nowhere in particular on a host. On a Raspberry
+// Pi RP2040 or RP2350 a program runs from flash through a small XIP cache, so a
+// kernel there would measure that cache as much as the core -- and both cores
+// share it. `.time_critical.*` is the section the pico-sdk's linker script
+// copies into SRAM at boot, which takes the flash out of the measurement.
+#if defined(CPCPUB_PICO)
+#define CPCPUB_HOT __attribute__((section(".time_critical.cpcpub")))
+#else
+#define CPCPUB_HOT
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
-#define NOINLINE __attribute__((noinline))
+#define NOINLINE __attribute__((noinline)) CPCPUB_HOT
 #else
 #define NOINLINE
 #endif

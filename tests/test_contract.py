@@ -96,6 +96,24 @@ SECTION_COLUMNS = {
 LIVE_ARGS = ["--full", "--cpus", "0", "--threads", "1", "--cooldown", "0.01",
              "--time", "0.05", "--reps", "1", "--warmup", "0.02", "--json"]
 
+# The microcontroller front end (mcu/frontend.c) writes the same document from
+# its own code, so it is held to the same contract -- through its test port,
+# mcu/host, which runs it on this machine. Two cores, so the multi-core half
+# has a barrier to cross; a heap large enough that the memory phases run.
+MCU_LINE = "--full --cpus 0,1 --time 0.05 --reps 1 --warmup 0.02 --json\n"
+MCU_HEAP = str(8 << 20)
+
+
+def mcu_document(binary):
+    """The one document a run of the mcu front end prints between its markers."""
+    proc = subprocess.run([binary], input=MCU_LINE, check=True, text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                          env=dict(os.environ, CPCPUB_HEAP=MCU_HEAP))
+    lines = proc.stdout.splitlines()
+    begin = lines.index("-----BEGIN CPCPUB JSON-----")
+    end = lines.index("-----END CPCPUB JSON-----")
+    return json.loads("\n".join(lines[begin + 1:end]))
+
 
 def documents():
     """Every cpcpub document this run can test, as (name, doc)."""
@@ -107,6 +125,9 @@ def documents():
         proc = subprocess.run([binary] + LIVE_ARGS, check=True,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         out.append((f"live: {Path(binary).name}", json.loads(proc.stdout)))
+    mcu = os.environ.get("CPCPUB_MCU_HOST_BIN")
+    if mcu:
+        out.append((f"mcu: {Path(mcu).name}", mcu_document(mcu)))
     return out
 
 

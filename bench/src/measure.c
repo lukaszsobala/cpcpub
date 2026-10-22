@@ -20,6 +20,18 @@ double g_mhz_given = 0.0;
 // Timing
 // ---------------------------------------------------------------------------
 
+#if defined(PLAT_NOW_SEC)
+// The platform's own clock, and the only one there is: see its plat_now_sec().
+// Whether it is an unadjusted one is a fact about the hardware, so --clock has
+// nothing to choose between.
+int g_clock_raw = PLAT_CLOCK_RAW;
+
+void set_clock_mode(int use_raw) { (void)use_raw; }
+
+static inline double now_sec(void) { return plat_now_sec(); }
+
+#else
+
 static clockid_t g_clock_id = CLOCK_MONOTONIC;
 // What --clock actually got, which is not always what it asked for. Reported
 // in place of the request: a result that says it used the raw clock on a system
@@ -46,6 +58,8 @@ static inline double now_sec(void) {
     clock_gettime(g_clock_id, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
+
+#endif
 
 // Xorshift64* PRNG, used only for setup (never inside a timed loop).
 static inline uint64_t xs64(uint64_t *s) {
@@ -435,7 +449,7 @@ void *worker(void *arg) {
         free(idx);
     }
 
-    const int mem_ok = (buf != NULL && nbytes >= (size_t)CHASE_WAYS * 65536);
+    const int mem_ok = (buf != NULL && nbytes >= PLAT_MEM_MIN_BYTES);
 
     // ---- memory bandwidth: sequential read+write sweep ----
     for (int rep = 0; rep < reps; ++rep) {
