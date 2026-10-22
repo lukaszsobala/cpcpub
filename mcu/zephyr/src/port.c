@@ -145,6 +145,14 @@ static const char *core_name(void) {
     return out;
 }
 
+// None. A Zephyr build is per board and no release publishes one, so a digest
+// would match nothing; where the image ends in flash also differs with the
+// board's memory layout.
+int port_image_sha256(char out_hex[65]) {
+    out_hex[0] = '\0';
+    return -1;
+}
+
 void port_info(port_info_t *out) {
     out->chip = CONFIG_SOC;
     out->core = core_name();

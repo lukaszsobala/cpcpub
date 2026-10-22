@@ -61,9 +61,10 @@
 #
 # The microcontroller firmware -- a file per chip for the RP2040, the RP2350
 # and the ESP32 family -- is built by firmware.yml, called below, and goes up
-# beside the binaries, listed in SHA256SUMS. It is not in the manifest: a
-# firmware result carries no digest for a hub to match (see the top of that
-# file), so there is nothing for verified-builds.json to say about it.
+# beside the binaries, listed in SHA256SUMS. It is in the manifest too, under
+# a different digest: firmware hashes its image in flash, not the file it was
+# downloaded as, so its entry carries the image's digest (marked "digest_of":
+# "image") as firmware.yml worked it out, and SHA256SUMS the file's.
 #
 # A trial run: dispatched with `publish` off, on a branch and with the tag it
 # will become (gh workflow run release.yml --ref BRANCH -f tag=vX.Y.Z -f
@@ -845,6 +846,10 @@ jobs:
         run: |
           set -eux
           cd staged
+          # The firmware's digest entries ride with the files from firmware.yml;
+          # they are read here, not published.
+          mkdir firmware-info
+          mv firmware/digest-*.json firmware-info/
           # The upload/download round trip does not preserve the executable
           # bit, and an asset nobody can run is not a release.
           chmod +x cpcpub-*
@@ -876,6 +881,28 @@ jobs:
           named = {b["filename"] for b in builds}
           assert staged == named, f"staged {sorted(staged)}, manifest {sorted(named)}"
 
+          # The firmware, by the digest of its image -- what a board running it
+          # reports -- which firmware.yml checked is what each file writes to
+          # flash. Accounted for both ways too.
+          firmware = []
+          for meta in sorted(pathlib.Path("firmware-info").glob("digest-*.json")):
+              info = json.load(open(meta))
+              path = pathlib.Path("firmware") / info["filename"]
+              assert path.is_file(), f"{meta} names {path}, which was not staged"
+              assert info["digest_of"] == "image", meta
+              assert len(info["sha256"]) == 64 and int(info["sha256"], 16) >= 0, meta
+              firmware.append({
+                  "filename": path.name,
+                  "sha256": info["sha256"],
+                  "digest_of": "image",
+                  "target": info["target"],
+                  "march": info["march"],
+              })
+          staged = {p.name for p in pathlib.Path("firmware").iterdir()}
+          named = {b["filename"] for b in firmware}
+          assert staged == named, f"firmware {sorted(staged)}, manifest {sorted(named)}"
+          builds += firmware
+
           tag = os.environ["TAG"]
           manifest = {
               "schema": "cpu-bench-builds/1",
@@ -887,11 +914,13 @@ jobs:
           print(json.dumps(manifest, indent=2))
           PY
           # The manifest must agree with the checksum file, or the two halves of
-          # the release contradict each other.
+          # the release contradict each other. The firmware is left out of the
+          # comparison: its manifest digest is of the image, not of the file.
           python3 - <<'PY'
           import json
           published = {b["sha256"]: b["filename"]
-                       for b in json.load(open("verified-builds.json"))["builds"]}
+                       for b in json.load(open("verified-builds.json"))["builds"]
+                       if b.get("digest_of") != "image"}
           listed = {}
           for line in open("SHA256SUMS"):
               digest, name = line.split()
@@ -899,9 +928,10 @@ jobs:
           assert published == listed, (published, listed)
           print(f"{len(listed)} binaries agree between SHA256SUMS and the manifest")
           PY
-          # The packages and the firmware join the checksum file only now, once
-          # the binaries in it have been checked against the manifest: they are
-          # downloads to check like any other, but not builds a hub can verify.
+          # The packages and the firmware files join the checksum file only now,
+          # once the binaries in it have been checked against the manifest: they
+          # are downloads to check like any other. (The firmware is verifiable
+          # on a hub as well, by its image's digest in the manifest.)
           (cd packages && sha256sum -- *) | tee -a SHA256SUMS
           (cd firmware && sha256sum -- *) | tee -a SHA256SUMS
 
@@ -978,7 +1008,9 @@ jobs:
           same digest were produced by the same machine code.
 
           The microcontroller firmware (\`.uf2\`, \`.bin\`) is checked against
-          \`SHA256SUMS\` the same way, but its results are never marked
-          verified: firmware carries no digest of itself. See
+          \`SHA256SUMS\` the same way, and its results are verified too, by a
+          different digest: the firmware hashes its image in flash, which is
+          not the file it was downloaded as, so the manifest lists the image's
+          digest for it. See
           [mcu/README.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$TAG/mcu/README.md).
           EOF

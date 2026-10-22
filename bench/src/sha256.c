@@ -8,7 +8,8 @@
 // self-reported like every other field, and a determined liar edits the JSON.
 //
 // Not a general-purpose implementation and not on any hot path: it hashes one
-// file, once, and only when a run is about to report or print its identity.
+// file -- or on a microcontroller, the firmware image in flash -- once, and only
+// when a run is about to report or print its identity.
 // libc only, like the rest of the benchmark.
 
 #include "sha256.h"
@@ -16,13 +17,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
-typedef struct {
-    uint32_t h[8];
-    uint64_t bytes;             // total fed in, for the length block
-    unsigned char buf[64];
-    size_t used;                // bytes sitting in buf
-} sha256_ctx;
 
 static const uint32_t K[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
@@ -47,7 +41,7 @@ static uint32_t ror(uint32_t x, unsigned n) {
     return (x >> n) | (x << (32u - n));
 }
 
-static void sha256_init(sha256_ctx *c) {
+void sha256_init(sha256_ctx *c) {
     c->h[0] = 0x6a09e667u; c->h[1] = 0xbb67ae85u;
     c->h[2] = 0x3c6ef372u; c->h[3] = 0xa54ff53au;
     c->h[4] = 0x510e527fu; c->h[5] = 0x9b05688cu;
@@ -84,7 +78,8 @@ static void sha256_block(sha256_ctx *c, const unsigned char *p) {
     c->h[4] += e; c->h[5] += f; c->h[6] += g; c->h[7] += h;
 }
 
-static void sha256_update(sha256_ctx *c, const unsigned char *p, size_t n) {
+void sha256_update(sha256_ctx *c, const void *data, size_t n) {
+    const unsigned char *p = data;
     c->bytes += n;
     while (n > 0) {
         size_t take = 64 - c->used;
@@ -100,7 +95,7 @@ static void sha256_update(sha256_ctx *c, const unsigned char *p, size_t n) {
     }
 }
 
-static void sha256_final(sha256_ctx *c, char out_hex[65]) {
+void sha256_final(sha256_ctx *c, char out_hex[65]) {
     uint64_t bits = c->bytes * 8u;
     unsigned char pad = 0x80;
     sha256_update(c, &pad, 1);
@@ -145,4 +140,11 @@ int sha256_file(const char *path, char out_hex[65]) {
     }
     sha256_final(&c, out_hex);
     return 0;
+}
+
+void sha256_mem(const void *p, size_t n, char out_hex[65]) {
+    sha256_ctx c;
+    sha256_init(&c);
+    sha256_update(&c, p, n);
+    sha256_final(&c, out_hex);
 }

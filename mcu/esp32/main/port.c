@@ -25,6 +25,9 @@
 #include "esp_clk_tree.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
+#include "esp_app_format.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
@@ -38,6 +41,7 @@
 #pragma GCC diagnostic pop
 
 #include "port.h"
+#include "sha256.h"
 
 void app_main(void) {
     frontend_run();
@@ -151,6 +155,60 @@ double dram_mhz(void) { return 0.0; }
 // ---------------------------------------------------------------------------
 // The machine
 // ---------------------------------------------------------------------------
+
+// The application image's SHA-256, hashed here from flash with the same code
+// the Pico builds use (bench/src/sha256.c). The image is walked to its length
+// as the bootloader walks it -- header, each segment, a checksum byte padding
+// it to 16 bytes, then the SHA-256 the build appended -- read a chunk at a
+// time, and the digest reported only if it equals that appended one, so a
+// damaged image claims nothing. That is cpcpub.bin's own trailing digest,
+// which mcu/firmware-digest.py publishes for it; not the digest of the
+// downloadable .bin, which adds the bootloader and the partition table.
+//
+// Read through the flash driver rather than mapped into the address space:
+// it needs no free mapping pages, and Espressif's QEMU stalls reading a fresh
+// mapping on the ESP32-S3 -- as ESP-IDF's own esp_partition_get_sha256() does
+// there, since it maps the image.
+int port_image_sha256(char out_hex[65]) {
+    out_hex[0] = '\0';
+    const esp_partition_t *p = esp_ota_get_running_partition();
+    esp_image_header_t h;
+    if (!p || esp_partition_read(p, 0, &h, sizeof(h)) != ESP_OK ||
+        h.magic != ESP_IMAGE_HEADER_MAGIC || !h.hash_appended) return -1;
+    size_t len = sizeof(h);
+    for (unsigned i = 0; i < h.segment_count; ++i) {
+        esp_image_segment_header_t seg;
+        if (esp_partition_read(p, len, &seg, sizeof(seg)) != ESP_OK) return -1;
+        len += sizeof(seg) + seg.data_len;
+        if (len > p->size) return -1;
+    }
+    len = ((len + 1 + 15) & ~(size_t)15) + 32;
+    if (len > p->size) return -1;
+
+    static uint8_t chunk[4096];     // one caller, once: see image_sha256()
+    sha256_ctx c;
+    sha256_init(&c);
+    for (size_t off = 0; off < len - 32; ) {
+        size_t n = len - 32 - off;
+        if (n > sizeof(chunk)) n = sizeof(chunk);
+        if (esp_partition_read(p, off, chunk, n) != ESP_OK) return -1;
+        sha256_update(&c, chunk, n);
+        off += n;
+    }
+    sha256_final(&c, out_hex);
+
+    uint8_t stored[32];
+    if (esp_partition_read(p, len - 32, stored, sizeof(stored)) != ESP_OK) return -1;
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(stored); ++i) {
+        if (out_hex[2 * i] != hex[stored[i] >> 4] ||
+            out_hex[2 * i + 1] != hex[stored[i] & 0xf]) {
+            out_hex[0] = '\0';
+            return -1;
+        }
+    }
+    return 0;
+}
 
 void port_info(port_info_t *out) {
     // "esp32s3" -> "ESP32-S3": the part as Espressif writes it.

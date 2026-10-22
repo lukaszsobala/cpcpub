@@ -9,7 +9,7 @@ CC     ?= cc
 CFLAGS ?= -O3 -pipe -std=c2x -Wall -Wextra -Wshadow -Wconversion -Wdouble-promotion -Wformat=2 -fno-strict-aliasing
 
 BENCH  := ../../bench/src
-SHARED := $(BENCH)/measure.o $(BENCH)/report.o \
+SHARED := $(BENCH)/measure.o $(BENCH)/report.o $(BENCH)/sha256.o \
           $(addprefix $(BENCH)/kernels-,$(addsuffix .o,scalar-nofma vector-nofma scalar-fma vector-fma))
 
 all: cpcpub-mcu-host

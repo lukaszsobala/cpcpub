@@ -16,6 +16,7 @@
 #include <stdlib.h>
 
 #include "port.h"
+#include "sha256.h"
 
 int main(void) {
     frontend_run();
@@ -54,6 +55,12 @@ size_t port_heap_bytes(void) {
 double cpu_cur_mhz(int cpu) { (void)cpu; return 0.0; }
 double rated_mhz(int cpu)   { (void)cpu; return 0.0; }
 double dram_mhz(void)       { return 0.0; }
+
+// This test binary's own file, as the desktop benchmark hashes its own, so the
+// contract test can check the digest the front end writes is the right one.
+int port_image_sha256(char out_hex[65]) {
+    return sha256_file("/proc/self/exe", out_hex);
+}
 
 void port_info(port_info_t *out) {
     out->chip = "host";

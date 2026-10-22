@@ -17,6 +17,7 @@
 #include "hardware/clocks.h"
 
 #include "port.h"
+#include "sha256.h"
 
 int main(void) {
     frontend_run();
@@ -105,6 +106,19 @@ double dram_mhz(void) { return 0.0; }
 // ---------------------------------------------------------------------------
 // The machine
 // ---------------------------------------------------------------------------
+
+// The image in flash, from its first byte to its last as the linker placed
+// them: exactly the bytes of the cpcpub.bin the build writes beside the .uf2,
+// and so what release.yml publishes the digest of (mcu/firmware-digest.py
+// checks the three agree). The kernels' copies in RAM are not read; their
+// load images in flash are, and are what was copied.
+extern const unsigned char __flash_binary_start[], __flash_binary_end[];
+
+int port_image_sha256(char out_hex[65]) {
+    sha256_mem(__flash_binary_start,
+               (size_t)(__flash_binary_end - __flash_binary_start), out_hex);
+    return 0;
+}
 
 void port_info(port_info_t *out) {
 #if PICO_RP2040

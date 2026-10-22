@@ -12,12 +12,14 @@
 # and not Zephyr: a Zephyr build is per board, there are hundreds, and
 # mcu/README.md has the two commands for building one.
 #
-# What a firmware file is not: a verified build. A desktop result carries the
-# digest of the binary that measured it, and a hub matches that against
-# release.yml's verified-builds.json; firmware has no file to hash once it is
-# in flash, so its document carries no digest and this workflow publishes none
-# for the manifest. The files are in SHA256SUMS like the packages, as
-# downloads to check.
+# Like a desktop release binary, a firmware file is a verified build: the
+# firmware hashes its own image in flash and reports that as
+# build.binary_sha256, and each job here works out the same digest from the
+# build (mcu/firmware-digest.py) for release.yml to put in
+# verified-builds.json. It is the image's digest, not the downloaded file's --
+# a .uf2 wraps the image, and an ESP32 .bin adds the bootloader -- so the
+# files are also in SHA256SUMS, as downloads to check, under digests of their
+# own.
 #
 # Each build is checked before it is kept (mcu/check-firmware.py): no compiler
 # warning in this repository's code, and every kernel of all four compilations
@@ -79,12 +81,15 @@ jobs:
           - chip: rp2040
             board: pico
             platform: rp2040
+            target: armv6m
           - chip: rp2350-arm
             board: pico2
             platform: rp2350-arm-s
+            target: armv8m
           - chip: rp2350-riscv
             board: pico2
             platform: rp2350-riscv
+            target: riscv32
             riscv: true
     env:
       PICO_SDK_TAG: "2.3.1"
@@ -139,15 +144,21 @@ jobs:
             -DCPCPUB_VERSION="$VERSION"
           cmake --build build -j "$(nproc)" 2>&1 | tee build.log
 
+      # The digest is the image's, checked to be what the .uf2 writes to
+      # flash; it goes to release.yml beside the file, as digest-<chip>.json.
       - name: Check and stage
         env:
           CHIP: ${{ matrix.chip }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -eux
           objdump=$(sed -n 's/^CMAKE_OBJDUMP:FILEPATH=//p' build/CMakeCache.txt)
           python3 mcu/check-firmware.py "$objdump" build/cpcpub.elf build.log
           mkdir dist
           cp build/cpcpub.uf2 "dist/cpcpub-$CHIP.uf2"
+          python3 mcu/firmware-digest.py pico build "dist/cpcpub-$CHIP.uf2" \
+            "$TARGET" "$objdump" > "dist/digest-$CHIP.json"
+          cat "dist/digest-$CHIP.json"
           ls -l dist
 
       - uses: actions/upload-artifact@v7
@@ -170,7 +181,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        chip: [esp32, esp32s2, esp32s3, esp32c3, esp32c6, esp32p4]
+        include:
+          - { chip: esp32,   target: xtensa }
+          - { chip: esp32s2, target: xtensa }
+          - { chip: esp32s3, target: xtensa }
+          - { chip: esp32c3, target: riscv32 }
+          - { chip: esp32c6, target: riscv32 }
+          - { chip: esp32p4, target: riscv32 }
     steps:
       - uses: actions/checkout@v7
         with:
@@ -189,10 +206,12 @@ jobs:
 
       # One image from offset 0 -- bootloader, partition table and the
       # application, each at its own offset inside it -- so flashing it is one
-      # write to 0x0 on every chip, with esptool or from a browser.
+      # write to 0x0 on every chip, with esptool or from a browser. The digest
+      # is the application image's, checked to be what that file holds.
       - name: Check and stage
         env:
           CHIP: ${{ matrix.chip }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           . "$IDF_PATH/export.sh" >/dev/null
@@ -202,6 +221,9 @@ jobs:
           mkdir dist
           (cd build && python -m esptool --chip "$CHIP" merge-bin \
              -o "../dist/cpcpub-$CHIP.bin" @flash_args)
+          python3 mcu/firmware-digest.py esp build "dist/cpcpub-$CHIP.bin" \
+            "$TARGET" "$objdump" > "dist/digest-$CHIP.json"
+          cat "dist/digest-$CHIP.json"
           ls -l dist
 
       - uses: actions/upload-artifact@v7

@@ -74,6 +74,7 @@ endforeach()
 set(CPCPUB_SOURCES
     ${BENCH_SRC}/measure.c
     ${BENCH_SRC}/report.c
+    ${BENCH_SRC}/sha256.c
     ${MCU_SRC}/frontend.c
     ${CMAKE_CURRENT_LIST_DIR}/port.c)
 set_source_files_properties(${CPCPUB_SOURCES} PROPERTIES COMPILE_OPTIONS "${CPCPUB_CFLAGS}")

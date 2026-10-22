@@ -40,6 +40,12 @@ size_t port_heap_bytes(void);
 // The heap must return NULL when it is out, not stop the program.
 size_t heap_probe(size_t ceiling);
 
+// The SHA-256 of the firmware as it sits in flash, as 64 lowercase hex digits
+// and a NUL in out_hex -- build.binary_sha256, the digest release.yml lists in
+// verified-builds.json for the image it published. 0 on success; -1 where the
+// port has no image to hash, and the document then carries no digest.
+int port_image_sha256(char out_hex[65]);
+
 // How the document describes this machine, all as plain strings:
 //   chip      the part, e.g. "RP2040" -- system.machine
 //   core      the core's name, e.g. "Cortex-M0+" -- in system.cpu_models

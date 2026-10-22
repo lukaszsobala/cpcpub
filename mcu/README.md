@@ -52,9 +52,12 @@ downloaded against the release's `SHA256SUMS`, as for the desktop binaries.
 
 Then run it as under [Running a board](#running-a-board). The files are built
 by [firmware.yml](../.github/workflows/firmware.yml), which also builds them on
-every pull request that touches the benchmark. A result from one is not marked
-verified on a hub, as a desktop release binary's is: firmware has no file to
-hash once it is in flash, so its document carries no digest to match.
+every pull request that touches the benchmark. A result from one is marked
+verified on a hub, as a desktop release binary's is: the firmware hashes its
+own image in flash and reports it as `build.binary_sha256` (and in `--version`,
+as `image: sha256:...`), and the release lists that digest in its
+`verified-builds.json`. It is not the checksum of the file you downloaded,
+which wraps the image -- that one is in `SHA256SUMS`.
 
 ## Raspberry Pi RP2040 and RP2350
 
@@ -223,7 +226,8 @@ Read [bench/README.md](../bench/README.md) first; this is what changes.
 The document says what it came from: `system.sysname` is `pico-sdk`,
 `esp-idf` or `zephyr` and `release` its version, `machine` the chip,
 `build.target` `armv6m`, `armv7m`, `armv8m`, `xtensa`, `riscv32` or, under
-Zephyr, whatever else the board is; there is no `binary_sha256`. See
+Zephyr, whatever else the board is; `binary_sha256` is the firmware's image,
+as above, and absent under Zephyr. See
 [schema/cpu-bench-1.md](../schema/cpu-bench-1.md).
 
 ## Layout
@@ -237,4 +241,5 @@ Zephyr, whatever else the board is; there is no `binary_sha256`. See
 | [zephyr/](zephyr/) | the Zephyr port as a Zephyr application; its platform layer is `bench/src/platform_zephyr.h` |
 | [host/](host/) | a port that runs the front end on a desktop, for testing it: `make check` holds its document to the same contract as `bench/cpcpub`'s |
 | [cpcpub-serial.py](cpcpub-serial.py) | runs a board from a desktop and saves the result |
+| [firmware-digest.py](firmware-digest.py) | the digest a build's firmware will report, checked against what its download writes to flash; CI puts it in the release manifest |
 | [check-firmware.py](check-firmware.py) | what CI checks a build for: no warnings in this repository's code, and every kernel in RAM. `check-firmware.py OBJDUMP ELF BUILD-LOG` |

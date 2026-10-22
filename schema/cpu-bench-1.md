@@ -88,8 +88,9 @@ counts the cores. `build.target` is `armv6m` (Cortex-M0+), `armv8m`
 (Cortex-M33), `xtensa` (the ESP32, S2 and S3) or `riscv32` (Hazard3 and the
 RISC-V ESP32s), and under Zephyr whatever else the board's architecture is
 (`armv7m` for a Cortex-M3, M4 or M7, `aarch64`, `riscv64`).
-`build.binary_sha256` is absent: firmware is not a file a release publishes the
-digest of. `config.pin` is always `true`, because each worker runs on the core
+`build.binary_sha256` is the firmware's image as it sits in flash, hashed by
+the firmware itself on the Pico and ESP32 builds; see below. A Zephyr build
+leaves it out. `config.pin` is always `true`, because each worker runs on the core
 it was started on and nothing can move it. `mhz` is `measured` by the chip's
 own frequency counter or cycle counter -- except under Zephyr, which has no
 portable way to measure it, where it is `rated` from the device tree or the
@@ -108,6 +109,15 @@ digits — the benchmark hashing its own executable at report time, found throug
 host. **Absent, never `null`**, where none of those can answer: a key carrying an
 empty digest would match the next empty digest and mean the opposite of what it
 says.
+
+On a microcontroller there is no file, so it is the digest of the firmware's
+image in flash, which the firmware reads and hashes itself: on the Pico builds
+the image from its first byte to its last, which is the `cpcpub.bin` a build
+writes; on an ESP32 the application image less the SHA-256 the build appends to
+it, and only if the two agree. Neither is the digest of the file a user
+downloads -- a `.uf2` wraps the image, and an ESP32 `.bin` puts the bootloader
+in front of it -- so a release's manifest lists the image's digest for each
+firmware file, marked `"digest_of": "image"`, and its `SHA256SUMS` the file's.
 
 It exists so a hub can tell a run that says it came from a published build from
 one that says nothing. The hub holds the digests a release attached and marks a

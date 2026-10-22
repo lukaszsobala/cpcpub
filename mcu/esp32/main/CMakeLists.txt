@@ -41,7 +41,7 @@ foreach(v ${VARIANTS})
     list(APPEND KERNEL_SOURCES ${f})
 endforeach()
 
-set(CPCPUB_SOURCES ${BENCH_SRC}/measure.c ${BENCH_SRC}/report.c
+set(CPCPUB_SOURCES ${BENCH_SRC}/measure.c ${BENCH_SRC}/report.c ${BENCH_SRC}/sha256.c
                    ${MCU_SRC}/frontend.c ${CMAKE_CURRENT_LIST_DIR}/port.c)
 
 idf_component_register(SRCS ${CPCPUB_SOURCES} ${KERNEL_SOURCES}

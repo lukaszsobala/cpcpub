@@ -171,6 +171,19 @@ static const char *variant_flags(const kernel_set_t *k) {
     return buf;
 }
 
+// The firmware's own digest, or NULL where the port has none. Taken once, on
+// first use: hashing a few hundred kilobytes of flash is quick, but not
+// something to do twice.
+static const char *image_sha256(void) {
+    static char hex[65];
+    static int done = 0;
+    if (!done) {
+        done = 1;
+        if (port_image_sha256(hex) != 0) hex[0] = '\0';
+    }
+    return hex[0] ? hex : NULL;
+}
+
 static void print_platform(const port_info_t *pi) {
     char cc[64];
     compiler_string(cc, sizeof(cc));
@@ -180,6 +193,11 @@ static void print_platform(const port_info_t *pi) {
 #endif
     printf(", target=%s\n", pi->target);
     if (BUILD_FLAGS[0]) printf("flags: %s %s\n", BUILD_CC, BUILD_FLAGS);
+    // The image's digest, not the downloaded file's: a .uf2 wraps the image
+    // and an ESP32 .bin adds the bootloader to it, so this is checked against
+    // verified-builds.json rather than SHA256SUMS.
+    const char *digest = image_sha256();
+    if (digest) printf("image: sha256:%s\n", digest);
     printf("system: %s %s, machine=%s, cpus=%d\n", pi->sdk, pi->sdk_ver,
            pi->chip, core_count());
     printf("cpu: %s (%s)\n", pi->core, pi->chip);
@@ -262,8 +280,10 @@ static void emit_json(const suite_t *s, const cfg_t *c, const kernel_set_t *ks,
     j_str("cc", BUILD_CC);
     j_str("flags", variant_flags(ks));
     j_str("target", pi->target);
-    // No binary_sha256: there is no file to hash, only flash, and a digest of
-    // that would match nothing a release publishes.
+    // The image in flash, which is what a release lists in verified-builds.json
+    // for the firmware; omitted, as on the desktop, where there is none.
+    const char *digest = image_sha256();
+    if (digest) j_str("binary_sha256", digest);
     jout(", \"vectorize\": %s, \"fma\": %s }",
          ks->vectorize ? "true" : "false", ks->fma ? "true" : "false");
 

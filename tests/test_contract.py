@@ -224,6 +224,19 @@ class ContractTest(unittest.TestCase):
         want = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
         self.assertEqual(live[0]["build"].get("binary_sha256"), want)
 
+    def test_the_mcu_front_end_reports_the_digest_its_port_gives(self):
+        """The same chain for the firmware's front end, through its test port.
+
+        A chip's port hashes its image in flash; the test port hashes its own
+        file, so the digest the document carries can be checked exactly here.
+        """
+        binary = os.environ.get("CPCPUB_MCU_HOST_BIN")
+        docs = [d for n, d in DOCUMENTS if n.startswith("mcu:")]
+        if not binary or not docs:
+            self.skipTest("no $CPCPUB_MCU_HOST_BIN; `make check` runs this")
+        want = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
+        self.assertEqual(docs[0]["build"].get("binary_sha256"), want)
+
     def test_every_metric_has_a_column(self):
         """/api/metrics may only advertise metrics the leaderboard can sort on."""
         self.assertEqual(set(srv.METRIC_KEYS) - set(srv.CORE_COLUMNS), set(),
