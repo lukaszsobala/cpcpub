@@ -24,8 +24,8 @@ the build is per chip, not per board.
 
 And through [zephyr/](zephyr/), any board the Zephyr RTOS supports: STM32,
 Nordic nRF, NXP, Microchip, the Pico again, and hundreds more, one or several
-CPUs. That includes the Cortex-M7 parts, such as the STM32H7, whose FPU does
-double precision in hardware.
+CPUs. That includes the Cortex-M7 parts, such as the STM32H7 and the Teensy 4,
+whose FPU does double precision in hardware.
 
 ## Raspberry Pi RP2040 and RP2350
 
@@ -81,8 +81,14 @@ west flash
 ```
 
 The console is whatever the board's device tree chooses as Zephyr's console
--- usually the UART behind its debug probe's USB port. A board with more than
-one CPU runs one worker on each, pinned there.
+-- usually the UART behind its debug probe's USB port. On a Teensy 4.0 or 4.1
+(`teensy40`, `teensy41`) it is pins 0 (RX1) and 1 (TX1), so it takes a
+USB-serial adapter; `west flash` loads it through the Teensy Loader. A board
+with more than one CPU runs one worker on each, pinned there.
+
+Built and checked so far: `nrf52840dk/nrf52840`, `nucleo_f401re`,
+`nucleo_h743zi`, `rpi_pico`, `teensy40` and `teensy41`, each with its kernels
+in RAM; on the three Cortex-M7 boards `FP-*` is a hardware `vfma.f64`.
 
 QEMU stands in for a board, which is how this port was tested:
 
