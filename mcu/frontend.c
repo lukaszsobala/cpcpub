@@ -425,6 +425,30 @@ static void variant_table(const variant_t **sel, const result_t *rows, int n,
 // document and the console.
 #define HEAP_MARGIN ((size_t)16 << 10)
 
+// For a port whose heap has no figure to ask for: the largest block malloc
+// will hand out, then the largest after that, and so on, all freed again.
+size_t heap_probe(size_t ceiling) {
+    void *held[16];
+    int n = 0;
+    size_t total = 0;
+    while (n < (int)(sizeof(held) / sizeof(held[0]))) {
+        size_t lo = 0, hi = ceiling;
+        while (hi - lo > 256) {
+            const size_t mid = lo + (hi - lo) / 2;
+            void *p = malloc(mid);
+            if (p) { free(p); lo = mid; }
+            else   hi = mid;
+        }
+        if (lo < 1024) break;
+        held[n] = malloc(lo);
+        if (!held[n]) break;
+        total += lo;
+        ++n;
+    }
+    while (n > 0) free(held[--n]);
+    return total;
+}
+
 // Whether `n` workers' buffers of `per` bytes fit at once, taken the way the
 // workers take them: every buffer, then every selector array on top, with the
 // margin held back too. A heap made of several regions -- an ESP32's is -- can

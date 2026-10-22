@@ -3,10 +3,10 @@
 // frontend.c is the same on every board: it reads the command line over the
 // serial console, sizes the buffers, runs the measurement in bench/src and
 // writes the results. Everything that differs between chips is behind the
-// functions below. Each port -- mcu/pico/port.c, mcu/esp32/main/port.c, and
-// mcu/host/port.c for testing the front end on a desktop -- defines all of
-// them, its own entry point, and the three clock hooks measure.h asks every
-// front end for (cpu_cur_mhz, dram_mhz, rated_mhz).
+// functions below. Each port -- mcu/pico/port.c, mcu/esp32/main/port.c,
+// mcu/zephyr/src/port.c, and mcu/host/port.c for testing the front end on a
+// desktop -- defines all of them, its own entry point, and the three clock
+// hooks measure.h asks every front end for (cpu_cur_mhz, dram_mhz, rated_mhz).
 
 #ifndef CPCPUB_MCU_PORT_H
 #define CPCPUB_MCU_PORT_H
@@ -34,6 +34,11 @@ void port_run(worker_t *w, const int *cores, int n);
 // Bytes the heap could hand out right now, in one block or several. What the
 // memory phases are sized from.
 size_t port_heap_bytes(void);
+
+// What a port without a figure of its own can answer that with: malloc asked
+// for blocks, largest first, up to `ceiling` bytes each, and all given back.
+// The heap must return NULL when it is out, not stop the program.
+size_t heap_probe(size_t ceiling);
 
 // How the document describes this machine, all as plain strings:
 //   chip      the part, e.g. "RP2040" -- system.machine

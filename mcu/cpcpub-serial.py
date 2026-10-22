@@ -119,6 +119,27 @@ def open_port(path: str, baud: int):
     return PosixPort(path, baud)
 
 
+def type_line(port, line: str) -> str:
+    """Type `line` and Enter, each character once the board has echoed the last.
+
+    The board echoes every character it takes, which makes the echo a flow
+    control: a console whose receive buffer is a 16-byte FIFO drops what
+    arrives faster than it is read, and a line typed all at once by a program
+    -- or by an emulator, which delivers it at no baud rate at all -- loses its
+    tail. Returns what came back, so the caller sees the echo too.
+    """
+    seen = ""
+    for ch in line:
+        port.write(ch.encode())
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not seen.endswith(ch):
+            data = port.read(0.05)
+            if data:
+                seen += data.decode("utf-8", "replace")
+    port.write(b"\r")
+    return seen
+
+
 def run(port, command: str, silence: float, show) -> list[dict]:
     """Type `command`, follow the output to the next prompt, return the documents."""
     # Whatever the board printed before now is shown and dropped, so it cannot
@@ -137,10 +158,9 @@ def run(port, command: str, silence: float, show) -> list[dict]:
             seen = (seen + text)[-len(PROMPT):]
             if seen.endswith(PROMPT):
                 break
-    port.write(command.encode() + b"\r")
+    buf = type_line(port, command).replace("\r", "")
 
     docs: list[dict] = []
-    buf = ""
     body: list[str] | None = None
     echoed = False
     last = time.monotonic()

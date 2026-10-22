@@ -81,16 +81,19 @@ hub **rejects** it: it is a diagnostic curve with no summary metrics to rank.
 (`emit_json` in [mcu/frontend.c](../mcu/frontend.c)), with the records written
 by the same `json_result`, and the contract test holds it to every rule here.
 Where there is no operating system, `system` describes what stands in for one:
-`sysname` is the SDK (`pico-sdk`, `esp-idf`), `release` its version, and
+`sysname` is the SDK or RTOS (`pico-sdk`, `esp-idf`, `zephyr`), `release` its version, and
 `machine` the chip (`RP2040`, `RP2350`, `ESP32-S3`); `cpu_models` is the core
 and the chip (`Cortex-M0+ (RP2040)`, `Xtensa LX7 (ESP32-S3)`), `cpu_layout`
 counts the cores. `build.target` is `armv6m` (Cortex-M0+), `armv8m`
 (Cortex-M33), `xtensa` (the ESP32, S2 and S3) or `riscv32` (Hazard3 and the
-RISC-V ESP32s).
+RISC-V ESP32s), and under Zephyr whatever else the board's architecture is
+(`armv7m` for a Cortex-M3, M4 or M7, `aarch64`, `riscv64`).
 `build.binary_sha256` is absent: firmware is not a file a release publishes the
 digest of. `config.pin` is always `true`, because each worker runs on the core
 it was started on and nothing can move it. `mhz` is `measured` by the chip's
-own frequency counter or cycle counter.
+own frequency counter or cycle counter -- except under Zephyr, which has no
+portable way to measure it, where it is `rated` from the device tree or the
+SysTick rate.
 
 What the memory phases measure is different there, which is why it says so in
 the document rather than in a column: on-chip SRAM with no cache in front of

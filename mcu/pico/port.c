@@ -66,30 +66,11 @@ void port_run(worker_t *w, const int *cores, int n) {
 // Memory
 // ---------------------------------------------------------------------------
 
-// What malloc can give, found by asking it: the largest block it will hand
-// out, then the largest after that, and so on, all freed again. Needs
+// What malloc can give, found by asking it (see heap_probe()). Needs
 // PICO_MALLOC_PANIC=0, which the build sets -- otherwise the first refusal is
 // a panic rather than a NULL.
 size_t port_heap_bytes(void) {
-    void *held[16];
-    int n = 0;
-    size_t total = 0;
-    while (n < (int)(sizeof(held) / sizeof(held[0]))) {
-        size_t lo = 0, hi = (size_t)1 << 20;   // more than either chip has
-        while (hi - lo > 256) {
-            const size_t mid = lo + (hi - lo) / 2;
-            void *p = malloc(mid);
-            if (p) { free(p); lo = mid; }
-            else   hi = mid;
-        }
-        if (lo < 1024) break;
-        held[n] = malloc(lo);
-        if (!held[n]) break;
-        total += lo;
-        ++n;
-    }
-    while (n > 0) free(held[--n]);
-    return total;
+    return heap_probe((size_t)1 << 20);   // more than either chip has
 }
 
 // ---------------------------------------------------------------------------

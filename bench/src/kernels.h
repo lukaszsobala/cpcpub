@@ -27,6 +27,12 @@
 #define CPCPUB_HOT __attribute__((section(".time_critical.cpcpub")))
 #elif defined(CPCPUB_ESP)
 #define CPCPUB_HOT __attribute__((section(".iram1.cpcpub")))
+#elif defined(CPCPUB_ZEPHYR) && defined(CONFIG_XIP) && \
+      defined(CONFIG_ARCH_HAS_RAMFUNC_SUPPORT)
+// Zephyr's `.ramfunc`, copied to RAM at boot, for a board that runs code in
+// place from flash. Its configuration reaches every source of the build, so
+// the test is the board's own.
+#define CPCPUB_HOT __attribute__((section(".ramfunc")))
 #else
 #define CPCPUB_HOT
 #endif

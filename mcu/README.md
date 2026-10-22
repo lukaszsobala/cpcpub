@@ -22,6 +22,11 @@ Each runs at the fastest clock its maker supports. `FP-*` -- double precision
 -- is software on every one of them. Any board with one of these chips works;
 the build is per chip, not per board.
 
+And through [zephyr/](zephyr/), any board the Zephyr RTOS supports: STM32,
+Nordic nRF, NXP, Microchip, the Pico again, and hundreds more, one or several
+CPUs. That includes the Cortex-M7 parts, such as the STM32H7, whose FPU does
+double precision in hardware.
+
 ## Raspberry Pi RP2040 and RP2350
 
 Needs the [pico-sdk](https://github.com/raspberrypi/pico-sdk) 2.0 or newer,
@@ -65,6 +70,34 @@ the chip's own USB Serial/JTAG port instead (many ESP32-C3, C6 and S3 boards),
 choose it as the console before building: `idf.py -C mcu/esp32 menuconfig`,
 *Component config → ESP System Settings → Channel for console output*.
 
+## Zephyr
+
+Needs a Zephyr workspace (`west init`, `west update`) and the Zephyr SDK, as
+Zephyr's own getting-started guide sets up; 4.0 or newer.
+
+```sh
+west build -b nucleo_h743zi mcu/zephyr          # any board name Zephyr knows
+west flash
+```
+
+The console is whatever the board's device tree chooses as Zephyr's console
+-- usually the UART behind its debug probe's USB port. A board with more than
+one CPU runs one worker on each, pinned there.
+
+QEMU stands in for a board, which is how this port was tested:
+
+```sh
+west build -b qemu_cortex_m3 mcu/zephyr         # or qemu_riscv32
+west build -b qemu_cortex_a53/qemu_cortex_a53/smp mcu/zephyr    # two CPUs
+```
+
+then run QEMU with `-serial pty` in place of the run target's stdio, and point
+`cpcpub-serial.py --port` at the pty it names (QEMU 8.2, as Ubuntu 24.04 has it, wants
+`-cpu rv32` for the RISC-V board). Emulated numbers measure the
+emulator, not a chip; the point is that every path runs. Zephyr's
+`native_sim` does not work: its simulated clock does not advance while code
+runs, so a timed phase never ends.
+
 ## Running a board
 
 From a desktop, with the board plugged in:
@@ -99,9 +132,10 @@ Read [bench/README.md](../bench/README.md) first; this is what changes.
 
 - **Memory is on-chip SRAM.** `MEM` is the SRAM bus and `MEMlat` an SRAM access
   a few cycles long; nothing here is DRAM, and on in-order cores that stall on
-  every load, expect `MLP` near 1. Every chip here reaches its SRAM directly
-  except the ESP32-P4, whose internal memory sits behind an L1 cache, so there
-  the memory phases measure a cache and the SRAM behind it, as on a desktop.
+  every load, expect `MLP` near 1. Every chip in the table reaches its SRAM
+  directly except the ESP32-P4, whose internal memory sits behind an L1 cache,
+  so there the memory phases measure a cache and the SRAM behind it, as on a
+  desktop -- and so do Cortex-M7 boards under Zephyr, which cache their SRAM.
   PSRAM, where a board has it, is not used. The buffer is sized from the
   internal heap that is free; on the Pico builds that is:
 
@@ -126,10 +160,14 @@ Read [bench/README.md](../bench/README.md) first; this is what changes.
 - **The kernels run from RAM, not flash.** Code normally executes from flash
   through a cache -- 16 KiB on the RP2040, shared by both cores -- so the
   kernels, and on the Pico builds the soft-float routines they call, are put in
-  SRAM (or the ESP32's instruction RAM) so that cache is not what is measured.
+  SRAM (the ESP32's instruction RAM; Zephyr's `.ramfunc` on a board that runs
+  from flash) so that cache is not what is measured.
 - **The clock is measured**, so `mhz` is `measured`: on the Pico builds by the
   chip's frequency counter against the crystal, on an ESP32 as the cycles a
-  core counts against the crystal-driven timer over 2 ms.
+  core counts against the crystal-driven timer over 2 ms. Zephyr has no
+  portable way to measure it, so there it is `rated`: the device tree's figure,
+  or the SysTick rate on a Cortex-M whose SysTick counts the processor clock --
+  or else the INT-lat estimate.
 - **Each worker has a core to itself**, so `pin` is always true and there is no
   scheduler to argue with. A core that is waiting sleeps (WFE on the Pico
   builds, FreeRTOS's idle task on an ESP32) rather than polls, so it takes no
@@ -140,14 +178,17 @@ Read [bench/README.md](../bench/README.md) first; this is what changes.
   `CPCPUB_STDIO=uart` build has none. On an ESP32 the console raises nothing
   while it is quiet, but FreeRTOS's tick interrupts each core 100 times a
   second. The task watchdog is off, since a run holds every core for longer
-  than it allows.
+  than it allows. Zephyr is tickless, so its timer interrupts only when a
+  timeout is due, and the workers are cooperative threads no other thread
+  preempts.
 - **Expect little or no indirect branch prediction.** These cores have small
   front ends, if any, so `DISPcap` may well read `none`. That is a result, not
   a failure.
 
-The document says what it came from: `system.sysname` is `pico-sdk` or
-`esp-idf` and `release` its version, `machine` the chip, `build.target`
-`armv6m`, `armv8m`, `xtensa` or `riscv32`; there is no `binary_sha256`. See
+The document says what it came from: `system.sysname` is `pico-sdk`,
+`esp-idf` or `zephyr` and `release` its version, `machine` the chip,
+`build.target` `armv6m`, `armv7m`, `armv8m`, `xtensa`, `riscv32` or, under
+Zephyr, whatever else the board is; there is no `binary_sha256`. See
 [schema/cpu-bench-1.md](../schema/cpu-bench-1.md).
 
 ## Layout
@@ -158,5 +199,6 @@ The document says what it came from: `system.sysname` is `pico-sdk` or
 | [port.h](port.h) | what a chip has to supply to it |
 | [pico/](pico/) | the RP2040/RP2350 port and its CMake build; its platform layer is `bench/src/platform_pico.h` |
 | [esp32/](esp32/) | the ESP32 port as an ESP-IDF project; its platform layer is `bench/src/platform_esp.h` |
+| [zephyr/](zephyr/) | the Zephyr port as a Zephyr application; its platform layer is `bench/src/platform_zephyr.h` |
 | [host/](host/) | a port that runs the front end on a desktop, for testing it: `make check` holds its document to the same contract as `bench/cpcpub`'s |
 | [cpcpub-serial.py](cpcpub-serial.py) | runs a board from a desktop and saves the result |

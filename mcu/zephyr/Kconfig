@@ -1,0 +1,22 @@
+# What the benchmark asks of the kernel configuration, wherever the board has
+# it to give. `imply` rather than prj.conf lines, so a board without, say, an
+# FPU or a second CPU builds without a warning about an option it cannot take.
+
+mainmenu "cpcpub"
+
+source "Kconfig.zephyr"
+
+config CPCPUB
+	bool
+	default y
+	# The FPU where there is one, with its registers saved per thread: the
+	# workers and the console all use floating point.
+	imply FPU
+	imply FPU_SHARING
+	# Pinning each worker to its CPU on an SMP board.
+	imply SCHED_CPU_MASK
+	# A 64-bit cycle count from the Cortex-M SysTick, for the clock.
+	imply CORTEX_M_SYSTICK_64BIT_CYCLE_COUNTER
+	# printf that formats %g and %llu, as the tables and the document need,
+	# from whichever C library the board builds with.
+	select REQUIRES_FLOAT_PRINTF

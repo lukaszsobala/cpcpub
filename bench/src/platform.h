@@ -31,6 +31,8 @@
 #include "platform_pico.h"
 #elif defined(CPCPUB_ESP)
 #include "platform_esp.h"
+#elif defined(CPCPUB_ZEPHYR)
+#include "platform_zephyr.h"
 #else
 
 #include <pthread.h>
@@ -433,6 +435,6 @@ static inline int plat_sysinfo(plat_sysinfo_t *si) {
 #endif
 }
 
-#endif  // CPCPUB_PICO, CPCPUB_ESP
+#endif  // CPCPUB_PICO, CPCPUB_ESP, CPCPUB_ZEPHYR
 
 #endif  // CPCPUB_PLATFORM_H
