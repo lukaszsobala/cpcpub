@@ -150,6 +150,9 @@ SCRYPT_MAXMEM = 64 << 20
 #         which the geomean cannot stand in for -- plus whichever metric the
 #         board is being sorted on. The rest are one select away, and every
 #         metric is still ranked, filtered and compared on.
+#   aside   set on a metric that is not part of the score, saying why; the page
+#         sets those columns apart and puts this in their tooltips. Listed last,
+#         after everything the score is made of, as the benchmark prints them.
 METRICS = [
     {"key": "score",       "label": "score",    "unit": "geomean", "kind": "rate",  "better": "high", "headline": True},
     {"key": "int_thr",     "label": "INT-thr",  "unit": "Mop/s",  "kind": "rate",  "better": "high", "headline": True},
@@ -165,6 +168,12 @@ METRICS = [
     {"key": "mlp",         "label": "MLP",      "unit": "x",       "kind": "ratio", "better": "high"},
     {"key": "disp_thr",    "label": "DISP-thr", "unit": "Mcall/s", "kind": "rate",  "better": "high"},
     {"key": "disp_cap",    "label": "DISPcap",  "unit": "calls",   "kind": "ratio", "better": "high"},
+    # The FP pair again on floats: what a core with a single-precision FPU and
+    # no double-precision one -- most microcontrollers -- does in hardware.
+    {"key": "fp32_thr",    "label": "FP32-thr", "unit": "Mflop/s", "kind": "rate",  "better": "high",
+     "aside": "single precision, not in the score"},
+    {"key": "fp32_lat",    "label": "FP32-lat", "unit": "Mflop/s", "kind": "rate",  "better": "high",
+     "aside": "single precision, not in the score"},
 ]
 METRIC_KEYS = [m["key"] for m in METRICS]
 # key -> kind, for the one place that has to redo the front end's per-GHz
@@ -198,8 +207,7 @@ CORE_FIELDS = [
     ("disp_gain",        "disp_gain",       "num"),
     ("disp_span",        "disp_span",       "num"),
     ("score",            "score",           "num"),
-    # Single precision, outside the score. Stored and served with the record,
-    # but not in METRICS yet: how to rank and show it is still open.
+    # Single precision, outside the score: in METRICS, marked aside.
     ("fp32_lat_mflops",  "fp32_lat",        "num"),
     ("fp32_thr_mflops",  "fp32_thr",        "num"),
 ]

@@ -362,6 +362,16 @@ function unitOf(metric) {
   return metric.unit;
 }
 
+// A metric outside the score -- the FP32 pair -- is set apart wherever it is
+// drawn: a dashed rule before it and a quieter header (style.css), with the
+// reason in the tooltip. `node` is its header or cell; returns it.
+function markAside(node, m) {
+  if (!m || !m.aside) return node;
+  node.classList.add("aside");
+  node.title = node.title ? `${node.title} (${m.aside})` : `${m.label}: ${m.aside}`;
+  return node;
+}
+
 // The columns a table shows. The metric being sorted on is always one of them —
 // a board ordered by a number it does not print reads as arbitrary.
 function shownMetrics() {
@@ -845,13 +855,18 @@ function sortHeader(label, unit, key) {
   // Spelling "higher is better" out fifteen times across one header row would
   // double the table's width, so a column carries the glyph and says the words
   // in its tooltip; the legend under the table gives both in full.
-  const dir = direction(state.metrics.find((x) => x.key === key));
+  const metric = state.metrics.find((x) => x.key === key);
+  const dir = direction(metric);
   const th = el("th", active ? "num sorted" : "num");
   th.setAttribute("aria-sort", !active ? "none"
     : state.order === "desc" ? "descending" : "ascending");
   const btn = el("button", "sorth");
   btn.type = "button";
   btn.title = dir ? `sort by ${label} — ${dir.text}` : `sort by ${label}`;
+  if (metric && metric.aside) {
+    th.classList.add("aside");
+    btn.title += ` (${metric.aside})`;
+  }
   const name = el("span", "mname", label);
   if (active) name.append(el("span", "arrow", state.order === "desc" ? "▾" : "▴"));
   btn.append(name, el("span", "munit", dir && dir.mark ? `${unit} ${dir.mark}` : unit));
@@ -913,7 +928,7 @@ function fitCell(row) {
 
 function metricCells(tr, row) {
   tr.append(el("td", "num", row.mhz ? Math.round(row.mhz) : "—"));
-  for (const m of shownMetrics()) tr.append(el("td", "num", fmt(value(row, m))));
+  for (const m of shownMetrics()) tr.append(markAside(el("td", "num", fmt(value(row, m))), m));
 }
 
 // A run as a link, #run=N, so it can be opened in a new tab, copied or
@@ -1009,6 +1024,14 @@ function renderBoard() {
   hr.append(sortHeader("MHz", "", "mhz"));
   for (const m of shownMetrics()) hr.append(sortHeader(m.label, unitOf(m), m.key));
   thead.append(hr);
+  // Said under the table too while one of them is a column: the tooltip is
+  // easy to miss, and a reader comparing FP32 with the score should not.
+  const asides = new Map();
+  for (const m of shownMetrics().filter((x) => x.aside)) {
+    asides.set(m.aside, [...(asides.get(m.aside) || []), m.label]);
+  }
+  $("#board-legend").textContent = "↑ higher is better · ↓ lower is better" +
+    [...asides].map(([why, labels]) => ` · ${labels.join(", ")}: ${why}`).join("");
 
   state.pickable = [];
   if (state.grouped) {
@@ -1401,6 +1424,7 @@ function renderSelection() {
     const h = el("div", "cmp-title");
     h.append(el("strong", null, m.label), el("span", "munit", unitOf(m)));
     if (dir) h.append(el("span", "hint", dir.text));
+    if (m.aside) h.append(el("span", "hint aside-note", m.aside));
     block.append(h);
 
     rows.forEach((r, i) => {
@@ -1503,7 +1527,7 @@ async function showRun(id) {
       if (!r || r.percentile === null) continue;
       const dir = direction(m);
       const line = el("div", "pct-row");
-      line.append(el("span", "pct-name", m.label));
+      line.append(markAside(el("span", "pct-name", m.label), m));
       // These bars are a standing, not a measurement, and a standing has only
       // one good end however the metric runs -- so the direction is said here
       // too, to keep it from being read as one of the value bars in Compare.
@@ -1575,7 +1599,7 @@ function sameCpu(scopes) {
   for (const m of shownMetrics()) {
     if (m.better === "none" || order.every((k) => !scopes[k].metrics[m.key])) continue;
     const tr = el("tr");
-    tr.append(el("td", null, m.label));
+    tr.append(markAside(el("td", null, m.label), m));
     for (const k of order) {
       const f = scopes[k].metrics[m.key];
       const b = f ? behind(f, m.better) : null;
@@ -1613,7 +1637,7 @@ function recordsTable(run) {
     const dir = direction(m);
     const th = el("th", "num", dir && dir.mark ? `${m.label} ${dir.mark}` : m.label);
     if (dir) th.title = `${m.label} — ${dir.text}`;
-    hr.append(th);
+    hr.append(markAside(th, m));
   }
   thead.append(hr);
   const tbody = el("tbody");
@@ -1626,7 +1650,7 @@ function recordsTable(run) {
   const line = (name, cpu, rec, cls) => {
     const tr = el("tr", cls);
     tr.append(name, el("td", "num", cpu), el("td", "num", rec.mhz ? Math.round(rec.mhz) : "—"));
-    for (const m of shownMetrics()) tr.append(el("td", "num", fmt(rec[m.key])));
+    for (const m of shownMetrics()) tr.append(markAside(el("td", "num", fmt(rec[m.key])), m));
     tbody.append(tr);
     return tr;
   };

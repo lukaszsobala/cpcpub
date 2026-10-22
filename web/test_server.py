@@ -363,6 +363,30 @@ class HubTest(unittest.TestCase):
         lats = [c["mem_lat_ns"] for c in out["cores"]]
         self.assertEqual(lats, sorted(lats))
 
+    def test_fp32_is_a_metric_marked_outside_the_score(self):
+        """Listed for the page, with the reason it is set apart; not a default column."""
+        _, out = self.req("/api/metrics")
+        fp32 = {m["key"]: m for m in out["metrics"] if m["key"].startswith("fp32")}
+        self.assertEqual(set(fp32), {"fp32_lat", "fp32_thr"})
+        for m in fp32.values():
+            self.assertIn("not in the score", m["aside"])
+            self.assertFalse(m.get("headline"))
+        # Nothing the score is made of is marked aside.
+        self.assertFalse(any(m.get("aside") for m in out["metrics"]
+                             if not m["key"].startswith("fp32")))
+
+    def test_the_board_sorts_on_fp32_with_older_runs_last(self):
+        """A run from before FP32 has none, and ranks below every run that does."""
+        old = self.upload(document(cores=[core(cpu=0, fp32_lat_mflops=None,
+                                               fp32_thr_mflops=None)]))
+        low = self.upload(document(cores=[core(cpu=0, fp32_thr_mflops=500.0)]))
+        high = self.upload(document(cores=[core(cpu=0, fp32_thr_mflops=90000.0)]))
+        _, out = self.req("/api/cores?scope=cpu&sort=fp32_thr&order=desc&limit=200")
+        ids = [c["run_id"] for c in out["cores"]]
+        self.assertLess(ids.index(high["id"]), ids.index(low["id"]))
+        self.assertLess(ids.index(low["id"]), ids.index(old["id"]))
+        self.assertIsNone(out["cores"][ids.index(old["id"])]["fp32_thr"])
+
     # -- one upload, one row ----------------------------------------------
     def test_upload_takes_one_leaderboard_row(self):
         """A machine with 8 cores is one result, not eight."""
