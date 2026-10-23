@@ -64,8 +64,9 @@ which wraps the image -- that one is in `SHA256SUMS`.
 Needs the [pico-sdk](https://github.com/raspberrypi/pico-sdk) 2.0 or newer,
 CMake and a cross-compiler: `arm-none-eabi-gcc` for the Arm cores (Debian and
 Ubuntu: `gcc-arm-none-eabi libnewlib-arm-none-eabi
-libstdc++-arm-none-eabi-newlib`), and for Hazard3 the RISC-V toolchain
-Raspberry Pi publishes in
+libstdc++-arm-none-eabi-dev`; the firmware is linked as C, so the large
+`libstdc++-arm-none-eabi-newlib` the SDK's own instructions list is not
+needed), and for Hazard3 the RISC-V toolchain Raspberry Pi publishes in
 [pico-sdk-tools](https://github.com/raspberrypi/pico-sdk-tools/releases).
 The SDK fetches and builds `picotool` itself if none is installed.
 

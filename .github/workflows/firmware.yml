@@ -107,19 +107,38 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      # Every download here is from a network the job does not control, and one
-      # stalled for hours in this step: apt retries and gives up on a silent
-      # mirror, and the step as a whole is cut off well short of the job's limit.
+      # The Arm toolchain's packages, kept in GitHub's cache once a job has
+      # fetched them: the Ubuntu mirror has crawled at 50 KB/s here, and a cache
+      # restore does not go through it. Bump the key's last part to refresh.
+      - name: Restore the toolchain packages
+        uses: actions/cache@v6
+        with:
+          path: ~/debs
+          key: arm-none-eabi-debs-ubuntu-24.04-v1
+
+      # The compiler, the C library, and the C++ headers the SDK's one C++ file
+      # includes -- not libstdc++ itself, 460 MB that a firmware linked as C
+      # (mcu/pico/CMakeLists.txt) never uses. Whatever is not in the cache comes
+      # from the mirror, with retries and a timeout on a silent one, and the
+      # step is cut off well short of the job's limit.
       - name: Install the toolchain and the pico-sdk
         timeout-minutes: 10
         env:
           RISCV: ${{ matrix.riscv }}
         run: |
           set -eux
-          apt=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          mkdir -p ~/debs
+          if compgen -G ~/debs/'*.deb' >/dev/null; then sudo cp ~/debs/*.deb /var/cache/apt/archives/; fi
+          apt=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+               -o APT::Keep-Downloaded-Packages=true)
           sudo apt-get "${apt[@]}" update
           sudo apt-get "${apt[@]}" install -y --no-install-recommends \
-            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-dev
+          # For the cache to save at the end of the job; an image that cleans
+          # apt's archive leaves nothing, and the next run downloads again.
+          if compgen -G '/var/cache/apt/archives/*.deb' >/dev/null; then
+            cp /var/cache/apt/archives/*.deb ~/debs/
+          fi
           arm-none-eabi-gcc --version | head -1
           # Only TinyUSB of the SDK's submodules: the USB console. The others
           # are the Pico W's radio stacks, which nothing here uses.

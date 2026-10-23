@@ -117,5 +117,11 @@ else()
     pico_enable_stdio_uart(cpcpub 0)
 endif()
 
-target_link_libraries(cpcpub pico_stdlib pico_multicore pico_sync hardware_clocks)
+target_link_libraries(cpcpub pico_stdlib pico_multicore pico_sync hardware_clocks m)
+# Linked as C, which it is. The SDK insists on C++ being enabled and compiles a
+# file of its own in it, which would make CMake link with g++ -- and g++ asks
+# for libstdc++, nearly half a gigabyte of packages that nothing here uses. It
+# also adds libm unasked, so that is named above, for measure.c's log, exp and
+# pow (on the Arm cores the SDK's own routines answer them all the same).
+set_target_properties(cpcpub PROPERTIES LINKER_LANGUAGE C)
 pico_add_extra_outputs(cpcpub)
