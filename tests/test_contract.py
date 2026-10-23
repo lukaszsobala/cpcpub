@@ -96,6 +96,24 @@ SECTION_COLUMNS = {
 LIVE_ARGS = ["--full", "--cpus", "0", "--threads", "1", "--cooldown", "0.01",
              "--time", "0.05", "--reps", "1", "--warmup", "0.02", "--json"]
 
+# The microcontroller front end (mcu/frontend.c) writes the same document from
+# its own code, so it is held to the same contract -- through its test port,
+# mcu/host, which runs it on this machine. Two cores, so the multi-core half
+# has a barrier to cross; a heap large enough that the memory phases run.
+MCU_LINE = "--full --cpus 0,1 --time 0.05 --reps 1 --warmup 0.02 --json\n"
+MCU_HEAP = str(8 << 20)
+
+
+def mcu_document(binary):
+    """The one document a run of the mcu front end prints between its markers."""
+    proc = subprocess.run([binary], input=MCU_LINE, check=True, text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                          env=dict(os.environ, CPCPUB_HEAP=MCU_HEAP))
+    lines = proc.stdout.splitlines()
+    begin = lines.index("-----BEGIN CPCPUB JSON-----")
+    end = lines.index("-----END CPCPUB JSON-----")
+    return json.loads("\n".join(lines[begin + 1:end]))
+
 
 def documents():
     """Every cpcpub document this run can test, as (name, doc)."""
@@ -107,6 +125,9 @@ def documents():
         proc = subprocess.run([binary] + LIVE_ARGS, check=True,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         out.append((f"live: {Path(binary).name}", json.loads(proc.stdout)))
+    mcu = os.environ.get("CPCPUB_MCU_HOST_BIN")
+    if mcu:
+        out.append((f"mcu: {Path(mcu).name}", mcu_document(mcu)))
     return out
 
 
@@ -203,6 +224,19 @@ class ContractTest(unittest.TestCase):
         want = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
         self.assertEqual(live[0]["build"].get("binary_sha256"), want)
 
+    def test_the_mcu_front_end_reports_the_digest_its_port_gives(self):
+        """The same chain for the firmware's front end, through its test port.
+
+        A chip's port hashes its image in flash; the test port hashes its own
+        file, so the digest the document carries can be checked exactly here.
+        """
+        binary = os.environ.get("CPCPUB_MCU_HOST_BIN")
+        docs = [d for n, d in DOCUMENTS if n.startswith("mcu:")]
+        if not binary or not docs:
+            self.skipTest("no $CPCPUB_MCU_HOST_BIN; `make check` runs this")
+        want = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
+        self.assertEqual(docs[0]["build"].get("binary_sha256"), want)
+
     def test_every_metric_has_a_column(self):
         """/api/metrics may only advertise metrics the leaderboard can sort on."""
         self.assertEqual(set(srv.METRIC_KEYS) - set(srv.CORE_COLUMNS), set(),
@@ -245,7 +279,7 @@ class ContractTest(unittest.TestCase):
         beside them in the same record, and the hub refuses an upload where
         they do not agree -- its one check against a result edited after the
         benchmark wrote it. This is the side of that contract the benchmark
-        keeps. If a formula in bench.c moves and server.py does not follow,
+        keeps. If a formula in measure.c moves and server.py does not follow,
         every honest upload starts being refused, and this says so first.
         """
         for name, doc in DOCUMENTS:

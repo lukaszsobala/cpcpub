@@ -4,8 +4,12 @@
 // runtime, not a POSIX layer. What differs between the systems is behind the
 // capability macros and shims in platform.h.
 //
-// This file is the driver: it selects CPUs, times batches, aggregates and
-// reports. The kernels it times live in kernels.c, which is compiled once per
+// This file is the desktop front end: it parses the command line, selects CPUs,
+// runs one thread per worker, probes the host and writes the document around
+// the results. The measurement itself -- timing, phases, scoring -- is in
+// measure.c, and the result records are written by report.c; both are shared
+// with any other front end, so a number means the same whichever one printed
+// it. The kernels they time live in kernels.c, which is compiled once per
 // build variant (scalar/vector x FMA off/on) because both toggles are
 // translation-unit flags. See kernels.h for that interface.
 
@@ -29,12 +33,10 @@
 // platform.h pulls in with the version guards it needs.
 #include "platform.h"
 #include "kernels.h"
+#include "measure.h"
+#include "report.h"
 #include "sha256.h"
 #include "http.h"
-
-#ifndef ARRAY_LEN
-#define ARRAY_LEN(x) ((int)(sizeof(x) / sizeof((x)[0])))
-#endif
 
 // Where `--submit` sends a result when it is given no URL of its own. Empty in
 // a hand-built tree, so building one does not quietly point it at a board you
@@ -65,10 +67,6 @@
 // What `--version` reports. "dev" unless the build stamped one in -- see
 // VERSION in bench/Makefile -- so an unlabelled binary says so rather than
 // claiming to be a release it is not.
-// A clock the operator supplied with --mhz, in MHz, or 0. See the flag's own
-// note in usage(): it exists for the machines that will not say.
-static double g_mhz_given = 0.0;
-
 #ifndef CPCPUB_VERSION
 #define CPCPUB_VERSION "dev"
 #endif
@@ -105,111 +103,6 @@ static void cool_down(void) {
 }
 
 // ---------------------------------------------------------------------------
-// The JSON sink
-// ---------------------------------------------------------------------------
-//
-// The result document normally goes straight to stdout. --submit needs the
-// same bytes in memory instead -- they are what gets POSTed, and a text-mode
-// run has to produce them without printing them. So the JSON emitters write
-// through jout(), which is stdout until a buffer is put in front of it.
-
-typedef struct {
-    char  *p;
-    size_t len, cap;
-    int    oom;             // an allocation failed; the document is incomplete
-} sbuf_t;
-
-static sbuf_t *g_json_sink = NULL;
-
-static void sbuf_free(sbuf_t *b) {
-    free(b->p);
-    b->p = NULL;
-    b->len = b->cap = 0;
-}
-
-#if defined(__GNUC__)
-__attribute__((format(printf, 1, 2)))
-#endif
-static void jout(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    if (!g_json_sink) {
-        vprintf(fmt, ap);
-        va_end(ap);
-        return;
-    }
-    sbuf_t *b = g_json_sink;
-    for (int attempt = 0; attempt < 2 && !b->oom; ++attempt) {
-        va_list copy;
-        va_copy(copy, ap);
-        const size_t room = b->cap - b->len;
-        // NULL with a size of zero is what vsnprintf is defined to accept, and
-        // is what the first pass on an empty buffer hands it -- b->p + 0 on a
-        // null pointer would not be.
-        char *at = b->p ? b->p + b->len : NULL;
-        const int n = vsnprintf(at, room, fmt, copy);
-        va_end(copy);
-        if (n < 0) { b->oom = 1; break; }
-        if ((size_t)n < room) { b->len += (size_t)n; break; }
-        // It did not fit: grow to hold it and write it again. vsnprintf said
-        // exactly how much it wanted, so the second pass always fits.
-        size_t want = b->cap ? b->cap : 8192;
-        while (want < b->len + (size_t)n + 1) want *= 2;
-        char *bigger = (char *)realloc(b->p, want);
-        if (!bigger) { b->oom = 1; break; }
-        b->p = bigger;
-        b->cap = want;
-    }
-    va_end(ap);
-}
-
-static void jputc(char c) {
-    if (g_json_sink) jout("%c", c);
-    else             putchar(c);
-}
-
-// ---------------------------------------------------------------------------
-// Timing
-// ---------------------------------------------------------------------------
-
-static clockid_t g_clock_id = CLOCK_MONOTONIC;
-// What --clock actually got, which is not always what it asked for. Reported
-// in place of the request: a result that says it used the raw clock on a system
-// with no raw clock is describing a run that did not happen.
-static int g_clock_raw = 0;
-
-static void set_clock_mode(int use_raw) {
-#ifdef CLOCK_MONOTONIC_RAW
-    g_clock_raw = use_raw ? 1 : 0;
-    g_clock_id = use_raw ? CLOCK_MONOTONIC_RAW : CLOCK_MONOTONIC;
-#else
-    // No unadjusted monotonic clock here -- mingw-w64's clock_gettime offers
-    // CLOCK_MONOTONIC and nothing below it -- so --clock raw quietly gets the
-    // NTP-disciplined one. Quietly in the sense that nothing fails: the result
-    // document says "mono", because that is what was used.
-    (void)use_raw;
-    g_clock_raw = 0;
-    g_clock_id = CLOCK_MONOTONIC;
-#endif
-}
-
-static inline double now_sec(void) {
-    struct timespec ts;
-    clock_gettime(g_clock_id, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
-}
-
-// Xorshift64* PRNG, used only for setup (never inside a timed loop).
-static inline uint64_t xs64(uint64_t *s) {
-    uint64_t x = *s;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    *s = x;
-    return x * UINT64_C(2685821657736338717);
-}
-
-// ---------------------------------------------------------------------------
 // Build variants
 // ---------------------------------------------------------------------------
 //
@@ -239,123 +132,6 @@ static const variant_t g_variants[] = {
 #define VARIANT_DEFAULT 0
 
 // ---------------------------------------------------------------------------
-// Indirect-dispatch ladders
-// ---------------------------------------------------------------------------
-
-// Selector-sequence periods swept by --disp-sweep, in calls.
-//
-// A uniformly random target sequence is unpredictable for every predictor ever
-// built, so a "random" dispatch loop measures the *cost of a mispredict*, which
-// is pipeline-depth-dominated and ranks cores by how shallow they are. What
-// separates a big front end from a little one is predictor capacity: the length
-// of deterministic pattern it can still learn. So the selector stream is a fixed
-// random pattern of period L, repeated, and L is swept. Small L: everyone learns
-// it. Huge L: nobody does. The knee in between reads out the predictor. The last
-// entry is the unpredictable floor.
-static const size_t g_disp_periods[] = {
-    1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 65536
-};
-#define DISP_SWEEP_N   ARRAY_LEN(g_disp_periods)
-// Backing array is sized for the largest period; smaller periods use a prefix.
-#define DISP_IDX_BYTES ((size_t)65536)
-
-// The ladder the suite itself walks: a single-target reference, a x2 geometric
-// span, and the unpredictable floor.
-//
-// Period 1 calls the same function every time, which any core with a BTB
-// predicts. It is not part of the span; it exists to tell "predicts nothing
-// beyond a single target" apart from "predicts everything the ladder can throw
-// at it", which look identical from the span alone. The floor must be the
-// genuinely random point: a floor taken from the end of the ladder is still
-// partly predicted on some cores, and a floor set too high compresses every q
-// beneath it.
-static const size_t g_disp_ladder[] = {
-    1,                                                          // reference
-    8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, // the span
-    65536                                                       // floor
-};
-#define DISP_LADDER_N     ARRAY_LEN(g_disp_ladder)
-#define DISP_LADDER_BYTES ((size_t)65536)
-#define DISP_REF_IDX      0
-#define DISP_SPAN_FIRST   1
-#define DISP_SPAN_LAST    (DISP_LADDER_N - 2)
-// Span points establishing the "everyone predicts this" plateau, starting at
-// DISP_SPAN_FIRST. The best is taken, not the mean: the plateau is the reference
-// the whole curve is normalised against, so one point depressed by interference
-// would inflate every q beneath it.
-#define DISP_PLATEAU_PTS  3
-// The capacity read-out integrates the curve rather than crossing a threshold
-// (a threshold lands on the knee, where noise moves it between ladder steps). At
-// each ladder point the rate is normalised to
-//   q = (rate - floor) / (plateau - floor)      clipped to [0,1]
-// i.e. how much of the available prediction win the core is still getting.
-// Summing q gives the width of the predicted region in log2(period) units, so
-//   capacity = first_period * 2^(sum(q) - 1)
-// which returns exactly L for an ideal core that predicts everything up to L and
-// nothing beyond. Dividing the floor out is what stops a shallow pipeline from
-// scoring as a good predictor: the floor *is* the mispredict penalty.
-//
-// Below this plateau/floor ratio the curve is flat and there is no span to
-// integrate -- the core has no usable indirect prediction.
-#define DISP_MIN_GAIN     1.15
-
-// ---------------------------------------------------------------------------
-// Timed driver
-// ---------------------------------------------------------------------------
-//
-// Runs the kernel in batches sized to land near TARGET_BATCH_SEC, which keeps
-// clock_gettime out of the measured work while bounding the overshoot past
-// `seconds`. Iteration count and elapsed time both include the final batch, so
-// the reported rate is exact regardless of overshoot.
-#define TARGET_BATCH_SEC 0.004
-#define MAX_BATCH_SEC    0.020
-
-static uint64_t run_timed(kernel_fn fn, void *ctx, double seconds,
-                          uint64_t batch_init, double *elapsed_out) {
-    const double t0 = now_sec();
-    const double t_end = t0 + seconds;
-    uint64_t batch = batch_init ? batch_init : 1;
-    uint64_t iters = 0;
-    double t = t0;
-
-    while (t < t_end) {
-        fn(ctx, batch);
-        iters += batch;
-        const double t2 = now_sec();
-        const double dt = t2 - t;
-        if (dt < TARGET_BATCH_SEC && batch < (UINT64_C(1) << 30)) {
-            batch *= 2;
-        } else if (dt > MAX_BATCH_SEC && batch > 1) {
-            batch /= 2;
-        }
-        t = t2;
-    }
-
-    double elapsed = t - t0;
-    if (elapsed <= 0.0) elapsed = seconds;
-    *elapsed_out = elapsed;
-    return iters;
-}
-
-// Volatile so the compiler cannot delete a warm-up loop as dead code.
-static volatile uint64_t g_warmup_sink;
-
-// Wake the core from idle and ramp DVFS before measuring. Warms up with the
-// variant about to be measured, so the caches hold the code that is next to run.
-
-static void warmup_spin(const kernel_set_t *k, double sec) {
-    if (sec <= 0.0) return;
-    int_ctx_t c;
-    for (int i = 0; i < LANES; ++i) c.l[i] = (uint64_t)i + 1u;
-    c.k[0] = UINT64_C(0x9E3779B97F4A7C15); c.k[1] = UINT64_C(0xBF58476D1CE4E5B9);
-    const double t_end = now_sec() + sec;
-    while (now_sec() < t_end) {
-        k->int_thr(&c, 20000);
-    }
-    for (int i = 0; i < LANES; ++i) g_warmup_sink ^= c.l[i];
-}
-
-// ---------------------------------------------------------------------------
 // Per-CPU information
 // ---------------------------------------------------------------------------
 
@@ -371,7 +147,7 @@ static double read_cpu_khz(int cpu, const char *what) {
     return khz;
 }
 
-static double cpu_cur_mhz(int cpu) {
+double cpu_cur_mhz(int cpu) {
     double khz = read_cpu_khz(cpu, "scaling_cur_freq");
     return khz > 0.0 ? khz / 1000.0 : 0.0;
 }
@@ -512,7 +288,7 @@ static void find_dram_devfreq(void) {
     closedir(d);
 }
 
-static double dram_mhz(void) {
+double dram_mhz(void) {
     if (!g_dram_freq_path[0]) return 0.0;
     FILE *f = fopen(g_dram_freq_path, "r");
     if (!f) return 0.0;
@@ -522,363 +298,12 @@ static double dram_mhz(void) {
     return hz > 0.0 ? hz / 1e6 : 0.0;
 }
 
-// ---------------------------------------------------------------------------
-// Worker
-// ---------------------------------------------------------------------------
-
-typedef struct {
-    int    id;
-    int    cpu;            // CPU to pin to, or -1 for unpinned
-    size_t mem_bytes;      // per-thread buffer for the memory phases (0 = skip)
-    double seconds;        // measured time per phase
-    double warmup;         // warm-up seconds before each phase
-    int    reps;           // repetitions per phase; the best one is kept
-    plat_barrier_t *bar;
-    uint64_t seed;
-    const kernel_set_t *ks;   // the build variant this run measures
-
-    volatile uint64_t checksum;
-
-    // results
-    double int_lat_mops;
-    double int_thr_mops;
-    double mul_thr_mops;   // integer 64-bit multiplies per second
-    double fp_lat_mflops;
-    double fp_thr_mflops;
-    double mem_gbps;
-    double mem_lat_ns;     // one dependent chain
-    double mem_mlp_ns;     // CHASE_WAYS chains in flight, per access
-    double disp_ladder[DISP_LADDER_N];  // Mcall/s at each selector period
-    int    disp_sweep;     // run only the selector-period sweep, not the suite
-    double sweep_serial[DISP_SWEEP_N];  // Mcall/s per period, dependent chain
-    double sweep_free[DISP_SWEEP_N];    // Mcall/s per period, independent calls
-    double mhz_observed;   // sampled while the core was under load
-    double dram_mhz_observed; // DRAM controller clock during the memory phases
-    int    cpu_observed;   // where it actually ran, -1 where unknowable
-} worker_t;
-
-static void wsync(worker_t *w) {
-    if (w->bar) plat_barrier_wait(w->bar);
-}
-
-// Enter one repetition of a phase: line all threads up, warm up (first rep
-// only), line up again so every thread starts measuring at the same instant.
-// Every thread must call this the same number of times or the barrier deadlocks.
-static void phase_begin(worker_t *w, int rep) {
-    wsync(w);
-    if (rep == 0) warmup_spin(w->ks, w->warmup);
-    wsync(w);
-}
-
-// Warm-up for the memory phases. A pure-ALU spin does not ramp a DRAM
-// controller whose governor scales the DDR clock, so the memory phases would
-// start measuring at whatever idle clock it was parked at.
-//
-// `readonly` must be set once a pointer chase has been built into the buffer:
-// the read+write sweep would overwrite the chase links and the next chase would
-// dereference a wild pointer. A read-only sweep ramps the governor just as well.
-NOINLINE static void mem_warmup(const kernel_set_t *k, void *buf, size_t nbytes,
-                                double sec, int readonly) {
-    if (!buf || nbytes < 4096 || sec <= 0.0) return;
-    const double t_end = now_sec() + sec;
-    if (readonly) {
-        const uint64_t *p = (const uint64_t *)buf;
-        const size_t nq = nbytes / sizeof(uint64_t);
-        uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
-        while (now_sec() < t_end) {
-            for (size_t i = 0; i + 3 < nq; i += 4) {
-                a0 += p[i]; a1 += p[i + 1]; a2 += p[i + 2]; a3 += p[i + 3];
-            }
-        }
-        g_warmup_sink ^= a0 ^ a1 ^ a2 ^ a3;
-    } else {
-        mem_ctx_t m = { .buf = (uint64_t *)buf,
-                        .nqwords = nbytes / sizeof(uint64_t),
-                        .acc = {0, 0, 0, 0} };
-        while (now_sec() < t_end) {
-            k->mem_bw(&m, 1);
-        }
-        for (int i = 0; i < 4; ++i) g_warmup_sink ^= m.acc[i];
-    }
-}
-
-// Same contract as phase_begin, but ramps the memory subsystem.
-static void phase_begin_mem(worker_t *w, int rep, void *buf, size_t nbytes,
-                            int readonly) {
-    wsync(w);
-    if (rep == 0) mem_warmup(w->ks, buf, nbytes, w->warmup, readonly);
-    wsync(w);
-}
-
-// Repeated measurements keep the *best* result, not the mean: interference can
-// only ever make a run slower, so the fastest run is closest to the machine's
-// true capability and averaging would fold the noise in.
-static inline void keep_best_rate(double *best, double candidate) {
-    if (candidate > *best) *best = candidate;
-}
-static inline void keep_best_lat(double *best, double candidate) {
-    if (candidate > 0.0 && (*best <= 0.0 || candidate < *best)) *best = candidate;
-}
-
-// Build `ways` independent random pointer-chase cycles over `buf`, one node per
-// `stride` bytes.
-//
-// Ways are *interleaved* (way w owns nodes w, w+ways, ...), not given contiguous
-// slices, so the latency phase (ways=1) and the MLP phase (ways=CHASE_WAYS)
-// present the same cache footprint; otherwise the one-chain measurement could
-// fit in last-level cache and inflate the apparent MLP. Each way is one full
-// cycle over its nodes, so a chase can never collapse into a short cached loop.
-static int build_chases(void *buf, size_t nbytes, size_t stride, int ways,
-                        uint64_t seed, void **heads_out) {
-    const size_t nodes = nbytes / stride;
-    const size_t per_way = nodes / (size_t)ways;
-    if (per_way < 2) return -1;
-
-    uint32_t *order = (uint32_t *)malloc(per_way * sizeof(uint32_t));
-    if (!order) return -1;
-
-    uint8_t *base = (uint8_t *)buf;
-    uint64_t s = seed ? seed : UINT64_C(0x243F6A8885A308D3);
-    for (int wi = 0; wi < ways; ++wi) {
-        for (size_t i = 0; i < per_way; ++i) {
-            order[i] = (uint32_t)(i * (size_t)ways + (size_t)wi);
-        }
-        for (size_t i = per_way - 1; i > 0; --i) {
-            const size_t j = (size_t)(xs64(&s) % (uint64_t)(i + 1));
-            const uint32_t tmp = order[i];
-            order[i] = order[j];
-            order[j] = tmp;
-        }
-        for (size_t i = 0; i < per_way; ++i) {
-            void **node = (void **)(base + (size_t)order[i] * stride);
-            *node = (void *)(base + (size_t)order[(i + 1) % per_way] * stride);
-        }
-        heads_out[wi] = (void *)(base + (size_t)order[0] * stride);
-    }
-    free(order);
-    return 0;
-}
-
-static void *worker(void *arg) {
-    worker_t *w = (worker_t *)arg;
-    const kernel_set_t *ks = w->ks;
-
-    (void)plat_pin_self(w->cpu);
-    w->cpu_observed = plat_current_cpu();
-
-    uint8_t *buf = NULL;
-    const size_t nbytes = w->mem_bytes;
-    if (nbytes > 0) {
-        buf = (uint8_t *)plat_aligned_alloc(4096, nbytes);
-        if (!buf) {
-            perror("aligned alloc");
-        } else {
-            memset(buf, 1, nbytes);   // allocate and fault in every page
-        }
-    }
-
-    uint64_t seed = w->seed;
-    double elapsed;
-
-    const int reps = w->reps > 0 ? w->reps : 1;
-
-    // ---- selector-period sweep (diagnostic mode, --disp-sweep) ----
-    // Runs the dispatch kernel at every period in g_disp_periods and nothing
-    // else: the raw curve the DISPcap number is derived from.
-    if (w->disp_sweep) {
-        // INT-lat is one dependent 1-cycle op per cycle, so it doubles as a
-        // clock reading on targets with no cpufreq node -- see --mhz for what
-        // to do where the core does not manage one op per cycle.
-        for (int rep = 0; rep < reps; ++rep) {
-            int_ctx_t c;
-            for (int i = 0; i < LANES; ++i) c.l[i] = xs64(&seed) | 1u;
-            for (int i = 0; i < 2; ++i) c.k[i] = xs64(&seed) | 1u;
-            phase_begin(w, rep);
-            const uint64_t it = run_timed(ks->int_lat, &c, w->seconds, 1024, &elapsed);
-            keep_best_rate(&w->int_lat_mops,
-                           (double)it * (double)(INT_OPS_PER_STEP * LANES)
-                           / 1e6 / elapsed);
-            for (int i = 0; i < LANES; ++i) w->checksum ^= c.l[i];
-            if (w->cpu_observed >= 0) {
-                const double mhz = cpu_cur_mhz(w->cpu_observed);
-                if (mhz > w->mhz_observed) w->mhz_observed = mhz;
-            }
-        }
-
-        uint8_t *idx = (uint8_t *)malloc(DISP_IDX_BYTES);
-        if (idx) for (size_t i = 0; i < DISP_IDX_BYTES; ++i) idx[i] = (uint8_t)xs64(&seed);
-        // The barrier count must not depend on the allocation succeeding.
-        for (int k = 0; k < DISP_SWEEP_N; ++k) {
-            for (int rep = 0; rep < reps; ++rep) {
-                phase_begin(w, rep);
-                if (!idx) continue;
-                disp_ctx_t d = { .idx = idx, .mask = g_disp_periods[k] - 1,
-                                 .pos = 0, .acc = 1 };
-                const uint64_t calls = run_timed(ks->disp, &d, w->seconds, 1024, &elapsed);
-                keep_best_rate(&w->sweep_serial[k], (double)calls / 1e6 / elapsed);
-                w->checksum ^= d.acc;
-            }
-            for (int rep = 0; rep < reps; ++rep) {
-                phase_begin(w, rep);
-                if (!idx) continue;
-                disp_ctx_t d = { .idx = idx, .mask = g_disp_periods[k] - 1,
-                                 .pos = 0, .acc = 1 };
-                const uint64_t calls = run_timed(ks->disp_free, &d, w->seconds, 1024, &elapsed);
-                keep_best_rate(&w->sweep_free[k], (double)calls / 1e6 / elapsed);
-                w->checksum ^= d.acc;
-            }
-        }
-        free(idx);
-        plat_aligned_free(buf);
-        return NULL;
-    }
-
-    // ---- integer latency: one dependency chain ----
-    for (int rep = 0; rep < reps; ++rep) {
-        int_ctx_t c;
-        for (int i = 0; i < LANES; ++i) c.l[i] = xs64(&seed) | 1u;
-        for (int i = 0; i < 2; ++i) c.k[i] = xs64(&seed) | 1u;
-        phase_begin(w, rep);
-        const uint64_t it = run_timed(ks->int_lat, &c, w->seconds, 1024, &elapsed);
-        keep_best_rate(&w->int_lat_mops,
-                       (double)it * (double)(INT_OPS_PER_STEP * LANES)
-                       / 1e6 / elapsed);
-        for (int i = 0; i < LANES; ++i) w->checksum ^= c.l[i];
-    }
-
-    // ---- integer throughput: LANES independent chains ----
-    for (int rep = 0; rep < reps; ++rep) {
-        int_ctx_t c;
-        for (int i = 0; i < LANES; ++i) c.l[i] = xs64(&seed) | 1u;
-        for (int i = 0; i < 2; ++i) c.k[i] = xs64(&seed) | 1u;
-        phase_begin(w, rep);
-        const uint64_t it = run_timed(ks->int_thr, &c, w->seconds, 1024, &elapsed);
-        keep_best_rate(&w->int_thr_mops,
-                       (double)it * (double)(INT_OPS_PER_STEP * LANES) / 1e6 / elapsed);
-        for (int i = 0; i < LANES; ++i) w->checksum ^= c.l[i];
-        // Sample the clock while this core is still fully loaded.
-        if (w->cpu_observed >= 0) {
-            const double mhz = cpu_cur_mhz(w->cpu_observed);
-            if (mhz > w->mhz_observed) w->mhz_observed = mhz;
-        }
-    }
-
-    // ---- integer multiply throughput: LANES independent multiply chains ----
-    for (int rep = 0; rep < reps; ++rep) {
-        mul_ctx_t c;
-        for (int i = 0; i < LANES; ++i) c.l[i] = xs64(&seed) | 1u;
-        c.m = xs64(&seed) | 1u;
-        phase_begin(w, rep);
-        const uint64_t it = run_timed(ks->mul_thr, &c, w->seconds, 1024, &elapsed);
-        keep_best_rate(&w->mul_thr_mops,
-                       (double)it * (double)(MUL_OPS_PER_STEP * LANES) / 1e6 / elapsed);
-        for (int i = 0; i < LANES; ++i) w->checksum ^= c.l[i];
-    }
-
-    // Converges to the fixed point b/(1-c) and stays there: bounded forever.
-    const double co = 0.5;
-
-    // ---- FP latency ----
-    for (int rep = 0; rep < reps; ++rep) {
-        fp_ctx_t f;
-        f.c = co;
-        for (int i = 0; i < LANES; ++i) { f.x[i] = 1.0 + (double)i; f.b[i] = 1.0 + 0.25 * (double)i; }
-        phase_begin(w, rep);
-        const uint64_t it = run_timed(ks->fp_lat, &f, w->seconds, 1024, &elapsed);
-        keep_best_rate(&w->fp_lat_mflops,
-                       (double)it * (double)FP_OPS_PER_STEP / 1e6 / elapsed);
-        w->checksum ^= (uint64_t)(int64_t)(f.x[0] * 1e6);
-    }
-
-    // ---- FP throughput ----
-    for (int rep = 0; rep < reps; ++rep) {
-        fp_ctx_t f;
-        f.c = co;
-        for (int i = 0; i < LANES; ++i) { f.x[i] = 1.0 + (double)i; f.b[i] = 1.0 + 0.25 * (double)i; }
-        phase_begin(w, rep);
-        const uint64_t it = run_timed(ks->fp_thr, &f, w->seconds, 1024, &elapsed);
-        keep_best_rate(&w->fp_thr_mflops,
-                       (double)it * (double)(FP_OPS_PER_STEP * LANES) / 1e6 / elapsed);
-        for (int i = 0; i < LANES; ++i) {
-            w->checksum ^= (uint64_t)(int64_t)(f.x[i] * 1e6);
-        }
-    }
-
-    // ---- indirect dispatch: one point per selector period ----
-    // Each ladder point gets half a phase's time; less than that widens
-    // run-to-run spread noticeably on small cores, more buys little.
-    {
-        uint8_t *idx = (uint8_t *)malloc(DISP_LADDER_BYTES);
-        if (idx) {
-            for (size_t i = 0; i < DISP_LADDER_BYTES; ++i) idx[i] = (uint8_t)xs64(&seed);
-        }
-        const double t_pt = w->seconds / 2.0;
-        for (int k = 0; k < DISP_LADDER_N; ++k) {
-            for (int rep = 0; rep < reps; ++rep) {
-                // Only the first point pays for a warm-up; the barrier is still
-                // entered once per point per rep by every thread.
-                phase_begin(w, k == 0 ? rep : 1);
-                if (!idx) continue;
-                disp_ctx_t d = { .idx = idx, .mask = g_disp_ladder[k] - 1,
-                                 .pos = 0, .acc = 1 };
-                const uint64_t calls = run_timed(ks->disp, &d, t_pt, 1024, &elapsed);
-                keep_best_rate(&w->disp_ladder[k], (double)calls / 1e6 / elapsed);
-                w->checksum ^= d.acc;
-            }
-        }
-        free(idx);
-    }
-
-    const int mem_ok = (buf != NULL && nbytes >= (size_t)CHASE_WAYS * 65536);
-
-    // ---- memory bandwidth: sequential read+write sweep ----
-    for (int rep = 0; rep < reps; ++rep) {
-        phase_begin_mem(w, rep, buf, nbytes, 0);
-        if (!mem_ok) continue;
-        mem_ctx_t m = { .buf = (uint64_t *)buf,
-                        .nqwords = nbytes / sizeof(uint64_t),
-                        .acc = {0, 0, 0, 0} };
-        const uint64_t passes = run_timed(ks->mem_bw, &m, w->seconds, 1, &elapsed);
-        const double bytes = (double)passes * (double)nbytes * 2.0; // read + write
-        keep_best_rate(&w->mem_gbps, bytes / 1e9 / elapsed);
-        const double dm = dram_mhz();
-        if (dm > w->dram_mhz_observed) w->dram_mhz_observed = dm;
-        for (int i = 0; i < 4; ++i) w->checksum ^= m.acc[i];
-    }
-
-    // ---- memory latency: one dependent chase over the whole buffer ----
-    void *heads[CHASE_WAYS];
-    int chase_ok = mem_ok && build_chases(buf, nbytes, 64, 1,
-                                          w->seed ^ UINT64_C(0xA5A5A5A5), heads) == 0;
-    for (int rep = 0; rep < reps; ++rep) {
-        phase_begin_mem(w, rep, buf, nbytes, 1);
-        if (!chase_ok) continue;
-        chase_ctx_t ch;
-        ch.cur[0] = (void **)heads[0];
-        const uint64_t hops = run_timed(ks->mem_lat, &ch, w->seconds, 4096, &elapsed);
-        keep_best_lat(&w->mem_lat_ns, elapsed / (double)hops * 1e9);
-        w->checksum ^= (uint64_t)(uintptr_t)ch.cur[0];
-    }
-
-    // ---- memory-level parallelism: CHASE_WAYS chases over the same buffer ----
-    // Interleaved, so the footprint matches the latency phase above.
-    chase_ok = mem_ok && build_chases(buf, nbytes, 64, CHASE_WAYS,
-                                      w->seed ^ UINT64_C(0xA5A5A5A5), heads) == 0;
-    for (int rep = 0; rep < reps; ++rep) {
-        phase_begin_mem(w, rep, buf, nbytes, 1);
-        if (!chase_ok) continue;
-        chase_ctx_t ch;
-        for (int i = 0; i < CHASE_WAYS; ++i) ch.cur[i] = (void **)heads[i];
-        const uint64_t hops = run_timed(ks->mem_mlp, &ch, w->seconds, 1024, &elapsed);
-        keep_best_lat(&w->mem_mlp_ns,
-                      elapsed / ((double)hops * (double)CHASE_WAYS) * 1e9);
-        for (int i = 0; i < CHASE_WAYS; ++i) {
-            w->checksum ^= (uint64_t)(uintptr_t)ch.cur[i];
-        }
-    }
-
-    plat_aligned_free(buf);
-    return NULL;
+// The hook summarize() falls back on when nothing was sampled under load:
+// cpufreq's ceiling (or the registry's on Windows, or sysctl's on an Intel
+// Mac), then the device tree's declaration.
+double rated_mhz(int cpu) {
+    const double mhz = cpu_max_mhz(cpu);
+    return mhz > 0.0 ? mhz : dt_cpu_mhz(cpu);
 }
 
 // ---------------------------------------------------------------------------
@@ -1909,6 +1334,8 @@ static void print_legend(void) {
         {"FP-lat",   "FP latency",              "one dependent multiply-add chain, Mflop/s"},
         {"FP-thr",   "FP throughput",           "8 independent chains, Mflop/s"},
         {"fILP",     "FP ops in flight",        "FP-thr / FP-lat"},
+        {"FP32-lat", "FP32 latency",            "FP-lat in single precision, Mflop/s; not in the score"},
+        {"FP32-thr", "FP32 throughput",         "FP-thr in single precision, Mflop/s; not in the score"},
         {"MEM",      "memory bandwidth",        "sequential read+write sweep, GB/s"},
         {"MEMlat",   "memory latency",          "random dependent pointer chase, ns"},
         {"MLP",      "memory parallelism",      "MEMlat / latency with 8 chases in flight"},
@@ -1940,288 +1367,6 @@ static void report_dram(double lo, double hi) {
     } else {
         fprintf(o, "DRAM (%s): %.0f MHz during memory phases\n", g_dram_name, hi);
     }
-}
-
-static double geomean(const double *v, int n) {
-    double s = 0.0;
-    int m = 0;
-    for (int i = 0; i < n; ++i) {
-        if (v[i] > 0.0) { s += log(v[i]); m++; }
-    }
-    return m > 0 ? exp(s / (double)m) : 0.0;
-}
-
-// Reduce the dispatch ladder to the numbers the tables report.
-//
-//   *thr  calls/s once the pattern has been learned -- the plateau, i.e.
-//         front-end call throughput. Bigger is better.
-//   *cap  longest repeating call sequence the core still predicts, in calls:
-//         the floor-normalised curve integrated over log2(period).
-//   *gain plateau / unpredictable floor: what prediction is worth on this core
-//         at all. Used to reject a flat curve.
-//   *span the same integral before exponentiation, i.e. capacity in ladder
-//         steps. The score uses this because *cap spans orders of magnitude
-//         between cores and would dominate a geomean of rates.
-//
-// Returns DISP_NA if the ladder was never measured, DISP_NONE if the core
-// showed no prediction win at any period including a single repeated target,
-// DISP_OK otherwise.
-#define DISP_NA   0
-#define DISP_OK   1
-#define DISP_NONE 2
-
-static int disp_summary(const worker_t *w, double *thr, double *cap,
-                        double *gain, double *span) {
-    *thr = 0.0; *cap = 0.0; *gain = 0.0; *span = 0.0;
-    double plateau = 0.0;
-    for (int i = 0; i < DISP_PLATEAU_PTS; ++i) {
-        const double v = w->disp_ladder[DISP_SPAN_FIRST + i];
-        if (v <= 0.0) return DISP_NA;
-        if (v > plateau) plateau = v;
-    }
-    const double floor_rate = w->disp_ladder[DISP_LADDER_N - 1];
-    const double ref_rate = w->disp_ladder[DISP_REF_IDX];
-    if (plateau <= 0.0 || floor_rate <= 0.0 || ref_rate <= 0.0) return DISP_NA;
-
-    *thr = plateau;
-    *gain = plateau / floor_rate;
-
-    if (*gain < DISP_MIN_GAIN) {
-        // Curve is flat over the span. If the single-target reference is no
-        // faster either, the core predicts no indirect targets at all; if it is
-        // faster, capacity is below the first span point rather than unknown.
-        if (ref_rate / floor_rate < DISP_MIN_GAIN) return DISP_NONE;
-        *cap = (double)g_disp_ladder[DISP_SPAN_FIRST] / 2.0;
-        return DISP_OK;
-    }
-
-    for (int i = DISP_SPAN_FIRST; i <= DISP_SPAN_LAST; ++i) {
-        double q = (w->disp_ladder[i] - floor_rate) / (plateau - floor_rate);
-        if (q > 1.0) q = 1.0;
-        if (q < 0.0) q = 0.0;
-        *span += q;
-    }
-    *cap = (double)g_disp_ladder[DISP_SPAN_FIRST] * pow(2.0, *span - 1.0);
-    return DISP_OK;
-}
-
-// Render DISPcap for a table cell: below the ladder, past the ladder, or no
-// prediction at all.
-static void disp_cap_str(int st, double cap, char *buf, size_t n) {
-    if (st == DISP_NONE)                             snprintf(buf, n, "none");
-    else if (st != DISP_OK || cap <= 0.0)            snprintf(buf, n, "-");
-    else if (cap < (double)g_disp_ladder[DISP_SPAN_FIRST])
-        snprintf(buf, n, "<%zu", g_disp_ladder[DISP_SPAN_FIRST]);
-    else if (cap >= (double)g_disp_ladder[DISP_SPAN_LAST])
-        snprintf(buf, n, ">=%zu", g_disp_ladder[DISP_SPAN_LAST]);
-    else                                             snprintf(buf, n, "%.0f", cap);
-}
-
-// Synthetic single-core score, spanning compute *and* the two things that
-// separate a big core from a little one: indirect dispatch and overlapped cache
-// misses. The per-component scale factors are constant factors on a geomean, so
-// ratios between cores do not depend on them.
-static double core_score(const worker_t *w) {
-    double v[6];
-    double disp_thr, disp_cap, disp_gain, disp_span;
-    const int st = disp_summary(w, &disp_thr, &disp_cap, &disp_gain, &disp_span);
-    v[0] = w->int_thr_mops;
-    v[1] = w->fp_thr_mflops;
-    v[4] = w->mul_thr_mops * 4.0;
-    v[2] = disp_thr * 20.0;
-    // Predictor capacity in ladder steps, +1 so a core with no indirect
-    // prediction still scores poorly instead of dropping out of the geomean.
-    v[5] = st == DISP_NA ? 0.0 : (disp_span + 1.0) * 2000.0;
-    // Random-access rate with all chases in flight, in millions/s.
-    v[3] = w->mem_mlp_ns > 0.0 ? (1000.0 / w->mem_mlp_ns) * 100.0 : 0.0;
-    return geomean(v, ARRAY_LEN(v));
-}
-
-// ---------------------------------------------------------------------------
-// Results
-// ---------------------------------------------------------------------------
-
-// One row of results: a single core in the per-core sweep, one thread of a
-// multi-threaded run, or the aggregate over all of them.
-typedef struct {
-    int    cpu;              // pinned CPU, or -1
-    double mhz;              // 0 if unknown
-    // Where `mhz` came from, because the four are worth different amounts to
-    // a reader: sampled under load, asserted by the operator, a ceiling the
-    // machine declares (cpufreq max, the device tree, the Windows registry --
-    // rated, not observed), or inferred from INT-lat under an assumption the
-    // core may not honour. Ordered by trust, weakest last: aggregate() keeps
-    // the weakest source of any row it folds in.
-    enum { MHZ_READ, MHZ_GIVEN, MHZ_RATED, MHZ_ESTIMATED } mhz_src;
-    double int_lat, int_thr, mul_thr, fp_lat, fp_thr;
-    double mem_gbps, mem_lat_ns, mem_lat8_ns;
-    double ilp, filp, mlp;
-    double disp_thr, disp_cap, disp_gain, disp_span;
-    int    disp_status;
-    double score;
-} result_t;
-
-// The same six components as core_score(), rescaled to the whole machine: the
-// throughputs are the ones aggregate() summed, and the random-access rate is
-// multiplied by the thread count for the same reason -- n threads chase n sets
-// of pointers at once, so the machine retires n times one thread's misses.
-// DISPcap span is left as aggregate() averaged it: predictor size is a property
-// of a core and does not add up across them.
-//
-// The result is therefore ~n times a single core's score and is not comparable
-// with one. It answers "how much machine is there"; core_score() answers "how
-// good is a core".
-static double machine_score(const result_t *t, int n) {
-    double v[6];
-    v[0] = t->int_thr;
-    v[1] = t->fp_thr;
-    v[4] = t->mul_thr * 4.0;
-    v[2] = t->disp_thr * 20.0;
-    v[5] = t->disp_status == DISP_NA ? 0.0 : (t->disp_span + 1.0) * 2000.0;
-    v[3] = t->mem_lat8_ns > 0.0
-         ? (double)n * (1000.0 / t->mem_lat8_ns) * 100.0 : 0.0;
-    return geomean(v, ARRAY_LEN(v));
-}
-
-static result_t summarize(const worker_t *w, int cpu) {
-    result_t r;
-    memset(&r, 0, sizeof(r));
-    r.cpu = cpu;
-    r.int_lat = w->int_lat_mops;
-    r.int_thr = w->int_thr_mops;
-    r.mul_thr = w->mul_thr_mops;
-    r.fp_lat  = w->fp_lat_mflops;
-    r.fp_thr  = w->fp_thr_mflops;
-    r.mem_gbps    = w->mem_gbps;
-    r.mem_lat_ns  = w->mem_lat_ns;
-    r.mem_lat8_ns = w->mem_mlp_ns;
-    r.ilp  = r.int_lat > 0.0 ? r.int_thr / r.int_lat : 0.0;
-    r.filp = r.fp_lat  > 0.0 ? r.fp_thr  / r.fp_lat  : 0.0;
-    r.mlp  = r.mem_lat8_ns > 0.0 ? r.mem_lat_ns / r.mem_lat8_ns : 0.0;
-    r.disp_status = disp_summary(w, &r.disp_thr, &r.disp_cap, &r.disp_gain,
-                                 &r.disp_span);
-    r.score = core_score(w);
-
-    // INT-lat is one dependent 1-cycle op per cycle by construction, so it
-    // doubles as a clock estimate where nothing on the machine will say -- but
-    // only by construction, so every source that knows is asked first: the
-    // clock sampled under load, then cpufreq's ceiling, then whatever the
-    // device tree declares for a board that has no cpufreq driver at all.
-    if (g_mhz_given > 0.0) {
-        r.mhz = g_mhz_given;
-        r.mhz_src = MHZ_GIVEN;
-    } else {
-        r.mhz = w->mhz_observed;
-        if (r.mhz <= 0.0) {
-            // Nothing was sampled under load, so what is left is a rated
-            // clock: cpufreq's ceiling (or the registry's on Windows, or
-            // sysctl's on an Intel Mac), then the device tree's declaration.
-            r.mhz = cpu_max_mhz(cpu);
-            if (r.mhz <= 0.0) r.mhz = dt_cpu_mhz(cpu);
-            if (r.mhz > 0.0)  r.mhz_src = MHZ_RATED;
-        }
-        if (r.mhz <= 0.0) {
-            r.mhz = r.int_lat;
-            r.mhz_src = MHZ_ESTIMATED;
-        }
-    }
-    return r;
-}
-
-// The `mhz_src` value in JSON and TSV. "given" is deliberately not "measured":
-// a reader can then tell a clock the machine reported from one its owner did.
-// And "rated" is neither: it is the ceiling the machine declares, which a
-// throttling core never reached.
-static const char *mhz_src_name(int src) {
-    switch (src) {
-        case MHZ_GIVEN:     return "given";
-        case MHZ_RATED:     return "rated";
-        case MHZ_ESTIMATED: return "estimated";
-        default:            return "measured";
-    }
-}
-
-// TSV: one header line, then one row per scope. Missing values are empty. The
-// leading `variant` column is what keeps a --variants run's rows apart, and is
-// present in a single-variant run too so the column set never depends on how
-// the binary was invoked.
-#define RESULT_COLUMNS \
-    "variant\tscope\tcpu\tmhz\tmhz_src\tint_lat_mops\tint_thr_mops\tilp" \
-    "\tmul_thr_mmul_s\tfp_lat_mflops\tfp_thr_mflops\tfilp\tmem_gbps" \
-    "\tmem_lat_ns\tmem_lat8_ns\tmlp\tdisp_thr_mcall_s\tdisp_cap_calls" \
-    "\tdisp_gain\tdisp_span\tscore\n"
-
-static void tsv_num(double v, int ok) {
-    if (ok && v > 0.0) printf("\t%.6g", v);
-    else               printf("\t");
-}
-
-static void tsv_result(const char *variant, const char *scope, const result_t *r) {
-    printf("%s\t%s", variant, scope);
-    if (r->cpu >= 0) printf("\t%d", r->cpu); else printf("\t");
-    tsv_num(r->mhz, 1);
-    printf("\t%s", r->mhz > 0.0 ? mhz_src_name((int)r->mhz_src)
-                                : "unknown");
-    tsv_num(r->int_lat, 1);
-    tsv_num(r->int_thr, 1);
-    tsv_num(r->ilp, 1);
-    tsv_num(r->mul_thr, 1);
-    tsv_num(r->fp_lat, 1);
-    tsv_num(r->fp_thr, 1);
-    tsv_num(r->filp, 1);
-    tsv_num(r->mem_gbps, 1);
-    tsv_num(r->mem_lat_ns, 1);
-    tsv_num(r->mem_lat8_ns, 1);
-    tsv_num(r->mlp, 1);
-    tsv_num(r->disp_thr, 1);
-    tsv_num(r->disp_cap, r->disp_status == DISP_OK);
-    tsv_num(r->disp_gain, 1);
-    tsv_num(r->disp_span, r->disp_status != DISP_NA);
-    tsv_num(r->score, 1);
-    printf("\n");
-}
-
-// JSON: `,"key": value`, with null for anything not measured.
-static void j_num(const char *key, double v, int ok) {
-    if (ok && v > 0.0) jout(", \"%s\": %.6g", key, v);
-    else               jout(", \"%s\": null", key);
-}
-
-static void j_str(const char *key, const char *v) {
-    jout(", \"%s\": \"", key);
-    for (const char *p = v; *p; ++p) {
-        if (*p == '"' || *p == '\\') jputc('\\');
-        if ((unsigned char)*p < 0x20) continue;
-        jputc(*p);
-    }
-    jout("\"");
-}
-
-static void json_result(const result_t *r, const char *scope, const char *indent) {
-    jout("%s{ \"scope\": \"%s\"", indent, scope);
-    if (r->cpu >= 0) jout(", \"cpu\": %d", r->cpu); else jout(", \"cpu\": null");
-    j_num("mhz", r->mhz, 1);
-    j_str("mhz_src", r->mhz > 0.0 ? mhz_src_name((int)r->mhz_src)
-                                  : "unknown");
-    j_num("int_lat_mops", r->int_lat, 1);
-    j_num("int_thr_mops", r->int_thr, 1);
-    j_num("ilp", r->ilp, 1);
-    j_num("mul_thr_mmul_s", r->mul_thr, 1);
-    j_num("fp_lat_mflops", r->fp_lat, 1);
-    j_num("fp_thr_mflops", r->fp_thr, 1);
-    j_num("filp", r->filp, 1);
-    j_num("mem_gbps", r->mem_gbps, 1);
-    j_num("mem_lat_ns", r->mem_lat_ns, 1);
-    j_num("mem_lat8_ns", r->mem_lat8_ns, 1);
-    j_num("mlp", r->mlp, 1);
-    j_num("disp_thr_mcall_s", r->disp_thr, 1);
-    j_num("disp_cap_calls", r->disp_cap, r->disp_status == DISP_OK);
-    j_str("disp_prediction", r->disp_status == DISP_OK   ? "measured"
-                          : r->disp_status == DISP_NONE ? "none" : "unknown");
-    j_num("disp_gain", r->disp_gain, 1);
-    j_num("disp_span", r->disp_span, r->disp_status != DISP_NA);
-    j_num("score", r->score, 1);
-    jout(" }");
 }
 
 // Opening half of the JSON document: schema, build, system and run config. The
@@ -2317,47 +1462,6 @@ static void note_dram(suite_t *s, double mhz) {
 }
 
 // Aggregate the per-thread rows: rates sum, latencies and ratios average.
-static void aggregate(const result_t *rows, int n, result_t *tot) {
-    memset(tot, 0, sizeof(*tot));
-    tot->cpu = -1;
-    double lat_n = 0, mlp_n = 0, cap_n = 0, mhz_n = 0;
-    int cap_none = 0;
-    for (int i = 0; i < n; ++i) {
-        const result_t *r = &rows[i];
-        tot->int_lat   += r->int_lat;
-        tot->int_thr   += r->int_thr;
-        tot->mul_thr   += r->mul_thr;
-        tot->fp_lat    += r->fp_lat;
-        tot->fp_thr    += r->fp_thr;
-        tot->mem_gbps  += r->mem_gbps;
-        tot->disp_thr  += r->disp_thr;
-        tot->disp_gain += r->disp_gain;
-        tot->disp_span += r->disp_span;
-        if (r->mhz > 0.0)         { tot->mhz += r->mhz; mhz_n++; }
-        if (r->mhz_src > tot->mhz_src) tot->mhz_src = r->mhz_src;
-        if (r->mem_lat_ns > 0.0)  { tot->mem_lat_ns += r->mem_lat_ns; lat_n++; }
-        if (r->mem_lat8_ns > 0.0) { tot->mem_lat8_ns += r->mem_lat8_ns; mlp_n++; }
-        if (r->disp_status == DISP_OK && r->disp_cap > 0.0) {
-            tot->disp_cap += r->disp_cap;
-            cap_n++;
-        } else if (r->disp_status == DISP_NONE) {
-            cap_none++;
-        }
-    }
-    const double d = n > 0 ? (double)n : 1.0;
-    if (mhz_n > 0) tot->mhz /= mhz_n;
-    if (lat_n > 0) tot->mem_lat_ns /= lat_n;
-    if (mlp_n > 0) tot->mem_lat8_ns /= mlp_n;
-    if (cap_n > 0) tot->disp_cap /= cap_n;
-    tot->disp_gain /= d;
-    tot->disp_span /= d;
-    tot->disp_status = cap_n > 0 ? DISP_OK : (cap_none > 0 ? DISP_NONE : DISP_NA);
-    tot->ilp  = tot->int_lat > 0.0 ? tot->int_thr / tot->int_lat : 0.0;
-    tot->filp = tot->fp_lat  > 0.0 ? tot->fp_thr  / tot->fp_lat  : 0.0;
-    tot->mlp  = tot->mem_lat8_ns > 0.0 ? tot->mem_lat_ns / tot->mem_lat8_ns : 0.0;
-    tot->score = machine_score(tot, n);   // last: reads the fields set above
-}
-
 static int collect_threads(suite_t *s, const run_opts_t *o, int threads, int pin,
                            const int *cpu_list, int n_cpus) {
     worker_t *w = (worker_t *)calloc((size_t)threads, sizeof(*w));
@@ -2380,8 +1484,6 @@ static int collect_threads(suite_t *s, const run_opts_t *o, int threads, int pin
     return 0;
 }
 
-static void text_per_core_row(const result_t *r);
-
 // One CPU at a time, so a heterogeneous machine reports each core type. In text
 // mode rows print as they finish: the sweep is the long part of a --full run.
 static int collect_per_core(suite_t *s, const run_opts_t *o, const int *cpu_list,
@@ -2401,93 +1503,6 @@ static int collect_per_core(suite_t *s, const run_opts_t *o, const int *cpu_list
     s->cores = res;
     s->n_cores = n_cpus;
     return 0;
-}
-
-// ---------------------------------------------------------------------------
-// Emitters
-// ---------------------------------------------------------------------------
-
-static void text_threads(const suite_t *s, size_t mem_per_thread) {
-    const result_t *t = &s->total;
-    const double n = s->n_threads > 0 ? (double)s->n_threads : 1.0;
-    printf("%-9s %-23s %8s %11s %11s\n",
-           "metric", "what it measures", "unit", "total", "per-thread");
-    // The latency rows keep their total cell blank: n dependency chains on n
-    // threads do not make any one chain shorter, so a summed latency rate is
-    // not a number the machine ever produces. Per-thread is the mean.
-    printf("%-9s %-23s %8s %11s %11.1f\n",
-           "INT-lat", "integer latency", "Mop/s", "-", t->int_lat / n);
-    printf("%-9s %-23s %8s %11.1f %11.1f\n",
-           "INT-thr", "integer throughput", "Mop/s", t->int_thr, t->int_thr / n);
-    printf("%-9s %-23s %8s %11.1f %11.1f\n",
-           "MUL-thr", "multiply throughput", "Mmul/s", t->mul_thr, t->mul_thr / n);
-    printf("%-9s %-23s %8s %11s %11.1f\n",
-           "FP-lat", "FP latency", "Mflop/s", "-", t->fp_lat / n);
-    printf("%-9s %-23s %8s %11.1f %11.1f\n",
-           "FP-thr", "FP throughput", "Mflop/s", t->fp_thr, t->fp_thr / n);
-    printf("%-9s %-23s %8s %11.1f %11.1f\n",
-           "DISP-thr", "indirect dispatch rate", "Mcall/s", t->disp_thr, t->disp_thr / n);
-    if (t->disp_status == DISP_OK) {
-        printf("%-9s %-23s %8s %11s %11.0f\n",
-               "DISPcap", "indirect predictor size", "calls", "-", t->disp_cap);
-    } else if (t->disp_status == DISP_NONE) {
-        printf("%-9s %-23s %8s %11s %11s\n",
-               "DISPcap", "indirect predictor size", "calls", "-", "none");
-    }
-    if (mem_per_thread > 0) {
-        printf("%-9s %-23s %8s %11.2f %11.2f\n",
-               "MEM", "memory bandwidth", "GB/s", t->mem_gbps, t->mem_gbps / n);
-        if (t->mem_lat_ns > 0.0) {
-            printf("%-9s %-23s %8s %11s %11.1f\n",
-                   "MEMlat", "memory latency", "ns", "-", t->mem_lat_ns);
-        }
-        if (t->mem_lat8_ns > 0.0) {
-            printf("%-9s %-23s %8s %11s %11.1f\n",
-                   "MEMlat/8", "latency, 8 chases", "ns", "-", t->mem_lat8_ns);
-        }
-    }
-    // Derived ratios: per-thread only, so the "total" column stays blank.
-    printf("%-9s %-23s %8s %11s %11.2f\n", "ILP", "instruction parallelism",
-           "x", "-", t->ilp);
-    printf("%-9s %-23s %8s %11s %11.2f\n", "fILP", "FP ops in flight",
-           "x", "-", t->filp);
-    if (t->mlp > 0.0) {
-        printf("%-9s %-23s %8s %11s %11.2f\n", "MLP", "memory parallelism",
-               "x", "-", t->mlp);
-    }
-    // Whole-machine only: it is a geomean of the totals, not of the per-thread
-    // column, and is ~n times what one core of this machine scores.
-    if (t->score > 0.0) {
-        printf("%-9s %-23s %8s %11.1f %11s\n", "score", "composite",
-               "geomean", t->score, "-");
-    }
-}
-
-#define PER_CORE_FMT "%4s %6s  %8s %8s %5s %8s  %8s %8s %5s  %7s %7s %5s  %8s %7s  %8s\n"
-
-static void text_per_core_header(void) {
-    printf(PER_CORE_FMT, "CPU", "MHz", "INT-lat", "INT-thr", "ILP", "MUL-thr",
-           "FP-lat", "FP-thr", "fILP", "MEM", "MEMlat", "MLP",
-           "DISP-thr", "DISPcap", "score");
-    printf(PER_CORE_FMT, "", "", "Mop/s", "Mop/s", "x", "Mmul/s",
-           "Mflop/s", "Mflop/s", "x", "GB/s", "ns", "x",
-           "Mcall/s", "calls", "geomean");
-}
-
-static void text_per_core_row(const result_t *r) {
-    char mhzbuf[16], capbuf[16];
-    if (r->mhz <= 0.0)         snprintf(mhzbuf, sizeof(mhzbuf), "?");
-    else if (r->mhz_src == MHZ_ESTIMATED)
-        snprintf(mhzbuf, sizeof(mhzbuf), "~%.0f", r->mhz);
-    else                       snprintf(mhzbuf, sizeof(mhzbuf), "%.0f", r->mhz);
-    disp_cap_str(r->disp_status, r->disp_cap, capbuf, sizeof(capbuf));
-    printf("%4d %6s  %8.1f %8.1f %5.2f %8.1f  %8.1f %8.1f %5.2f  %7.2f %7.1f %5.2f  %8.1f %7s  %8.1f\n",
-           r->cpu, mhzbuf,
-           r->int_lat, r->int_thr, r->ilp, r->mul_thr,
-           r->fp_lat, r->fp_thr, r->filp,
-           r->mem_gbps, r->mem_lat_ns, r->mlp,
-           r->disp_thr, capbuf, r->score);
-    fflush(stdout);
 }
 
 // Best/worst core of the sweep: on a heterogeneous machine this is the
@@ -2880,7 +1895,7 @@ static int run_variant(const run_cfg_t *c, run_opts_t *opts, int idx, int n_sel,
             suite_free(&s);
             return -1;
         }
-        if (g_format == FMT_TEXT) text_threads(&s, c->mem_mt);
+        if (g_format == FMT_TEXT) text_threads(&s.total, s.n_threads, c->mem_mt);
     }
 
     if (c->want_cores) {
@@ -2960,23 +1975,28 @@ static void text_variant_table(const variant_t **sel, const result_t *rows,
     printf("\n%s across variants  (%s)\n",
            whole_machine ? "whole machine" : "fastest core",
            whole_machine ? "the total row" : "best row of the per-core sweep");
-    printf("%-14s %9s %9s %9s %9s %8s %9s %7s\n", "variant",
-           "INT-thr", "MUL-thr", "FP-lat", "FP-thr", "MEM", "score", "vs base");
-    printf("%-14s %9s %9s %9s %9s %8s %9s %7s\n", "",
-           "Mop/s", "Mmul/s", "Mflop/s", "Mflop/s", "GB/s", "geomean", "x");
+    printf("%-14s %9s %9s %9s %9s %8s %9s %7s | %9s %9s\n", "variant",
+           "INT-thr", "MUL-thr", "FP-lat", "FP-thr", "MEM", "score", "vs base",
+           "FP32-lat", "FP32-thr");
+    printf("%-14s %9s %9s %9s %9s %8s %9s %7s | %9s %9s\n", "",
+           "Mop/s", "Mmul/s", "Mflop/s", "Mflop/s", "GB/s", "geomean", "x",
+           "Mflop/s", "Mflop/s");
     const double base = rows[0].score;
     for (int i = 0; i < n; ++i) {
         const result_t *r = &rows[i];
         printf("%-14s %9.1f %9.1f %9.1f %9.1f %8.2f %9.1f", sel[i]->k->name,
                r->int_thr, r->mul_thr, r->fp_lat, r->fp_thr, r->mem_gbps,
                r->score);
-        if (base > 0.0 && r->score > 0.0) printf(" %7.3f\n", r->score / base);
-        else                              printf(" %7s\n", "-");
+        if (base > 0.0 && r->score > 0.0) printf(" %7.3f", r->score / base);
+        else                              printf(" %7s", "-");
+        printf(" | %9.1f %9.1f\n", r->fp32_lat, r->fp32_thr);
     }
     if (g_verbose) {
         printf("\n  FP-lat is the column FMA contraction is meant to move: one\n"
                "  multiply-add per iteration becomes one instruction, so the\n"
-               "  dependent chain shortens by a multiply's latency. Vectorization\n"
+               "  dependent chain shortens by a multiply's latency. FP32-lat is\n"
+               "  the same chain in single precision, and the one that moves on\n"
+               "  an FPU whose FMA is single-precision only. Vectorization\n"
                "  moves the throughput columns instead, and only where the ISA has\n"
                "  a vector unit to move them with.\n"
                "  Compare variants within one machine. Across machines, compare\n"

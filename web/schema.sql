@@ -113,6 +113,9 @@ CREATE TABLE IF NOT EXISTS runs (
     raw           TEXT    NOT NULL
 );
 
+-- fp32_lat and fp32_thr are single precision and outside the score. They came
+-- after the table did, so Store.ADDED_CORE_COLUMNS adds them to an older one:
+-- IF NOT EXISTS below leaves a table that is already there as it was.
 CREATE TABLE IF NOT EXISTS cores (
     id              INTEGER PRIMARY KEY,
     run_id          INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -137,7 +140,9 @@ CREATE TABLE IF NOT EXISTS cores (
     disp_prediction TEXT,
     disp_gain       REAL,
     disp_span       REAL,
-    score           REAL
+    score           REAL,
+    fp32_lat        REAL,
+    fp32_thr        REAL
 );
 
 -- The digests of the binaries a release published, loaded by web/verified.py

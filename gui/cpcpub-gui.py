@@ -206,7 +206,7 @@ EXPLAIN = {
 }
 
 # What the score is a geometric mean of -- core_score() and machine_score() in
-# bench/src/bench.c. The memory part is a rate there, 1000 / MEMlat/8, so its
+# bench/src/measure.c. The memory part is a rate there, 1000 / MEMlat/8, so its
 # column is the one that carries it.
 SCORE_PARTS = {
     "int_thr_mops", "mul_thr_mmul_s", "fp_thr_mflops", "mem_lat8_ns",
@@ -267,17 +267,18 @@ def explain_variant(name, distinct=True):
 
 # What a run costs, in the benchmark's own units. One pass of the suite is:
 #
-#   8 phases that each warm up once and then measure `reps` x `time`
-#     (INT-lat, INT-thr, MUL-thr, FP-lat, FP-thr, MEM, MEMlat, MEMlat/8)
+#   10 phases that each warm up once and then measure `reps` x `time`
+#     (INT-lat, INT-thr, MUL-thr, FP-lat, FP-thr, FP32-lat, FP32-thr, MEM,
+#     MEMlat, MEMlat/8)
 #   + the indirect-dispatch ladder: 14 selector periods, one warm-up between
 #     them all, and half a phase's time at each -- so 7 phases' worth
 #
-# giving 9 warm-ups and 15 measured phases, plus about a tenth of a second of
+# giving 11 warm-ups and 17 measured phases, plus about a tenth of a second of
 # setup per pass (allocating the buffer and building the pointer chases).
 # Checked against this tree: predicted 2.82 s for a 3-CPU sweep that took 2.83,
 # and 6.55 s for a threaded run that took 6.63.
-WARMUPS_PER_PASS = 9
-PHASES_PER_PASS = 15
+WARMUPS_PER_PASS = 11
+PHASES_PER_PASS = 17
 SETUP_SECONDS_PER_PASS = 0.1
 
 

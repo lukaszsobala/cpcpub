@@ -170,6 +170,13 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 14%, transparent);
 tbody tr.peer-lit:not(:hover) { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 th.num { text-align: right; }
+/* Metrics outside the score (the FP32 pair): a dashed rule before the first of
+   them and quieter labels, so they do not read as part of what the score is
+   made of. markAside() in app.js puts the class and the reason on them. */
+th.aside.num, td.aside.num { border-left: 1px dashed var(--muted); }
+th.aside.num ~ th.aside.num, td.aside.num ~ td.aside.num { border-left: 0; }
+th.aside .mname, .pct-name.aside, td.aside:not(.num) { font-style: italic; }
+.aside-note { font-style: italic; }
 /* the header is the sort control */
 th .sorth {
   background: none; border: 0; padding: 0; margin: 0; font: inherit;

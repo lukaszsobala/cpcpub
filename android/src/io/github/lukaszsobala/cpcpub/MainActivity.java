@@ -66,10 +66,10 @@ import org.json.JSONTokener;
  * command line, runs the release binary, and reads back what it prints.
  */
 public final class MainActivity extends Activity {
-    // One pass of the suite: nine warm-ups and fifteen measured phases, plus a
-    // tenth of a second of setup. The desktop window's estimate, unchanged.
-    private static final int WARMUPS_PER_PASS = 9;
-    private static final int PHASES_PER_PASS = 15;
+    // One pass of the suite: eleven warm-ups and seventeen measured phases, plus
+    // a tenth of a second of setup. The desktop window's estimate, unchanged.
+    private static final int WARMUPS_PER_PASS = 11;
+    private static final int PHASES_PER_PASS = 17;
     private static final double SETUP_SECONDS_PER_PASS = 0.1;
     /** The policy of whoever publishes this app, not of the hub it uploads to,
      *  so not derived from the hub URL; kept in the repository, where its

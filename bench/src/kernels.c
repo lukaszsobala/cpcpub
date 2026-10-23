@@ -158,6 +158,39 @@ NOINLINE static void KSYM(fp_kernel_thr)(void *vctx, uint64_t n) {
     f->x[4] = x4; f->x[5] = x5; f->x[6] = x6; f->x[7] = x7;
 }
 
+// The two above in single precision, step for step: same FP_STEP, same lanes,
+// same fixed point, so FP32-thr against FP-thr reads out what halving the
+// operand width buys and nothing else. Every operand is a float, so nothing is
+// promoted to double on the way through.
+
+NOINLINE static void KSYM(fp32_kernel_lat)(void *vctx, uint64_t n) {
+    fp32_ctx_t *f = (fp32_ctx_t *)vctx;
+    const float co = f->c;
+    const float b0 = f->b[0];
+    float x0 = f->x[0];
+    for (uint64_t i = 0; i < n; ++i) {
+        FP_STEP(x0, co, b0);
+    }
+    f->x[0] = x0;
+}
+
+NOINLINE static void KSYM(fp32_kernel_thr)(void *vctx, uint64_t n) {
+    fp32_ctx_t *f = (fp32_ctx_t *)vctx;
+    const float co = f->c;
+    const float b0 = f->b[0], b1 = f->b[1], b2 = f->b[2], b3 = f->b[3];
+    const float b4 = f->b[4], b5 = f->b[5], b6 = f->b[6], b7 = f->b[7];
+    float x0 = f->x[0], x1 = f->x[1], x2 = f->x[2], x3 = f->x[3];
+    float x4 = f->x[4], x5 = f->x[5], x6 = f->x[6], x7 = f->x[7];
+    for (uint64_t i = 0; i < n; ++i) {
+        FP_STEP(x0, co, b0); FP_STEP(x1, co, b1);
+        FP_STEP(x2, co, b2); FP_STEP(x3, co, b3);
+        FP_STEP(x4, co, b4); FP_STEP(x5, co, b5);
+        FP_STEP(x6, co, b6); FP_STEP(x7, co, b7);
+    }
+    f->x[0] = x0; f->x[1] = x1; f->x[2] = x2; f->x[3] = x3;
+    f->x[4] = x4; f->x[5] = x5; f->x[6] = x6; f->x[7] = x7;
+}
+
 // ---------------------------------------------------------------------------
 // Memory
 // ---------------------------------------------------------------------------
@@ -279,6 +312,8 @@ const kernel_set_t KSYM(kernels) = {
     .mul_thr   = KSYM(mul_kernel_thr),
     .fp_lat    = KSYM(fp_kernel_lat),
     .fp_thr    = KSYM(fp_kernel_thr),
+    .fp32_lat  = KSYM(fp32_kernel_lat),
+    .fp32_thr  = KSYM(fp32_kernel_thr),
     .mem_bw    = KSYM(mem_kernel_bw),
     .mem_lat   = KSYM(mem_kernel_lat),
     .mem_mlp   = KSYM(mem_kernel_mlp),

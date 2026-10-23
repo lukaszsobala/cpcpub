@@ -150,6 +150,9 @@ SCRYPT_MAXMEM = 64 << 20
 #         which the geomean cannot stand in for -- plus whichever metric the
 #         board is being sorted on. The rest are one select away, and every
 #         metric is still ranked, filtered and compared on.
+#   aside   set on a metric that is not part of the score, saying why; the page
+#         sets those columns apart and puts this in their tooltips. Listed last,
+#         after everything the score is made of, as the benchmark prints them.
 METRICS = [
     {"key": "score",       "label": "score",    "unit": "geomean", "kind": "rate",  "better": "high", "headline": True},
     {"key": "int_thr",     "label": "INT-thr",  "unit": "Mop/s",  "kind": "rate",  "better": "high", "headline": True},
@@ -165,6 +168,12 @@ METRICS = [
     {"key": "mlp",         "label": "MLP",      "unit": "x",       "kind": "ratio", "better": "high"},
     {"key": "disp_thr",    "label": "DISP-thr", "unit": "Mcall/s", "kind": "rate",  "better": "high"},
     {"key": "disp_cap",    "label": "DISPcap",  "unit": "calls",   "kind": "ratio", "better": "high"},
+    # The FP pair again on floats: what a core with a single-precision FPU and
+    # no double-precision one -- most microcontrollers -- does in hardware.
+    {"key": "fp32_thr",    "label": "FP32-thr", "unit": "Mflop/s", "kind": "rate",  "better": "high",
+     "aside": "single precision, not in the score"},
+    {"key": "fp32_lat",    "label": "FP32-lat", "unit": "Mflop/s", "kind": "rate",  "better": "high",
+     "aside": "single precision, not in the score"},
 ]
 METRIC_KEYS = [m["key"] for m in METRICS]
 # key -> kind, for the one place that has to redo the front end's per-GHz
@@ -198,6 +207,9 @@ CORE_FIELDS = [
     ("disp_gain",        "disp_gain",       "num"),
     ("disp_span",        "disp_span",       "num"),
     ("score",            "score",           "num"),
+    # Single precision, outside the score: in METRICS, marked aside.
+    ("fp32_lat_mflops",  "fp32_lat",        "num"),
+    ("fp32_thr_mflops",  "fp32_thr",        "num"),
 ]
 CORE_COLUMNS = [col for _, col, _ in CORE_FIELDS]
 
@@ -380,7 +392,7 @@ def _obj(payload, key):
 # that is the whole of it -- there is no badge here and there must not be one.
 #
 # The formulas are core_score(), machine_score() and summarize() in
-# bench/src/bench.c; they are part of the cpu-bench/1 contract, and the real
+# bench/src/measure.c; they are part of the cpu-bench/1 contract, and the real
 # sample in testdata/full-run.json is checked against them by the hub's tests,
 # so a change to the benchmark's formulas cannot quietly start refusing every
 # honest upload.
@@ -403,7 +415,7 @@ def _f(row: dict, key: str) -> float:
 
 
 def _geomean(values: list[float]) -> float:
-    """As geomean() in bench.c: terms that are not positive drop out, rather
+    """As geomean() in measure.c: terms that are not positive drop out, rather
     than taking the whole mean to zero."""
     logs = [math.log(v) for v in values if v > 0.0]
     return math.exp(math.fsum(logs) / len(logs)) if logs else 0.0
@@ -1210,6 +1222,11 @@ class Store:
                      ("attest_run_url", "TEXT"), ("attest_at", "TEXT"),
                      ("cpu_layout", "TEXT"), ("cpu_layout_guess", "TEXT"), ("cpu_key", "TEXT"),
                      ("cpus_offline", "INTEGER"), ("upload_id", "INTEGER"))
+    # The same for `cores`, which schema.sql cannot widen either: CREATE TABLE
+    # IF NOT EXISTS leaves an existing table as it was, so without this a new
+    # metric's column never reaches an old database and every upload after it
+    # fails on the INSERT.
+    ADDED_CORE_COLUMNS = (("fp32_lat", "REAL"), ("fp32_thr", "REAL"))
 
     def __init__(self, path: str, aliases_path: Path | None = ALIASES_PATH):
         self.path = path
@@ -1222,6 +1239,10 @@ class Store:
             for col, decl in self.ADDED_COLUMNS:
                 if col not in have:
                     db.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
+            have = {r["name"] for r in db.execute("PRAGMA table_info(cores)")}
+            for col, decl in self.ADDED_CORE_COLUMNS:
+                if col not in have:
+                    db.execute(f"ALTER TABLE cores ADD COLUMN {col} {decl}")
             if "renamed_at" not in {r["name"] for r in db.execute("PRAGMA table_info(users)")}:
                 db.execute("ALTER TABLE users ADD COLUMN renamed_at TEXT")
             # After the ALTER, not in schema.sql: an older database has neither

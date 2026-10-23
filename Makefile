@@ -40,8 +40,13 @@ native riscv-v rva23 loongarch sg2000 sg2000-xthead:
 # the committed sample alone.
 check: contract test
 
+# The microcontroller front end writes the same document from its own code, so
+# it is checked too, through the port that runs it here (mcu/host).
 contract: bench
-	@CPCPUB_BIN=$(abspath $(BENCH)) $(PYTHON) tests/test_contract.py
+	@$(MAKE) -s -C mcu/host
+	@CPCPUB_BIN=$(abspath $(BENCH)) \
+	    CPCPUB_MCU_HOST_BIN=$(abspath mcu/host/cpcpub-mcu-host) \
+	    $(PYTHON) tests/test_contract.py
 
 test:
 	@$(PYTHON) web/test_server.py
@@ -77,4 +82,5 @@ submit: bench
 
 clean:
 	@$(MAKE) -C bench clean
+	@$(MAKE) -C mcu/host clean
 	@rm -rf web/__pycache__ tests/__pycache__

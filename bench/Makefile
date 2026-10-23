@@ -141,7 +141,7 @@ VERSION ?= dev
 VERSION_DEFINE := -DCPCPUB_VERSION='"$(VERSION)"'
 
 TARGET := cpcpub$(EXEEXT)
-OBJS   := src/bench.o src/sha256.o src/http.o \
+OBJS   := src/bench.o src/measure.o src/report.o src/sha256.o src/http.o \
           $(addprefix src/kernels-,$(addsuffix .o,$(VARIANTS)))
 
 .PHONY: all clean native sg2000 sg2000-xthead riscv-v rva23 loongarch FORCE
@@ -247,11 +247,23 @@ $(TARGET): $(OBJS)
 # passing is otherwise invisible in the numbers. These are the flags every
 # variant shares; the per-variant pair is baked into each kernels object below
 # and the two are concatenated at report time.
-src/bench.o: src/bench.c src/platform.h src/kernels.h src/sha256.h src/http.h \
-             $(FLAGSTAMP)
+src/bench.o: src/bench.c src/platform.h src/kernels.h src/measure.h src/report.h \
+             src/sha256.h src/http.h $(FLAGSTAMP)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(HUB_DEFINE) $(VERSION_DEFINE) -DBUILD_CC='"$(CC)"' \
 	    -DBUILD_FLAGS='"$(CFLAGS)"' -c -o $@ $<
+
+# The driver around the kernels -- timing, phases, scoring -- and the records it
+# writes. The shared flags, as bench.o had when this was all one file: the
+# variant flags belong to the kernels alone.
+src/measure.o: src/measure.c src/measure.h src/platform.h src/kernels.h $(FLAGSTAMP)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+src/report.o: src/report.c src/report.h src/measure.h src/platform.h src/kernels.h \
+              $(FLAGSTAMP)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Not measured code, so it gets the shared flags and none of the variant ones:
 # what it hashes is the binary, and how fast it does that is nobody's result.
