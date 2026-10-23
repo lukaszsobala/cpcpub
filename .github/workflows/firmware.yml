@@ -72,6 +72,9 @@ jobs:
   pico:
     name: ${{ matrix.chip }}
     runs-on: ubuntu-24.04
+    # A build takes two minutes. Without a limit, a download that stalls holds
+    # the job for GitHub's six hours; with one it fails, and can be re-run.
+    timeout-minutes: 20
     permissions:
       contents: read
     strategy:
@@ -104,13 +107,18 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
+      # Every download here is from a network the job does not control, and one
+      # stalled for hours in this step: apt retries and gives up on a silent
+      # mirror, and the step as a whole is cut off well short of the job's limit.
       - name: Install the toolchain and the pico-sdk
+        timeout-minutes: 10
         env:
           RISCV: ${{ matrix.riscv }}
         run: |
           set -eux
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo apt-get "${apt[@]}" update
+          sudo apt-get "${apt[@]}" install -y --no-install-recommends \
             gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
           arm-none-eabi-gcc --version | head -1
           # Only TinyUSB of the SDK's submodules: the USB console. The others
@@ -171,6 +179,8 @@ jobs:
   esp32:
     name: ${{ matrix.chip }}
     runs-on: ubuntu-24.04
+    # Four minutes in practice, the image pull included; see the Pico job.
+    timeout-minutes: 30
     permissions:
       contents: read
     container:
