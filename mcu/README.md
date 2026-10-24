@@ -153,6 +153,18 @@ A `--variants` run writes an array, as `cpcpub --variants --json` does.
 Standard library only on Linux and macOS; on Windows it needs
 `pip install pyserial`.
 
+The board cannot reach a hub itself, so the file goes up from the desktop:
+drop it on the hub's *Submit a result* page, or
+
+```sh
+curl -fsS -X POST 'https://HUB/api/runs?label=my+pico' \
+    -H 'Content-Type: application/json' --data-binary @run.json
+```
+
+as [web/README.md](../web/README.md) describes, with `-H 'Authorization: Bearer
+TOKEN'` to put it on an account. A `--variants` array goes up whole from the
+page, which uploads each variant as its own run.
+
 Or open the port in any terminal (`picocom /dev/ttyACM0`, `idf.py monitor`,
 PuTTY) and type at the `cpcpub>` prompt: the options are the desktop's —
 `--full`, `--per-core`, `--cpus 1`, `--time`, `--reps`, `--variants`, `--json`,

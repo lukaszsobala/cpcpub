@@ -60,7 +60,7 @@ bench/cpcpub --version              # which build this is, and what it is runnin
 bench/cpcpub --help
 ```
 
-One binary carries four compilations of the kernels — auto-vectorization off/on rossed with FMA contraction off/on — and `--variants` runs each one the host ISA can tell apart, then compares them. The default is the scalar, unfused build that cross-ISA comparisons need.
+One binary carries four compilations of the kernels — auto-vectorization off/on crossed with FMA contraction off/on — and `--variants` runs each one the host ISA can tell apart, then compares them. The default is the scalar, unfused build that cross-ISA comparisons need.
 
 On a desktop, [gui/](gui/) is the same flags in a window — the variants to
 run, per-core or not, where to put the result, the hub fields, and a live
