@@ -820,6 +820,15 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Only the script that writes the downloads table, from the commit
+      # being released.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.REF }}
+          path: src
+          persist-credentials: false
+          sparse-checkout: packaging/release-notes.py
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v8
         with:
           pattern: build-*
@@ -935,6 +944,23 @@ jobs:
           (cd packages && sha256sum -- *) | tee -a SHA256SUMS
           (cd firmware && sha256sum -- *) | tee -a SHA256SUMS
 
+      # GitHub lists a release's assets by name alone, so the notes carry them
+      # grouped: packages by system, binaries by OS, firmware by chip. Written
+      # here, so a trial run shows it in its summary; publish puts it on top of
+      # the release's notes. Not an asset itself: the upload names what goes up.
+      - name: Downloads table
+        env:
+          REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          set -eu
+          cd staged
+          python3 ../src/packaging/release-notes.py "$TAG" \
+            "$SERVER/$REPO/releases/download/$TAG" \
+            cpcpub-* packages/* firmware/* SHA256SUMS verified-builds.json \
+            > release-notes.md
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v7
         with:
           name: release
@@ -975,15 +1001,39 @@ jobs:
       # `gh` reads the token from the environment, so it never reaches a process
       # list or a log line. --clobber so re-running the workflow for a tag
       # replaces the assets rather than failing on them.
+      #
+      # The downloads table goes on top of the notes, between markers: a new
+      # release gets it above GitHub's generated changelog, and an existing one
+      # -- made by hand first, or a re-run -- has its table replaced and the
+      # rest of its notes left as they were.
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           cd staged
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-                 --title "$TAG" --generate-notes
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+               --json body -q .body > old-notes.md 2>/dev/null; then
+            exists=1
+          else
+            exists=0
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$TAG" -q .body > old-notes.md
+          fi
+          python3 - <<'PY'
+          import re
+          table = open("release-notes.md").read().strip()
+          rest = re.sub(r"<!-- downloads -->.*?<!-- /downloads -->\s*", "",
+                        open("old-notes.md").read(), flags=re.S).strip()
+          open("notes.md", "w").write(
+              f"<!-- downloads -->\n{table}\n<!-- /downloads -->\n\n{rest}\n")
+          PY
+          if [ "$exists" = 1 ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" --notes-file notes.md
+          fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
             cpcpub-* packages/* firmware/* SHA256SUMS verified-builds.json
 
