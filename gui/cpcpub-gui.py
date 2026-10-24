@@ -157,6 +157,10 @@ METRICS = [
     ("mlp", "MLP", "x"),
     ("disp_thr_mcall_s", "DISP-thr", "Mcall/s"),
     ("disp_cap_calls", "DISPcap", "calls"),
+    # Single precision, after everything the score is made of, as the benchmark
+    # prints them: never bold, since they are not part of it.
+    ("fp32_lat_mflops", "FP32-lat", "Mflop/s"),
+    ("fp32_thr_mflops", "FP32-thr", "Mflop/s"),
 ]
 
 # What a results table shows: the clock first, as the context the rest of a row
@@ -203,6 +207,14 @@ EXPLAIN = {
     "disp_cap_calls": "The longest repeating pattern of indirect calls the core "
                       "still predicts. Higher is better.\nBackground load inflates "
                       "it, so it needs a quiet machine.",
+    "fp32_lat_mflops": "FP-lat in single precision. Not in the score. Higher is "
+                       "better.\nOn a core whose FPU does only single precision, "
+                       "such as most microcontrollers, FP-lat measures a software "
+                       "library and this the hardware.",
+    "fp32_thr_mflops": "FP-thr in single precision. Not in the score. Higher is "
+                       "better.\nOn a core whose FPU does only single precision, "
+                       "such as most microcontrollers, FP-thr measures a software "
+                       "library and this the hardware.",
 }
 
 # What the score is a geometric mean of -- core_score() and machine_score() in

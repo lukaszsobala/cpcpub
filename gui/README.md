@@ -98,7 +98,8 @@ total, then the per-core sweep with one row per kind of core, then the clock, th
 its unit under the name. Hover over a heading or a value for what it means in
 words; a clock's value also says whether it was measured, rated, given or
 estimated. The score and the six columns it is a geometric mean of are in
-bold. Click a heading to sort by that column — click again to reverse it. A
+bold; the last two, FP32-lat and FP32-thr, are the FP pair in single precision
+and not part of the score. Click a heading to sort by that column — click again to reverse it. A
 `--variants` run gets a page per variant, switched between by the buttons above
 the table.
 

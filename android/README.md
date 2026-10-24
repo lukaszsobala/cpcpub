@@ -19,7 +19,8 @@ The result appears as a table of the headline columns -- the clock, the score,
 INT-thr and MEM, as on the hub and the desktop -- or every column with
 **Detailed** ticked, which is remembered. Tap a heading for what that column
 means; with Detailed on, the score and the columns it is a geometric mean of
-are in bold. Its scrollbar sits under the last row, not over it. Every result is
+are in bold, and the last two, FP32-lat and FP32-thr, are single precision and
+not part of the score. Its scrollbar sits under the last row, not over it. Every result is
 also kept in `Android/data/io.github.lukaszsobala.cpcpub/files/results/`, and can be saved
 elsewhere or shared as JSON. **Past results** lists them, newest first, with
 the score and whether each is on a hub, and opens one again.
