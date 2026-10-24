@@ -1114,7 +1114,7 @@ def board_of(cpu_models: str) -> str | None:
 LAYOUT_SQL = "COALESCE(r.cpu_layout, r.cpu_layout_guess)"
 
 
-def cpu_family(cpu_models: str) -> str:
+def cpu_family(cpu_models: str, machine: str | None = None) -> str:
     """The CPU line without the board it was measured on, where the rest is cores.
 
     The benchmark appends the platform's name in parentheses ("Cortex-A55 +
@@ -1124,8 +1124,16 @@ def cpu_family(cpu_models: str) -> str:
     core counts, which peer_key() also reads, say the rest: four Cortex-A53s
     are four Cortex-A53s on any board. A line that names a chip or a board
     keeps all of it.
+
+    So does one whose parentheses are the run's `machine`: firmware names its
+    chip there and in `system.machine` both ("Cortex-M33 (RP2350)" on an
+    RP2350), and on a microcontroller the chip -- its SRAM, its clock -- is
+    the processor, where a Linux board's name is only where the processor sat.
+    A Cortex-M4F in an nRF52840 and one in an STM32F401 are two CPUs.
     """
     bare = bare_line(cpu_models)
+    if machine and board_of(cpu_models) == machine:
+        return cpu_models
     return bare if named_designs(cpu_models) or ARM_DESIGN_RE.match(bare) else cpu_models
 
 
@@ -1161,7 +1169,8 @@ def load_aliases(path: Path | None) -> dict[str, dict]:
 
 
 def classify(cpu_models: str | None, cpus: int | None, cpus_offline: int | None,
-             records: list[dict], aliases: dict[str, dict]) -> tuple[str | None, str | None]:
+             records: list[dict], aliases: dict[str, dict],
+             machine: str | None = None) -> tuple[str | None, str | None]:
     """(cpu_key, layout) for one run: what it is compared as, and its core
     counts as the hub has them where the run did not report its own."""
     if not cpu_models:
@@ -1172,7 +1181,7 @@ def classify(cpu_models: str | None, cpus: int | None, cpus_offline: int | None,
     # A sweep of only the CPUs that were up describes a smaller machine than
     # the one named, so nothing is counted from it.
     layout = None if cpus_offline else guess_layout(records, cpu_models, cpus)
-    return cpu_family(cpu_models), layout
+    return cpu_family(cpu_models, machine), layout
 
 
 def design_line(run: dict) -> str | None:
@@ -1441,7 +1450,8 @@ class Store:
         """Store what a run is compared as, and its core counts where it did
         not report them; see classify()."""
         run = dict(db.execute("SELECT cpu_models, cpus, cpus_offline, cpu_layout, cpu_key, "
-                              "cpu_layout_guess FROM runs WHERE id = ?", (run_id,)).fetchone())
+                              "cpu_layout_guess, machine FROM runs WHERE id = ?",
+                              (run_id,)).fetchone())
         # Stored before the hub tidied lines; the raw document keeps the original.
         tidy = tidy_line(run["cpu_models"])
         if tidy != run["cpu_models"]:
@@ -1453,7 +1463,7 @@ class Store:
                 if run["cpu_models"] and not run["cpu_layout"]
                 and named_designs(run["cpu_models"]) else [])
         key, layout = classify(run["cpu_models"], run["cpus"], run["cpus_offline"],
-                               [dict(r) for r in rows], self.aliases)
+                               [dict(r) for r in rows], self.aliases, run["machine"])
         if run["cpu_layout"]:
             layout = None
         if (key, layout) != (run["cpu_key"], run["cpu_layout_guess"]):

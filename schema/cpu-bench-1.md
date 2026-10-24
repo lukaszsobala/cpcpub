@@ -84,7 +84,9 @@ Where there is no operating system, `system` describes what stands in for one:
 `sysname` is the SDK or RTOS (`pico-sdk`, `esp-idf`, `zephyr`), `release` its version, and
 `machine` the chip (`RP2040`, `RP2350`, `ESP32-S3`); `cpu_models` is the core
 and the chip (`Cortex-M0+ (RP2040)`, `Xtensa LX7 (ESP32-S3)`), `cpu_layout`
-counts the cores. `build.target` is `armv6m` (Cortex-M0+), `armv8m`
+counts the cores. Because the chip in parentheses is also `machine`, the hub
+keeps it as part of the CPU, where it drops a Linux board's name: a Cortex-M4F
+in two different chips is two CPUs on the board. `build.target` is `armv6m` (Cortex-M0+), `armv8m`
 (Cortex-M33), `xtensa` (the ESP32, S2 and S3) or `riscv32` (Hazard3 and the
 RISC-V ESP32s), and under Zephyr whatever else the board's architecture is
 (`armv7m` for a Cortex-M3, M4 or M7, `aarch64`, `riscv64`).
@@ -170,8 +172,8 @@ precision — same step, same lanes, same fixed point. They are **not** in
 `score` and do not change it. They are there for cores whose FPU is
 single-precision only (Cortex-M33, ESP32), where `fp_*` measures a soft-float
 library and these measure the hardware; on a core with a double-precision FPU
-the two pairs usually read close to each other. The hub stores both and does
-not rank them yet.
+the two pairs usually read close to each other. The hub ranks them like any
+other metric and sets them apart from the ones the score is made of.
 
 `mhz_src` says how much the clock beside it is worth: `measured` was sampled
 off the machine while the core was under load, `given` was asserted by whoever

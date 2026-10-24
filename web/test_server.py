@@ -854,6 +854,18 @@ class HubTest(unittest.TestCase):
                          [("Cortex-A35", "4x Cortex-A35", 2),
                           ("Cortex-A35 (Arm Board R)", "2x Cortex-A35", 1)])
 
+    def test_firmware_keeps_its_chip(self):
+        # Firmware names its chip in parentheses and as the machine: the chip is
+        # the CPU there, so one core design in two chips is two CPUs.
+        for chip in ("nrf52840", "stm32f401xe", "stm32f401xe"):
+            doc = document()
+            doc["system"].update(cpu_models=f"Cortex-M4F ({chip})", machine=chip,
+                                 cpus=1, sysname="zephyr")
+            self.upload(doc)
+        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=Cortex-M4F")
+        self.assertEqual(sorted((g["cpu_models"], g["runs"]) for g in page["groups"]),
+                         [("Cortex-M4F (nrf52840)", 1), ("Cortex-M4F (stm32f401xe)", 2)])
+
     def test_an_arm11_is_an_arm_design(self):
         # The first Raspberry Pi's core, named from its MIDR like any Cortex.
         for b in ("Pi Model B Rev 2", "Pi Zero W"):
