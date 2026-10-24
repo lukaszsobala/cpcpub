@@ -108,7 +108,7 @@
   <div class="scroller"><table id="board-table"><thead></thead><tbody></tbody></table></div>
   <!-- Filled by pager(): absent while the whole board fits on one page. -->
   <div id="board-pager"></div>
-  <p class="note legend">↑ higher is better · ↓ lower is better</p>
+  <p class="note legend" id="board-legend">↑ higher is better · ↓ lower is better</p>
   <p class="empty" id="board-empty" hidden>Nothing here yet. Be the first to upload a run.</p>
 </section>
 
@@ -144,7 +144,8 @@
       <p class="note">
         If the machine can't reach this site, run
         <code>cpcpub --full --json &gt; run.json</code> on it, then bring the
-        file here.
+        file here. From a microcontroller, <code>mcu/cpcpub-serial.py</code>
+        saves the file to bring.
       </p>
       <div class="drop" id="drop" tabindex="0" role="button"
            aria-label="Choose or drop a cpcpub result file">

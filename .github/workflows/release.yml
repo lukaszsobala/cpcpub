@@ -59,6 +59,13 @@
 # these jobs do, so a dispatch for a tag older than the packaging fails there
 # rather than packaging an old release with today's files.
 #
+# The microcontroller firmware -- a file per chip for the RP2040, the RP2350
+# and the ESP32 family -- is built by firmware.yml, called below, and goes up
+# beside the binaries, listed in SHA256SUMS. It is in the manifest too, under
+# a different digest: firmware hashes its image in flash, not the file it was
+# downloaded as, so its entry carries the image's digest (marked "digest_of":
+# "image") as firmware.yml worked it out, and SHA256SUMS the file's.
+#
 # A trial run: dispatched with `publish` off, on a branch and with the tag it
 # will become (gh workflow run release.yml --ref BRANCH -f tag=vX.Y.Z -f
 # publish=false), it builds that branch for every target, stamped with that
@@ -797,14 +804,31 @@ jobs:
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
+  firmware:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/firmware.yml
+    with:
+      version: ${{ github.event.inputs.tag || github.ref_name }}
+      ref: ${{ (github.event_name == 'push' || inputs.publish) && (github.event.inputs.tag || github.ref_name) || github.sha }}
+
   # Everything a release is, checked and left as one artifact -- for a trial
   # run, the end of the line.
   manifest:
-    needs: [build, packages]
+    needs: [build, packages, firmware]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
+      # Only the script that writes the downloads table, from the commit
+      # being released.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.REF }}
+          path: src
+          persist-credentials: false
+          sparse-checkout: packaging/release-notes.py
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v8
         with:
           pattern: build-*
@@ -814,6 +838,11 @@ jobs:
         with:
           pattern: packages-*
           path: staged/packages
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: firmware-*
+          path: staged/firmware
           merge-multiple: true
 
       # Digests are taken here, over the exact bytes about to be uploaded --
@@ -826,6 +855,10 @@ jobs:
         run: |
           set -eux
           cd staged
+          # The firmware's digest entries ride with the files from firmware.yml;
+          # they are read here, not published.
+          mkdir firmware-info
+          mv firmware/digest-*.json firmware-info/
           # The upload/download round trip does not preserve the executable
           # bit, and an asset nobody can run is not a release.
           chmod +x cpcpub-*
@@ -857,6 +890,28 @@ jobs:
           named = {b["filename"] for b in builds}
           assert staged == named, f"staged {sorted(staged)}, manifest {sorted(named)}"
 
+          # The firmware, by the digest of its image -- what a board running it
+          # reports -- which firmware.yml checked is what each file writes to
+          # flash. Accounted for both ways too.
+          firmware = []
+          for meta in sorted(pathlib.Path("firmware-info").glob("digest-*.json")):
+              info = json.load(open(meta))
+              path = pathlib.Path("firmware") / info["filename"]
+              assert path.is_file(), f"{meta} names {path}, which was not staged"
+              assert info["digest_of"] == "image", meta
+              assert len(info["sha256"]) == 64 and int(info["sha256"], 16) >= 0, meta
+              firmware.append({
+                  "filename": path.name,
+                  "sha256": info["sha256"],
+                  "digest_of": "image",
+                  "target": info["target"],
+                  "march": info["march"],
+              })
+          staged = {p.name for p in pathlib.Path("firmware").iterdir()}
+          named = {b["filename"] for b in firmware}
+          assert staged == named, f"firmware {sorted(staged)}, manifest {sorted(named)}"
+          builds += firmware
+
           tag = os.environ["TAG"]
           manifest = {
               "schema": "cpu-bench-builds/1",
@@ -868,11 +923,13 @@ jobs:
           print(json.dumps(manifest, indent=2))
           PY
           # The manifest must agree with the checksum file, or the two halves of
-          # the release contradict each other.
+          # the release contradict each other. The firmware is left out of the
+          # comparison: its manifest digest is of the image, not of the file.
           python3 - <<'PY'
           import json
           published = {b["sha256"]: b["filename"]
-                       for b in json.load(open("verified-builds.json"))["builds"]}
+                       for b in json.load(open("verified-builds.json"))["builds"]
+                       if b.get("digest_of") != "image"}
           listed = {}
           for line in open("SHA256SUMS"):
               digest, name = line.split()
@@ -880,10 +937,29 @@ jobs:
           assert published == listed, (published, listed)
           print(f"{len(listed)} binaries agree between SHA256SUMS and the manifest")
           PY
-          # The packages join the checksum file only now, once the binaries in
-          # it have been checked against the manifest: they are downloads to
-          # check like any other, but not builds a hub can verify.
+          # The packages and the firmware files join the checksum file only now,
+          # once the binaries in it have been checked against the manifest: they
+          # are downloads to check like any other. (The firmware is verifiable
+          # on a hub as well, by its image's digest in the manifest.)
           (cd packages && sha256sum -- *) | tee -a SHA256SUMS
+          (cd firmware && sha256sum -- *) | tee -a SHA256SUMS
+
+      # GitHub lists a release's assets by name alone, so the notes carry them
+      # grouped: packages by system, binaries by OS, firmware by chip. Written
+      # here, so a trial run shows it in its summary; publish puts it on top of
+      # the release's notes. Not an asset itself: the upload names what goes up.
+      - name: Downloads table
+        env:
+          REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          set -eu
+          cd staged
+          python3 ../src/packaging/release-notes.py "$TAG" \
+            "$SERVER/$REPO/releases/download/$TAG" \
+            cpcpub-* packages/* firmware/* SHA256SUMS verified-builds.json \
+            > release-notes.md
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -906,31 +982,60 @@ jobs:
           path: staged
 
       # The bytes about to go up are the ones the manifest job took digests of.
-      # SHA256SUMS names each file as the release will, flat; the packages wait
-      # in packages/ until they go up beside the binaries.
+      # SHA256SUMS names each file as the release will, flat; the packages and
+      # the firmware wait in packages/ and firmware/ until they go up beside the
+      # binaries.
       - name: Check against the checksums
         run: |
           set -eu
           cd staged
           while read -r digest name; do
             name=${name#\*}
-            if [ -e "$name" ]; then echo "$digest  $name"; else echo "$digest  packages/$name"; fi
+            for dir in . packages firmware; do
+              if [ -e "$dir/$name" ]; then echo "$digest  $dir/$name"; continue 2; fi
+            done
+            # Not staged anywhere: named as it is, so the check reports it missing.
+            echo "$digest  $name"
           done < SHA256SUMS | sha256sum -c -
 
       # `gh` reads the token from the environment, so it never reaches a process
       # list or a log line. --clobber so re-running the workflow for a tag
       # replaces the assets rather than failing on them.
+      #
+      # The downloads table goes on top of the notes, between markers: a new
+      # release gets it above GitHub's generated changelog, and an existing one
+      # -- made by hand first, or a re-run -- has its table replaced and the
+      # rest of its notes left as they were.
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           cd staged
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-                 --title "$TAG" --generate-notes
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+               --json body -q .body > old-notes.md 2>/dev/null; then
+            exists=1
+          else
+            exists=0
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$TAG" -q .body > old-notes.md
+          fi
+          python3 - <<'PY'
+          import re
+          table = open("release-notes.md").read().strip()
+          rest = re.sub(r"<!-- downloads -->.*?<!-- /downloads -->\s*", "",
+                        open("old-notes.md").read(), flags=re.S).strip()
+          open("notes.md", "w").write(
+              f"<!-- downloads -->\n{table}\n<!-- /downloads -->\n\n{rest}\n")
+          PY
+          if [ "$exists" = 1 ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" --notes-file notes.md
+          fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            cpcpub-* packages/* SHA256SUMS verified-builds.json
+            cpcpub-* packages/* firmware/* SHA256SUMS verified-builds.json
 
       - name: Say how to trust these
         run: |
@@ -951,4 +1056,11 @@ jobs:
           told anything by the submitter. It is not proof -- that field is
           self-reported like every other one -- but two results carrying the
           same digest were produced by the same machine code.
+
+          The microcontroller firmware (\`.uf2\`, \`.bin\`) is checked against
+          \`SHA256SUMS\` the same way, and its results are verified too, by a
+          different digest: the firmware hashes its image in flash, which is
+          not the file it was downloaded as, so the manifest lists the image's
+          digest for it. See
+          [mcu/README.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$TAG/mcu/README.md).
           EOF

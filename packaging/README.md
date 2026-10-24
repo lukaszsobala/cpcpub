@@ -109,6 +109,12 @@ run's `release` artifact. When it passes, merge, then tag and push the tag:
 git tag -a v0.4.0 -m "cpcpub 0.4.0" && git push origin v0.4.0
 ```
 
+The release's notes open with a table of its downloads, grouped by system,
+OS and chip -- GitHub lists the assets themselves by name alone. It is written
+by [release-notes.py](release-notes.py), and a trial run shows it in its
+summary. A file the script has no place for is listed under "Other files"; give
+it one there.
+
 After the release, load its `verified-builds.json` into each hub (see
 [web/README.md](../web/README.md)), or results from the new binaries will not
 show as verified. The Android signing key must be in place before the first

@@ -60,7 +60,7 @@ bench/cpcpub --version              # which build this is, and what it is runnin
 bench/cpcpub --help
 ```
 
-One binary carries four compilations of the kernels — auto-vectorization off/on rossed with FMA contraction off/on — and `--variants` runs each one the host ISA can tell apart, then compares them. The default is the scalar, unfused build that cross-ISA comparisons need.
+One binary carries four compilations of the kernels — auto-vectorization off/on crossed with FMA contraction off/on — and `--variants` runs each one the host ISA can tell apart, then compares them. The default is the scalar, unfused build that cross-ISA comparisons need.
 
 On a desktop, [gui/](gui/) is the same flags in a window — the variants to
 run, per-core or not, where to put the result, the hub fields, and a live
@@ -71,6 +71,16 @@ package on Linux and in the setup on Windows; on Android the app is
 ```sh
 make gui            # or gui/cpcpub-gui.py
 ```
+
+On a microcontroller — the Raspberry Pi RP2040 and RP2350, Arm or RISC-V, the
+Espressif ESP32 family, and any board the Zephyr RTOS supports — the same
+kernels run as firmware, take the same
+options over the serial console, and print the same tables and the same JSON
+document. Each release carries ready-made firmware for the Pico and ESP32
+chips, one file per chip.
+[mcu/cpcpub-serial.py](mcu/cpcpub-serial.py) runs a board from a desktop and
+saves its result; [mcu/README.md](mcu/README.md) covers building, flashing and
+what the numbers mean on a chip with no cache and, mostly, no FPU.
 
 [bench/README.md](bench/README.md) covers building for each target, what every metric means, and what each platform can and cannot report. Read it before reading a result — several of the metrics say something other than what their name suggests. `--json` output is specified in
 [schema/cpu-bench-1.md](schema/cpu-bench-1.md).

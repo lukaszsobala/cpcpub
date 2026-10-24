@@ -7,8 +7,9 @@ are what keep them in agreement — the test enforces every rule stated here, an
 a live sample lives in [testdata/full-run.json](../testdata/full-run.json).
 
 Produced by `cpcpub --json` (also `--per-core --json`, `--full --json`).
-Written by `json_open` / `json_result` / `emit_json` in
-[bench/src/bench.c](../bench/src/bench.c); read by `validate()` in
+Written by `json_open` / `emit_json` in [bench/src/bench.c](../bench/src/bench.c)
+and, for each record, `json_result` in [bench/src/report.c](../bench/src/report.c);
+read by `validate()` in
 [web/server.py](../web/server.py).
 
 ## Shape
@@ -74,6 +75,34 @@ the run but leaves it out of every comparison.
 A `--disp-sweep` dump carries the same `schema` and `mode: "disp-sweep"`. The
 hub **rejects** it: it is a diagnostic curve with no summary metrics to rank.
 
+## From a microcontroller
+
+[mcu/](../mcu/) writes the same document from its own front end
+(`emit_json` in [mcu/frontend.c](../mcu/frontend.c)), with the records written
+by the same `json_result`, and the contract test holds it to every rule here.
+Where there is no operating system, `system` describes what stands in for one:
+`sysname` is the SDK or RTOS (`pico-sdk`, `esp-idf`, `zephyr`), `release` its version, and
+`machine` the chip (`RP2040`, `RP2350`, `ESP32-S3`); `cpu_models` is the core
+and the chip (`Cortex-M0+ (RP2040)`, `Xtensa LX7 (ESP32-S3)`), `cpu_layout`
+counts the cores. Because the chip in parentheses is also `machine`, the hub
+keeps it as part of the CPU, where it drops a Linux board's name: a Cortex-M4F
+in two different chips is two CPUs on the board. `build.target` is `armv6m` (Cortex-M0+), `armv8m`
+(Cortex-M33), `xtensa` (the ESP32, S2 and S3) or `riscv32` (Hazard3 and the
+RISC-V ESP32s), and under Zephyr whatever else the board's architecture is
+(`armv7m` for a Cortex-M3, M4 or M7, `aarch64`, `riscv64`).
+`build.binary_sha256` is the firmware's image as it sits in flash, hashed by
+the firmware itself on the Pico and ESP32 builds; see below. A Zephyr build
+leaves it out. `config.pin` is always `true`, because each worker runs on the core
+it was started on and nothing can move it. `mhz` is `measured` by the chip's
+own frequency counter or cycle counter -- except under Zephyr, which has no
+portable way to measure it, where it is `rated` from the device tree or the
+SysTick rate.
+
+What the memory phases measure is different there, which is why it says so in
+the document rather than in a column: on-chip SRAM with no cache in front of
+it (behind an L1 cache on the ESP32-P4), so `mem_lat_ns` is an SRAM access and
+not a trip to DRAM.
+
 ## `build.binary_sha256`
 
 The SHA-256 of the binary that produced the document, in 64 lowercase hex
@@ -82,6 +111,15 @@ digits — the benchmark hashing its own executable at report time, found throug
 host. **Absent, never `null`**, where none of those can answer: a key carrying an
 empty digest would match the next empty digest and mean the opposite of what it
 says.
+
+On a microcontroller there is no file, so it is the digest of the firmware's
+image in flash, which the firmware reads and hashes itself: on the Pico builds
+the image from its first byte to its last, which is the `cpcpub.bin` a build
+writes; on an ESP32 the application image less the SHA-256 the build appends to
+it, and only if the two agree. Neither is the digest of the file a user
+downloads -- a `.uf2` wraps the image, and an ESP32 `.bin` puts the bootloader
+in front of it -- so a release's manifest lists the image's digest for each
+firmware file, marked `"digest_of": "image"`, and its `SHA256SUMS` the file's.
 
 It exists so a hub can tell a run that says it came from a published build from
 one that says nothing. The hub holds the digests a release attached and marks a
@@ -126,7 +164,16 @@ always present; anything not measured is `null`, never absent and never `0`.
 `scope` (`cpu`|`thread`|`total`), `cpu`, `mhz`, `mhz_src`, `int_lat_mops`,
 `int_thr_mops`, `ilp`, `mul_thr_mmul_s`, `fp_lat_mflops`, `fp_thr_mflops`,
 `filp`, `mem_gbps`, `mem_lat_ns`, `mem_lat8_ns`, `mlp`, `disp_thr_mcall_s`,
-`disp_cap_calls`, `disp_prediction`, `disp_gain`, `disp_span`, `score`.
+`disp_cap_calls`, `disp_prediction`, `disp_gain`, `disp_span`, `score`,
+`fp32_lat_mflops`, `fp32_thr_mflops`.
+
+`fp32_lat_mflops` and `fp32_thr_mflops` are the two FP kernels again in single
+precision — same step, same lanes, same fixed point. They are **not** in
+`score` and do not change it. They are there for cores whose FPU is
+single-precision only (Cortex-M33, ESP32), where `fp_*` measures a soft-float
+library and these measure the hardware; on a core with a double-precision FPU
+the two pairs usually read close to each other. The hub ranks them like any
+other metric and sets them apart from the ones the score is made of.
 
 `mhz_src` says how much the clock beside it is worth: `measured` was sampled
 off the machine while the core was under load, `given` was asserted by whoever
@@ -165,7 +212,7 @@ in the first case and the term drops, and anything else keeps it. Numbers are
 written at six significant figures, so the hub allows 0.1% either way.
 
 This is why the two halves must not drift: change `core_score()`,
-`machine_score()` or `summarize()` in [bench/src/bench.c](../bench/src/bench.c)
+`machine_score()` or `summarize()` in [bench/src/measure.c](../bench/src/measure.c)
 without changing `score_terms()` in [web/server.py](../web/server.py) and every
 honest upload starts being refused.
 [tests/test_contract.py](../tests/test_contract.py) runs the hub's check over a
@@ -196,7 +243,7 @@ the hub already stores every record it is computed from. It is listed in
 
 Five edits, in one commit, because a partial change is invisible at runtime:
 
-1. `json_result()` in [bench/src/bench.c](../bench/src/bench.c) — emit the key.
+1. `json_result()` in [bench/src/report.c](../bench/src/report.c) — emit the key.
 2. `CORE_FIELDS` in [web/server.py](../web/server.py) — JSON key → column.
 3. `METRICS` in [web/server.py](../web/server.py) — only if it should be
    rankable; this is what `/api/metrics` serves and what the front end builds
@@ -205,17 +252,17 @@ Five edits, in one commit, because a partial change is invisible at runtime:
    headline set plus whatever is being sorted on, and the rest are one select
    away.
 4. `cores` in [web/schema.sql](../web/schema.sql) — the column.
-5. `Store.ADDED_COLUMNS` in [web/server.py](../web/server.py) — the migration
-   that adds the column to a database made by an older build.
+5. `Store.ADDED_CORE_COLUMNS` in [web/server.py](../web/server.py) — the
+   migration that adds the column to a database made by an older build.
+   (`Store.ADDED_COLUMNS` is the same for a new `runs` column.)
 
 Then the record key list above, `make testdata`, and `make check`.
 
-> **Gap worth knowing about.** `ADDED_COLUMNS` migrates `runs` only. `schema.sql`
-> creates `cores` with `IF NOT EXISTS`, so a new metric column never reaches an
-> existing database and the next upload fails on the unknown column. Nothing
-> catches this yet — the contract test checks a *fresh* database, which always
-> has every column. Adding a metric today means migrating `cores` by hand, or
-> teaching `ADDED_COLUMNS` about both tables.
+`schema.sql` creates `cores` with `IF NOT EXISTS`, so it never widens a table
+that is already there; step 5 is what does. The contract test checks a *fresh*
+database, which always has every column, so it cannot notice a missed step 5 —
+`CoresMigrationTest` in [web/test_server.py](../web/test_server.py) does, for the
+columns listed there.
 
 ## Changing the version
 

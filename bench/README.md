@@ -135,6 +135,17 @@ before measuring and, when it is missing, says how to install it. See
 | `DISP-thr` | Mcall/s | indirect calls/s once the target pattern is learned |
 | `DISPcap` | calls | longest repeating call pattern the core still predicts |
 | `score` | geomean | composite of `INT-thr`, `MUL-thr`, `FP-thr`, `DISP-thr`, `DISPcap` and the 8-chase random-access rate |
+| `FP32-lat` | Mflop/s | `FP-lat` in single precision — **not in the score** |
+| `FP32-thr` | Mflop/s | `FP-thr` in single precision — **not in the score** |
+
+The two `FP32` rows are reported apart, after the score, and leave it
+unchanged. They exist for cores whose FPU has no double-precision unit, such
+as the Cortex-M33 and the ESP32: there `FP-*` measures a soft-float library and
+`FP32-*` the hardware. On a core with a double-precision FPU the two pairs
+usually read close to each other. A results hub ranks and compares them like
+any other metric but keeps them apart there too: columns of their own after a
+dashed rule, shown with *Detailed* or when the board is sorted on one, and
+marked "not in the score".
 
 Every compute kernel exists in two forms built from the same op sequence — one
 dependency chain and eight independent ones — because the ratio is what

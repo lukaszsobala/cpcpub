@@ -35,6 +35,10 @@ final class Metrics {
         {"mlp", "MLP", "x"},
         {"disp_thr_mcall_s", "DISP-thr", "Mcall/s"},
         {"disp_cap_calls", "DISPcap", "calls"},
+        // Single precision, after everything the score is made of, as the
+        // benchmark prints them: never bold, since they are not part of it.
+        {"fp32_lat_mflops", "FP32-lat", "Mflop/s"},
+        {"fp32_thr_mflops", "FP32-thr", "Mflop/s"},
     };
 
     /** What the score is a geometric mean of: core_score() in bench/src/bench.c. */
@@ -43,7 +47,7 @@ final class Metrics {
         "disp_thr_mcall_s", "disp_cap_calls");
 
     /** The columns shown unless Detailed is on: the clock and the hub's and the
-     *  desktop window's headline set. Fifteen columns is more than a phone's
+     *  desktop window's headline set. Seventeen columns is more than a phone's
      *  width, and most of them matter only to someone looking for something. */
     static final Set<String> HEADLINE = Set.of("mhz", "score", "int_thr_mops", "mem_gbps");
 
@@ -106,6 +110,12 @@ final class Metrics {
         EXPLAIN.put("disp_cap_calls", "The longest repeating pattern of indirect calls "
             + "the core still predicts. Higher is better.\n\nBackground load inflates "
             + "it, so it needs a quiet machine.");
+        EXPLAIN.put("fp32_lat_mflops", "FP-lat in single precision. Not in the score. "
+            + "Higher is better.\n\nOn a core whose FPU does only single precision, "
+            + "FP-lat measures a software library and this the hardware.");
+        EXPLAIN.put("fp32_thr_mflops", "FP-thr in single precision. Not in the score. "
+            + "Higher is better.\n\nOn a core whose FPU does only single precision, "
+            + "FP-thr measures a software library and this the hardware.");
     }
 
     static final Map<String, String> CLOCK_SOURCES = Map.of(

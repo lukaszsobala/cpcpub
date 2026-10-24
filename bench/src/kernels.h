@@ -3,7 +3,7 @@
 // Auto-vectorization and FMA contraction are translation-unit flags, not
 // something a pragma can switch per function, so a binary that carries more
 // than one of them has to compile the kernels more than once. This header is
-// the interface: bench.c holds the driver and sees only kernel_set_t, while
+// the interface: measure.c holds the driver and sees only kernel_set_t, while
 // kernels.c is compiled once per variant with its own -ftree-vectorize /
 // -ffp-contract pair and defines one kernel_set_t per compilation.
 //
@@ -16,8 +16,29 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Where measured code lives. Nowhere in particular on a host. On a Raspberry
+// Pi RP2040 or RP2350 a program runs from flash through a small XIP cache, so a
+// kernel there would measure that cache as much as the core -- and both cores
+// share it. `.time_critical.*` is the section the pico-sdk's linker script
+// copies into SRAM at boot, which takes the flash out of the measurement. An
+// ESP32 runs from flash through a cache too, and `.iram1.*` is ESP-IDF's
+// section for code that lives in instruction RAM instead.
+#if defined(CPCPUB_PICO)
+#define CPCPUB_HOT __attribute__((section(".time_critical.cpcpub")))
+#elif defined(CPCPUB_ESP)
+#define CPCPUB_HOT __attribute__((section(".iram1.cpcpub")))
+#elif defined(CPCPUB_ZEPHYR) && defined(CONFIG_XIP) && \
+      defined(CONFIG_ARCH_HAS_RAMFUNC_SUPPORT)
+// Zephyr's `.ramfunc`, copied to RAM at boot, for a board that runs code in
+// place from flash. Its configuration reaches every source of the build, so
+// the test is the board's own.
+#define CPCPUB_HOT __attribute__((section(".ramfunc")))
+#else
+#define CPCPUB_HOT
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
-#define NOINLINE __attribute__((noinline))
+#define NOINLINE __attribute__((noinline)) CPCPUB_HOT
 #else
 #define NOINLINE
 #endif
@@ -42,6 +63,11 @@
 typedef struct { uint64_t l[LANES]; uint64_t k[2]; } int_ctx_t;
 typedef struct { uint64_t l[LANES]; uint64_t m; } mul_ctx_t;
 typedef struct { double x[LANES], b[LANES], c; } fp_ctx_t;
+// The same kernel in single precision. Measured and reported apart from the
+// double-precision one, and kept out of the score: it exists for cores whose
+// FPU is single-precision only (Cortex-M33, ESP32), where FP-thr measures a
+// soft-float library and this measures the hardware.
+typedef struct { float x[LANES], b[LANES], c; } fp32_ctx_t;
 
 typedef struct {
     uint64_t *buf;
@@ -80,6 +106,8 @@ typedef struct {
     kernel_fn mul_thr;
     kernel_fn fp_lat;
     kernel_fn fp_thr;
+    kernel_fn fp32_lat;
+    kernel_fn fp32_thr;
     kernel_fn mem_bw;
     kernel_fn mem_lat;
     kernel_fn mem_mlp;
@@ -101,8 +129,10 @@ extern const kernel_set_t kernels_vector_fma;
 // Without a vector unit, -ftree-vectorize has nothing to emit; without a
 // hardware fused multiply-add, -ffp-contract=fast has nothing to contract into.
 // In either case the two variants are the same machine code and running both
-// measures the same build twice. GCC defines __FP_FAST_FMA exactly when an FMA
-// is one instruction, which is the question being asked here.
+// measures the same build twice. GCC defines __FP_FAST_FMA exactly when a
+// double FMA is one instruction, and __FP_FAST_FMAF when a float one is, which
+// is the question being asked here. Either is enough: a single-precision-only
+// FPU (Cortex-M33, ESP32) contracts the FP32 kernels and nothing else.
 // __VSX__/__ALTIVEC__ is POWER's. __VX__ is the IBM Z vector facility, on by
 // default from z13; not __VEC__, which GCC defines only under -mzvector and
 // means the vector *language extension* rather than the hardware. A build for
@@ -117,7 +147,7 @@ extern const kernel_set_t kernels_vector_fma;
 #define TARGET_HAS_SIMD 0
 #endif
 
-#ifdef __FP_FAST_FMA
+#if defined(__FP_FAST_FMA) || defined(__FP_FAST_FMAF)
 #define TARGET_HAS_FMA 1
 #else
 #define TARGET_HAS_FMA 0

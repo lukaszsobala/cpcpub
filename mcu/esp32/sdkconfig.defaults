@@ -1,0 +1,18 @@
+# What every target builds with. Per-target clocks are in sdkconfig.defaults.<target>.
+
+# A run holds both cores for a minute and more without the idle task getting a
+# turn, which is what the task watchdog exists to complain about; its warning
+# would also land in the middle of the results.
+CONFIG_ESP_TASK_WDT_INIT=n
+
+# The front end runs in the main task: the console, the tables and the
+# document, with its large arrays static rather than on this stack.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# ESP-IDF's own code optimised for speed; this repository's sources get -O3
+# from main/CMakeLists.txt either way.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Quiet boot, so the console shows the benchmark rather than the boot log.
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y

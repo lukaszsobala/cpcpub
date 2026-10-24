@@ -82,7 +82,7 @@ def core(scope="cpu", cpu: int | None = 0, *, threads=1.0, **over):
         "mem_lat_ns": 100.0, "mem_lat8_ns": 12.0, "mlp": None,
         "disp_thr_mcall_s": 1000.0, "disp_cap_calls": 500.0,
         "disp_prediction": "measured", "disp_gain": 5.0, "disp_span": 7.0,
-        "score": None,
+        "score": None, "fp32_lat_mflops": 1500.0, "fp32_thr_mflops": 11000.0,
     }
     rec.update(over)
 
@@ -362,6 +362,30 @@ class HubTest(unittest.TestCase):
         _, out = self.req("/api/cores?scope=cpu&sort=mem_lat_ns&order=asc&limit=5")
         lats = [c["mem_lat_ns"] for c in out["cores"]]
         self.assertEqual(lats, sorted(lats))
+
+    def test_fp32_is_a_metric_marked_outside_the_score(self):
+        """Listed for the page, with the reason it is set apart; not a default column."""
+        _, out = self.req("/api/metrics")
+        fp32 = {m["key"]: m for m in out["metrics"] if m["key"].startswith("fp32")}
+        self.assertEqual(set(fp32), {"fp32_lat", "fp32_thr"})
+        for m in fp32.values():
+            self.assertIn("not in the score", m["aside"])
+            self.assertFalse(m.get("headline"))
+        # Nothing the score is made of is marked aside.
+        self.assertFalse(any(m.get("aside") for m in out["metrics"]
+                             if not m["key"].startswith("fp32")))
+
+    def test_the_board_sorts_on_fp32_with_older_runs_last(self):
+        """A run from before FP32 has none, and ranks below every run that does."""
+        old = self.upload(document(cores=[core(cpu=0, fp32_lat_mflops=None,
+                                               fp32_thr_mflops=None)]))
+        low = self.upload(document(cores=[core(cpu=0, fp32_thr_mflops=500.0)]))
+        high = self.upload(document(cores=[core(cpu=0, fp32_thr_mflops=90000.0)]))
+        _, out = self.req("/api/cores?scope=cpu&sort=fp32_thr&order=desc&limit=200")
+        ids = [c["run_id"] for c in out["cores"]]
+        self.assertLess(ids.index(high["id"]), ids.index(low["id"]))
+        self.assertLess(ids.index(low["id"]), ids.index(old["id"]))
+        self.assertIsNone(out["cores"][ids.index(old["id"])]["fp32_thr"])
 
     # -- one upload, one row ----------------------------------------------
     def test_upload_takes_one_leaderboard_row(self):
@@ -829,6 +853,18 @@ class HubTest(unittest.TestCase):
                                 for g in page["groups"]),
                          [("Cortex-A35", "4x Cortex-A35", 2),
                           ("Cortex-A35 (Arm Board R)", "2x Cortex-A35", 1)])
+
+    def test_firmware_keeps_its_chip(self):
+        # Firmware names its chip in parentheses and as the machine: the chip is
+        # the CPU there, so one core design in two chips is two CPUs.
+        for chip in ("nrf52840", "stm32f401xe", "stm32f401xe"):
+            doc = document()
+            doc["system"].update(cpu_models=f"Cortex-M4F ({chip})", machine=chip,
+                                 cpus=1, sysname="zephyr")
+            self.upload(doc)
+        _, page = self.req("/api/cores?scope=cpu&group=cpu&q=Cortex-M4F")
+        self.assertEqual(sorted((g["cpu_models"], g["runs"]) for g in page["groups"]),
+                         [("Cortex-M4F (nrf52840)", 1), ("Cortex-M4F (stm32f401xe)", 2)])
 
     def test_an_arm11_is_an_arm_design(self):
         # The first Raspberry Pi's core, named from its MIDR like any Cortex.
@@ -1383,6 +1419,40 @@ class VerifiedBuildsMigrationTest(unittest.TestCase):
         srv.Store(self.db)
         before = srv.Store(self.db).verified_builds()
         self.assertEqual(before, srv.Store(self.db).verified_builds())
+
+
+class CoresMigrationTest(unittest.TestCase):
+    """A database whose `cores` table predates the FP32 columns."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = str(Path(self.tmp.name) / "old.sqlite3")
+        srv.Store(self.db)
+        # Named here rather than read from ADDED_CORE_COLUMNS, so emptying
+        # that list fails this test instead of quietly making it vacuous.
+        with sqlite3.connect(self.db) as db:
+            for col in ("fp32_lat", "fp32_thr"):
+                db.execute(f"ALTER TABLE cores DROP COLUMN {col}")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_an_old_database_takes_an_upload_and_keeps_the_new_fields(self):
+        store = srv.Store(self.db)
+        doc = document()
+        run, cores = srv.validate(doc)
+        run_id = store.insert(run, cores, json.dumps(doc), None, None)[0]
+        with sqlite3.connect(self.db) as db:
+            got = db.execute("SELECT fp32_lat, fp32_thr FROM cores "
+                             "WHERE run_id = ? ORDER BY id", (run_id,)).fetchall()
+        self.assertEqual(got, [(1500.0, 11000.0)] * len(doc["cores"]))
+
+    def test_migrating_twice_is_a_no_op(self):
+        srv.Store(self.db)
+        srv.Store(self.db)
+        with sqlite3.connect(self.db) as db:
+            have = {r[1] for r in db.execute("PRAGMA table_info(cores)")}
+        self.assertLessEqual(set(srv.CORE_COLUMNS), have)
 
 
 class ConsistencyTest(unittest.TestCase):
