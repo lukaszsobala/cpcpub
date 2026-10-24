@@ -134,17 +134,30 @@ jobs:
           # than by apt: apt gives up on a mirror only when it stops, and one
           # that trickles at 50 KB/s held the rp2040 job until its time limit.
           # curl drops any transfer slower than 1 MB/s for 15 s and tries
-          # again, from where it left off, alternating with archive.ubuntu.com.
-          # apt checks each file against its index before installing it.
+          # again, from where it left off, on the next mirror in turn, with
+          # archive.ubuntu.com last. apt checks each file against its index
+          # before installing it.
+          #
+          # apt names each file by its path in the archive, under pool/, after
+          # either a mirror or -- on GitHub's runners -- a list of them,
+          # mirror+file:/etc/apt/apt-mirrors.txt, which curl cannot follow; the
+          # list is read for its mirrors. With the cache restored nothing is
+          # fetched, which is how this went unnoticed until a run without one.
           mkdir -p ~/debs
           apt-get install --print-uris -qq -y --no-install-recommends "${pkgs[@]}" \
             > "$RUNNER_TEMP/uris"
           while read -r url file size _; do
             url=${url//\'/}
-            alt="http://archive.ubuntu.com/ubuntu/${url#*/ubuntu/}"
-            for try in 1 2 3 4 5 6; do
+            rel="pool/${url#*/pool/}"
+            head=${url%%/pool/*}
+            case $head in
+              mirror+file:*) mapfile -t bases < <(grep -Eo '^[a-z]+://[^[:space:]]+' "${head#mirror+file:}") ;;
+              *) bases=("$head") ;;
+            esac
+            bases+=("http://archive.ubuntu.com/ubuntu")
+            for try in 0 1 2 3 4 5 6 7; do
               [ "$(stat -c %s ~/debs/"$file" 2>/dev/null || echo 0)" = "$size" ] && break
-              if [ $((try % 2)) = 1 ]; then u=$url; else u=$alt; fi
+              u="${bases[try % ${#bases[@]}]%/}/$rel"
               curl -fsS --connect-timeout 15 --speed-limit 1000000 --speed-time 15 \
                 -C - -o ~/debs/"$file" "$u" || true
             done
