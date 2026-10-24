@@ -127,18 +127,31 @@ jobs:
           RISCV: ${{ matrix.riscv }}
         run: |
           set -eux
-          mkdir -p ~/debs
-          if compgen -G ~/debs/'*.deb' >/dev/null; then sudo cp ~/debs/*.deb /var/cache/apt/archives/; fi
-          apt=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
-               -o APT::Keep-Downloaded-Packages=true)
+          pkgs=(gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-dev)
+          apt=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
           sudo apt-get "${apt[@]}" update
-          sudo apt-get "${apt[@]}" install -y --no-install-recommends \
-            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-dev
-          # For the cache to save at the end of the job; an image that cleans
-          # apt's archive leaves nothing, and the next run downloads again.
-          if compgen -G '/var/cache/apt/archives/*.deb' >/dev/null; then
-            cp /var/cache/apt/archives/*.deb ~/debs/
-          fi
+          # The packages are fetched with curl, into ~/debs (the cache), rather
+          # than by apt: apt gives up on a mirror only when it stops, and one
+          # that trickles at 50 KB/s held the rp2040 job until its time limit.
+          # curl drops any transfer slower than 1 MB/s for 15 s and tries
+          # again, from where it left off, alternating with archive.ubuntu.com.
+          # apt checks each file against its index before installing it.
+          mkdir -p ~/debs
+          apt-get install --print-uris -qq -y --no-install-recommends "${pkgs[@]}" \
+            > "$RUNNER_TEMP/uris"
+          while read -r url file size _; do
+            url=${url//\'/}
+            alt="http://archive.ubuntu.com/ubuntu/${url#*/ubuntu/}"
+            for try in 1 2 3 4 5 6; do
+              [ "$(stat -c %s ~/debs/"$file" 2>/dev/null || echo 0)" = "$size" ] && break
+              if [ $((try % 2)) = 1 ]; then u=$url; else u=$alt; fi
+              curl -fsS --connect-timeout 15 --speed-limit 1000000 --speed-time 15 \
+                -C - -o ~/debs/"$file" "$u" || true
+            done
+            [ "$(stat -c %s ~/debs/"$file" 2>/dev/null || echo 0)" = "$size" ]
+          done < "$RUNNER_TEMP/uris"
+          if compgen -G ~/debs/'*.deb' >/dev/null; then sudo cp ~/debs/*.deb /var/cache/apt/archives/; fi
+          sudo apt-get "${apt[@]}" install -y --no-install-recommends "${pkgs[@]}"
           arm-none-eabi-gcc --version | head -1
           # Only TinyUSB of the SDK's submodules: the USB console. The others
           # are the Pico W's radio stacks, which nothing here uses.
