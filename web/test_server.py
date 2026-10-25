@@ -10,6 +10,7 @@ HTTP layer, the validation and the SQL are all exercised together.
 import hashlib
 import http.client
 import http.cookiejar
+import itertools
 import json
 import sqlite3
 import tempfile
@@ -105,9 +106,16 @@ def core(scope="cpu", cpu: int | None = 0, *, threads=1.0, **over):
     return rec
 
 
+# Every fixture is a document of its own. The hub refuses a document it
+# already holds, and a real run never repeats one -- its timings differ every
+# time -- so tests that upload "another run" get one, by a key the hub ignores.
+_fixtures = itertools.count(1)
+
+
 def document(mode="per-core", **over):
     doc = {
         "schema": "cpu-bench/1",
+        "fixture": next(_fixtures),
         "mode": mode,
         "build": {"compiler": "gcc 15.2.0", "compiler_version": "15.2.0",
                   "cc": "cc", "flags": "-O3 -std=c2x -fno-tree-vectorize",
@@ -742,6 +750,131 @@ class HubTest(unittest.TestCase):
         self.assertTrue(limiter.allow("a"))
         self.assertFalse(limiter.allow("a"))
         self.assertTrue(limiter.allow("b"))
+
+    # -- re-uploads --------------------------------------------------------
+    def test_an_exact_reupload_is_refused(self):
+        doc = document()
+        first = self.upload(doc)
+        code, err = self.expect_error("/api/runs", "POST", doc)
+        self.assertEqual(code, 409)
+        self.assertEqual(err["id"], first["id"])
+        self.assertIn(f"run {first['id']}", err["error"])
+        # Whoever sends a copy -- and the raw document of every run is public
+        # -- must not get the means to withdraw it.
+        self.assertNotIn("delete_token", err)
+        self.assertNotIn(first["delete_token"], json.dumps(err))
+
+    def test_a_new_label_or_layout_is_still_the_same_document(self):
+        doc = document()
+        first = self.upload(doc)
+        respaced = json.dumps(dict(doc, label="in the document"), indent=2).encode()
+        code, err = self.expect_error("/api/runs?label=another&notes=more", "POST",
+                                      respaced)
+        self.assertEqual((code, err["id"]), (409, first["id"]))
+
+    def test_a_browsers_copy_is_still_the_same_document(self):
+        """What the Submit page sends: JSON.parse then JSON.stringify, which
+        writes 20000.0 as 20000 and a seed past 2^53 as the nearest double."""
+        doc = document()
+        doc["config"]["seed"] = (1 << 62) + 1
+        first = self.upload(doc)
+
+        def js(v):
+            if isinstance(v, dict):
+                return {k: js(x) for k, x in v.items()}
+            if isinstance(v, list):
+                return [js(x) for x in v]
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                f = float(v)
+                return int(f) if f.is_integer() else f
+            return v
+        copy = json.dumps(js(doc)).encode()
+        self.assertIn(b"4611686018427387904", copy)
+        self.assertNotIn(b"20000.0", copy)
+        code, err = self.expect_error("/api/runs", "POST", copy)
+        self.assertEqual((code, err["id"]), (409, first["id"]))
+
+    def test_a_withdrawn_document_may_be_sent_again(self):
+        doc = document()
+        first = self.upload(doc)
+        self.req(f"/api/runs/{first['id']}", "DELETE",
+                 headers={"X-Delete-Token": first["delete_token"]})
+        self.upload(doc)                # 201, or upload() fails the test
+
+    # -- hiding ------------------------------------------------------------
+    def hide(self, out, hidden=True):
+        return self.req(f"/api/runs/{out['id']}", "PATCH", {"hidden": hidden},
+                        headers={"X-Delete-Token": out["delete_token"]})[1]
+
+    def on_board(self, cpu):
+        _, board = self.req("/api/cores?scope=cpu&q=" + urllib.parse.quote(cpu))
+        return [r["run_id"] for r in board["cores"]]
+
+    def test_a_hidden_run_is_off_the_board_but_still_there(self):
+        doc = document()
+        doc["system"]["cpu_models"] = "Hidden CPU 1"
+        doc["build"]["target"] = "s390x"
+        doc["system"]["machine"] = "s390x"
+        out = self.upload(doc)
+        self.assertEqual(self.on_board("Hidden CPU 1"), [out["id"]])
+
+        changed = self.hide(out)
+        self.assertTrue(changed["hidden"])
+        self.assertEqual(self.on_board("Hidden CPU 1"), [])
+        _, grouped = self.req("/api/cores?scope=cpu&group=cpu&q=Hidden+CPU+1")
+        self.assertEqual(grouped["groups"], [])
+        _, recent = self.req("/api/runs?limit=500")
+        self.assertNotIn(out["id"], [r["id"] for r in recent["runs"]])
+        _, stats = self.req("/api/stats")
+        self.assertNotIn("s390x", [t["target"] for t in stats["targets"]])
+        self.assertNotIn("Hidden CPU 1", [c["cpu_key"] for c in stats["cpus"]])
+        # Its own link, and a link naming its records, still answer.
+        status, run = self.req(f"/api/runs/{out['id']}")
+        self.assertEqual(status, 200)
+        self.assertTrue(run["hidden_at"])
+        _, records = self.req(f"/api/cores?run={out['id']}")
+        self.assertEqual(len(records["cores"]), 2)
+
+        self.assertFalse(self.hide(out, False)["hidden"])
+        self.assertEqual(self.on_board("Hidden CPU 1"), [out["id"]])
+        self.assertIsNone(self.req(f"/api/runs/{out['id']}")[1]["hidden_at"])
+
+    def test_hiding_again_keeps_when_it_was_hidden(self):
+        out = self.upload()
+        self.hide(out)
+        at = self.req(f"/api/runs/{out['id']}")[1]["hidden_at"]
+        with mock.patch.object(srv, "iso_now", return_value="2099-01-01T00:00:00Z"):
+            self.hide(out)
+        self.assertEqual(self.req(f"/api/runs/{out['id']}")[1]["hidden_at"], at)
+
+    def test_a_hidden_run_is_no_ones_peer(self):
+        def run(score):
+            doc = document()
+            doc["system"]["cpu_models"] = "Hidden Peer CPU"
+            doc["cores"] = [core(cpu=0, score=score)]
+            return self.upload(doc)
+        a, b = run(10000.0), run(12000.0)
+        self.assertEqual(self.req(f"/api/runs/{a['id']}/rank")[1]["cpu"]["scopes"]["cpu"]["runs"], 2)
+        self.hide(b)
+        self.assertEqual(self.req(f"/api/runs/{a['id']}/rank")[1]["cpu"]["scopes"], {})
+        self.assertIsNone(self.req(f"/api/runs/{b['id']}/rank")[1]["cpu"])
+        _, rank = self.req(f"/api/runs/{a['id']}/rank")
+        before = rank["metrics"]["score"]["population"]
+        self.hide(b, False)
+        _, rank = self.req(f"/api/runs/{a['id']}/rank")
+        self.assertEqual(rank["metrics"]["score"]["population"], before + 1)
+
+    def test_hiding_needs_a_claim_and_a_bool(self):
+        out = self.upload()
+        code, _ = self.expect_error(f"/api/runs/{out['id']}", "PATCH", {"hidden": True})
+        self.assertEqual(code, 401)
+        code, _ = self.expect_error(f"/api/runs/{out['id']}", "PATCH", {"hidden": True},
+                                    headers={"X-Delete-Token": "not-it"})
+        self.assertEqual(code, 403)
+        code, _ = self.expect_error(f"/api/runs/{out['id']}", "PATCH", {"hidden": 1},
+                                    headers={"X-Delete-Token": out["delete_token"]})
+        self.assertEqual(code, 400)
+        self.assertIsNone(self.req(f"/api/runs/{out['id']}")[1]["hidden_at"])
 
     # -- kinds of core and the same CPU -----------------------------------
     def hybrid(self, cpu_models, scores, mode="per-core", threads_pinned=True):
@@ -1455,6 +1588,38 @@ class CoresMigrationTest(unittest.TestCase):
         self.assertLessEqual(set(srv.CORE_COLUMNS), have)
 
 
+class ReuploadMigrationTest(unittest.TestCase):
+    """A database from before re-uploads were refused."""
+
+    def test_old_copies_stay_and_new_ones_are_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / "old.sqlite3")
+            store = srv.Store(path)
+            doc = document()
+            run, cores = srv.validate(doc)
+            first = store.insert(run, cores, json.dumps(doc), None, None)[0]
+            # Two copies of one document, as a hub that took them both left it,
+            # and no digest on either.
+            with store.connect() as db:
+                db.execute("UPDATE runs SET doc_sha256 = NULL")
+                row = dict(db.execute("SELECT * FROM runs WHERE id = ?",
+                                      (first,)).fetchone())
+                row.pop("id")
+                cols = list(row)
+                db.execute(f"INSERT INTO runs ({','.join(cols)}) "
+                           f"VALUES ({','.join('?' * len(cols))})",
+                           [row[c] for c in cols])
+            store = srv.Store(path)
+            with store.connect() as db:
+                digests = [r["doc_sha256"] for r in db.execute("SELECT doc_sha256 FROM runs")]
+            self.assertEqual(len(digests), 2)
+            self.assertEqual(len(set(digests)), 1)
+            self.assertIsNotNone(digests[0])
+            with self.assertRaises(srv.Duplicate) as cm:
+                store.insert(run, cores, json.dumps(doc), None, None)
+            self.assertEqual(cm.exception.run_id, first)
+
+
 class ConsistencyTest(unittest.TestCase):
     """A document has to agree with itself.
 
@@ -1892,6 +2057,88 @@ class AccountTest(unittest.TestCase):
         self.assertEqual((status, out["label"]), (200, "renamed"))
         self.assertEqual(self.anon().call("/api/runs/999999", "PATCH", {"label": "x"},
                          headers={"X-Delete-Token": "whatever"})[0], 403)
+
+    # -- adopting anonymous runs -------------------------------------------
+    def adopt(self, b, *tokens, csrf=True):
+        return b.call("/api/auth/adopt", "POST", {"tokens": list(tokens)}, csrf=csrf)
+
+    def test_an_account_adopts_runs_by_their_delete_tokens(self):
+        b, name, _ = self.account()
+        _, one = self.post(None, "anon one")
+        _, two = self.post(None, "anon two")
+        status, out = self.adopt(b, one["delete_token"], two["delete_token"],
+                                 one["delete_token"])
+        self.assertEqual(status, 200, out)
+        self.assertEqual(out, {"adopted": sorted([one["id"], two["id"]]),
+                               "already": [], "refused": 0})
+        self.assertEqual(self.anon().call(f"/api/runs/{one['id']}")[1]["user"], name)
+        self.assertEqual(b.call("/api/auth/me")[1]["user"]["runs"], 2)
+        # Once more is a no-op, and the token still edits the run.
+        self.assertEqual(self.adopt(b, one["delete_token"])[1]["already"], [one["id"]])
+        status, _ = self.anon().call(f"/api/runs/{one['id']}", "PATCH", {"label": "x"},
+                                     headers={"X-Delete-Token": one["delete_token"]})
+        self.assertEqual(status, 200)
+
+    def test_another_accounts_run_is_not_adopted(self):
+        _, owner, token = self.account()
+        thief, _, _ = self.account()
+        _, theirs = self.post(token, "theirs")
+        _, free = self.post(None, "free")
+        status, out = self.adopt(thief, theirs["delete_token"], "no-such-token",
+                                 free["delete_token"])
+        self.assertEqual(status, 200)
+        self.assertEqual(out, {"adopted": [free["id"]], "already": [], "refused": 2})
+        self.assertEqual(self.anon().call(f"/api/runs/{theirs['id']}")[1]["user"], owner)
+
+    def test_adopting_needs_a_signed_in_page(self):
+        _, up = self.post(None, "anon")
+        self.assertEqual(self.adopt(self.anon(), up["delete_token"])[0], 401)
+        b, _, _ = self.account()
+        self.assertEqual(self.adopt(b, up["delete_token"], csrf=False)[0], 403)
+        self.assertEqual(self.adopt(b)[0], 400)
+        self.assertEqual(b.call("/api/auth/adopt", "POST", {"tokens": [5]})[0], 400)
+        self.assertEqual(self.adopt(b, *["t"] * (srv.MAX_ADOPT + 1))[0], 400)
+        self.assertIsNone(self.anon().call(f"/api/runs/{up['id']}")[1]["user"])
+
+    def test_adopted_variants_become_one_upload(self):
+        b, _, _ = self.account()
+        tokens = []
+        for vec, fma in self.VARIANTS[:2]:
+            tag = f"({'vector' if vec else 'scalar'}-{'fma' if fma else 'nofma'})"
+            status, out = self.post(None, f"adopted box {tag}", None, vec, fma,
+                                    "Adopted CPU")
+            self.assertEqual(status, 201, out)
+            tokens.append(out["delete_token"])
+        self.adopt(b, *tokens)
+        _, listing = b.call("/api/uploads?user=me")
+        cpu = next(c for c in listing["cpus"] if c["cpu_models"] == "Adopted CPU")
+        self.assertEqual(len(cpu["uploads"]), 1)
+        self.assertEqual(len(cpu["uploads"][0]["runs"]), 2)
+
+    def test_a_hidden_run_is_listed_to_its_owner_alone(self):
+        b, name, token = self.account()
+        _, shown = self.post(token, "shown")
+        _, hidden = self.post(token, "hidden")
+        status, out = b.call(f"/api/runs/{hidden['id']}", "PATCH", {"hidden": True})
+        self.assertEqual((status, out["hidden"]), (200, True))
+
+        def ids(listing):
+            return {r["id"]: r["hidden"] for c in listing["cpus"]
+                    for u in c["uploads"] for r in u["runs"]}
+        self.assertEqual(ids(b.call("/api/uploads?user=me")[1]),
+                         {shown["id"]: False, hidden["id"]: True})
+        self.assertEqual(ids(b.call(f"/api/uploads?user={name}")[1]),
+                         {shown["id"]: False, hidden["id"]: True})
+        self.assertEqual(ids(self.anon().call(f"/api/uploads?user={name}")[1]),
+                         {shown["id"]: False})
+        _, mine = b.call("/api/runs?user=me")
+        self.assertEqual((mine["total"], len(mine["runs"])), (2, 2))
+        _, public = self.anon().call(f"/api/runs?user={name}")
+        self.assertEqual([r["id"] for r in public["runs"]], [shown["id"]])
+        self.assertEqual(self.anon().call(f"/api/users/{name}")[1]["user"]["runs"], 1)
+        self.assertEqual(b.call("/api/auth/me")[1]["user"]["runs"], 2)
+        _, board = self.anon().call(f"/api/cores?scope=cpu&user={name}")
+        self.assertEqual([c["run_id"] for c in board["cores"]], [shown["id"]])
 
     # -- uploading as an account -------------------------------------------
     def test_upload_token_attributes_the_run(self):

@@ -185,7 +185,14 @@ async function api(path, opts) {
   }
   const r = await fetch(path, o);
   const body = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-  if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+  if (!r.ok) {
+    // The rest of the reply rides along: a refusal can say more than words,
+    // such as which run a re-upload already is.
+    const err = new Error(body.error || `HTTP ${r.status}`);
+    err.status = r.status;
+    err.body = body;
+    throw err;
+  }
   return body;
 }
 
@@ -1482,6 +1489,9 @@ async function showRun(id) {
     copyText(`${location.origin}${location.pathname}#run=${run.id}`, share));
   box.append(share);
   if (run.label) box.append(el("p", "label big", run.label));
+  if (run.hidden_at) box.append(el("p", "notes hiddennote",
+    "Hidden by whoever uploaded it: it is not on the board and is not " +
+    "compared with other runs. This link still works."));
   if (run.cpus_offline) box.append(el("p", "notes", offlineText(run) +
     ". It was measured with less than the whole machine, so it is not compared " +
     "with other runs of its CPU."));
@@ -2330,7 +2340,14 @@ async function doUpload(ev) {
                       notes, variant: job.variant, batch: firstOf.get(job.file) });
       }
     } catch (e) {
-      out.append(el("p", "warn", `${job.machine}: ${e.message}`));
+      if (e.status === 409 && e.body?.id) {
+        // Already here: a link to it is the useful answer, not a failure.
+        const p = el("p", "warn", `${job.machine}: this result is already on the hub, as `);
+        p.append(runLink(e.body.id, `run ${e.body.id}`), ".");
+        out.append(p);
+      } else {
+        out.append(el("p", "warn", `${job.machine}: ${e.message}`));
+      }
     }
   }
   go.disabled = false;
@@ -2506,6 +2523,119 @@ async function withdrawPicked(entries, picked, remove, redraw) {
   await afterDelete();
 }
 
+// Hiding or showing whatever is ticked, one request a run, as withdrawing is.
+// Only the runs that would change are asked about, so ticking a whole CPU
+// and pressing Hide leaves the ones already hidden alone.
+async function hidePicked(entries, picked, hidden, ctx) {
+  const chosen = entries.filter((e) => picked.has(e.id) && Boolean(e.hidden) !== hidden);
+  const failed = [];
+  for (const e of chosen) {
+    try {
+      await ctx.hide(e, hidden);
+    } catch (err) {
+      failed.push(`run ${e.id}: ${err.message}`);
+    }
+  }
+  if (failed.length) {
+    alert(`${chosen.length - failed.length} of ${chosen.length} changed. ` +
+          `Could not change:\n${failed.join("\n")}`);
+  }
+  picked.clear();
+  await ctx.reload();
+  loadBoard({ keepPage: true }).catch(() => {});
+}
+
+// Put anonymous runs on the signed-in account by their delete tokens. What
+// moved is the account's now and is listed there, so this browser stops
+// keeping it as its own: the account withdraws it without the token.
+async function adoptTokens(tokens) {
+  const res = await api("/api/auth/adopt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tokens }),
+  });
+  for (const id of [...res.adopted, ...res.already]) {
+    forgetRun(id);
+    minePicked.local.delete(id);
+  }
+  await loadUser();                     // redraws both halves of My uploads
+  loadBoard({ keepPage: true }).catch(() => {});   // the board names submitters
+  return res;
+}
+
+function adoptedText(res) {
+  const parts = [`${plural(res.adopted.length, "run")} added to your account.`];
+  if (res.already.length) parts.push(`${plural(res.already.length, "run")} already on it.`);
+  if (res.refused) {
+    parts.push(`${res.refused} token${res.refused === 1 ? "" : "s"} matched nothing ` +
+               "this account can take: withdrawn, mistyped, or another account's.");
+  }
+  return parts.join(" ");
+}
+
+async function adoptPicked(entries, picked) {
+  const chosen = entries.filter((e) => picked.has(e.id) && e.token);
+  if (!chosen.length) return drawLocalRuns();
+  try {
+    const res = await adoptTokens(chosen.map((e) => e.token));
+    if (res.refused) alert(adoptedText(res));
+  } catch (err) {
+    alert(err.message);
+    drawLocalRuns();
+  }
+}
+
+// The account's box for tokens kept somewhere else: printed by cpcpub
+// --submit, saved by the desktop or Android app, or copied from another
+// browser. Made once and put back on every redraw, so a tick elsewhere in the
+// list does not empty what was pasted into it.
+let adoptBox = null;
+
+function adoptForm() {
+  if (adoptBox) return adoptBox;
+  const more = el("details", "more mine-adopt");
+  more.append(el("summary", null, "Add anonymous uploads by their delete tokens"));
+  const form = el("form", "mine-edit");
+  form.append(el("p", "note",
+    "Uploaded without signing in, from the command line, the desktop or Android " +
+    "app, or another browser? Paste their delete tokens here, one per line, and " +
+    "they move to this account. A run already on another account stays there."));
+  const box = el("textarea");
+  box.rows = 3;
+  box.placeholder = "delete tokens";
+  box.setAttribute("aria-label", "delete tokens");
+  const go = el("button", null, "Add to my account");
+  go.type = "submit";
+  const msg = el("p", "authmsg");
+  const buttons = el("div", "buttons");
+  buttons.append(go);
+  form.append(box, buttons, msg);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const tokens = [...new Set(box.value.split(/[\s,]+/).filter(Boolean))];
+    msg.className = "authmsg";
+    if (!tokens.length) {
+      msg.textContent = "Paste at least one token.";
+      return;
+    }
+    go.disabled = true;
+    msg.textContent = "Adding…";
+    try {
+      const res = await adoptTokens(tokens);
+      msg.className = res.adopted.length ? "authmsg ok" : "authmsg warn";
+      msg.textContent = adoptedText(res);
+      if (!res.refused) box.value = "";
+    } catch (err) {
+      msg.className = "authmsg warn";
+      msg.textContent = err.message;
+    }
+    go.disabled = false;
+  });
+  more.append(form);
+  adoptBox = more;
+  return more;
+}
+
 // Both halves of My uploads hold the same shape: a CPU, the uploads made on
 // it, and the runs each upload sent -- one, or one per build variant. `ctx`
 // is what differs between the halves: which ticks they keep, how a run is
@@ -2513,7 +2643,7 @@ async function withdrawPicked(entries, picked, remove, redraw) {
 //
 //   cpu    { key, name, uploads }
 //   upload { key, label, notes, at, runs, known }
-//   run    { id, at, variant, tagged, token }
+//   run    { id, at, variant, tagged, token, hidden }
 
 // The form that renames an upload and rewrites its notes. One label for the
 // upload, put on each of its runs with that run's build after it.
@@ -2605,6 +2735,7 @@ function runLine(run, ctx) {
   if (run.variant) main.append(runLink(run.id, run.variant), el("span", "muted", `run ${run.id}`));
   else main.append(runLink(run.id, `run ${run.id}`));
   main.append(mutedWhen(run.at));
+  if (run.hidden) main.append(hiddenTag("hidden"));
   row.append(main);
   if (ctx.tokens && run.token) {
     const tok = el("div", "mine-extra");
@@ -2616,6 +2747,19 @@ function runLine(run, ctx) {
 
 function plural(n, word) {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function hiddenTag(text) {
+  const tag = el("span", "count hiddentag", text);
+  tag.title = "hidden: not on the board and not compared with other runs";
+  return tag;
+}
+
+// "hidden" when all of these runs are, "2 of 4 hidden" when some are.
+function hiddenText(runs) {
+  const n = runs.filter((r) => r.hidden).length;
+  if (!n) return null;
+  return n === runs.length ? "hidden" : `${n} of ${runs.length} hidden`;
 }
 
 // One upload: its label, when it went up, its notes, and its runs folded
@@ -2641,6 +2785,8 @@ function uploadBlock(up, ctx) {
   if (!up.label) title.classList.add("unlabelled");
   main.append(title, mutedWhen(up.at),
               el("span", "count", plural(up.runs.length, "variant")));
+  const hid = hiddenText(up.runs);
+  if (hid) main.append(hiddenTag(hid));
   if (ctx.edit) {
     const edit = el("button", "mine-editbtn", "Edit");
     edit.type = "button";
@@ -2691,6 +2837,8 @@ function cpuBlock(cpu, ctx) {
   title.addEventListener("click", toggle);
   main.append(title, el("span", "count",
     `${plural(cpu.uploads.length, "upload")} · ${plural(ids.length, "run")}`));
+  const hid = hiddenText(cpu.uploads.flatMap((u) => u.runs));
+  if (hid) main.append(hiddenTag(hid));
   if (!open) main.append(el("span", "muted", "latest"), mutedWhen(cpu.uploads[0].at));
   row.append(main);
   if (open) {
@@ -2735,6 +2883,35 @@ function renderUploadList(box, cpus, ctx, remove) {
     withdrawPicked(runs, picked, remove, ctx.redraw).catch((e) => alert(e.message));
   });
   bar.append(all, go);
+
+  // Hiding is withdrawing that can be undone: off the board and out of every
+  // comparison, still here, still the uploader's.
+  const chosen = runs.filter((r) => picked.has(r.id));
+  for (const [hidden, text, title] of [
+    [true, "Hide", "take off the board and out of comparisons, without deleting"],
+    [false, "Show", "put back on the board"],
+  ]) {
+    const b = el("button", "plain", text);
+    b.type = "button";
+    b.title = title;
+    b.disabled = !chosen.some((r) => Boolean(r.hidden) !== hidden);
+    b.addEventListener("click", () => {
+      b.disabled = true;
+      hidePicked(runs, picked, hidden, ctx).catch((e) => alert(e.message));
+    });
+    bar.append(b);
+  }
+  if (ctx.adopt) {
+    const move = el("button", "plain", "Move to my account");
+    move.type = "button";
+    move.title = `put these on ${state.user.name}, withdrawable from any browser`;
+    move.disabled = !picked.size;
+    move.addEventListener("click", () => {
+      move.disabled = true;
+      adoptPicked(runs, picked).catch((e) => alert(e.message));
+    });
+    bar.append(move);
+  }
   box.append(bar);
 
   for (const cpu of cpus) box.append(cpuBlock(cpu, ctx));
@@ -2751,7 +2928,7 @@ function accountCpus(cpus) {
       notes: u.notes || "",
       at: u.created_at,
       runs: u.runs.map((r) => ({ id: r.id, at: r.created_at, variant: r.variant,
-                                 tagged: r.tagged })),
+                                 tagged: r.tagged, hidden: r.hidden })),
     })),
   }));
 }
@@ -2775,7 +2952,7 @@ function localCpus(entries) {
       cpu.uploads.push(up);
     }
     up.runs.unshift({ id: e.id, at: e.at, token: e.token, variant: e.variant || null,
-                      tagged: Boolean(e.variant) });
+                      tagged: Boolean(e.variant), hidden: Boolean(e.hidden) });
     up.at = e.at;                           // ends on the first run's time
   }
   return [...cpus.values()];
@@ -2850,7 +3027,7 @@ function drawAccountRuns() {
     return;
   }
   if (!state.accountRuns.length) {
-    box.append(el("p", "empty", "Nothing uploaded to this account yet."));
+    box.append(el("p", "empty", "Nothing uploaded to this account yet."), adoptForm());
     return;
   }
   const n = state.mineCounts || {};
@@ -2872,6 +3049,12 @@ function drawAccountRuns() {
       await patchUpload(up, label, notes);
       await loadAccountRuns();
     },
+    hide: (run, hidden) => api(`/api/runs/${run.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hidden }),
+    }),
+    reload: () => loadAccountRuns(),
   };
   renderUploadList(box, accountCpus(state.accountRuns), ctx,
                    // Taken out of the listing as it goes rather than waiting
@@ -2884,6 +3067,7 @@ function drawAccountRuns() {
           state.mineOffset = Math.max(0, offset);
           loadAccountRuns().catch(() => {});
         });
+  box.append(adoptForm());
 }
 
 // Rewrite this browser's record of some uploads, by run id.
@@ -2926,6 +3110,18 @@ function drawLocalRuns() {
       const many = up.runs.length > 1;
       updateLocal(new Map(up.runs.map((r) => [r.id, { label: labelFor(label, r, many), notes }])));
     },
+    // What this browser knows of a run's being hidden is what it did itself;
+    // the hub is the one that holds it, and the run's own page says so.
+    hide: async (run, hidden) => {
+      await api(`/api/runs/${run.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "X-Delete-Token": run.token },
+        body: JSON.stringify({ hidden }),
+      });
+      updateLocal(new Map([[run.id, { hidden }]]));
+    },
+    reload: async () => drawLocalRuns(),
+    adopt: Boolean(state.user),
   };
   renderUploadList(box, shown, ctx,
                    (e) => api(`/api/runs/${e.id}`, {

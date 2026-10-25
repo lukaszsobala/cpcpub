@@ -129,11 +129,12 @@ select, input, textarea, button[type="submit"] {
   border: 1px solid var(--line); border-radius: 6px; padding: 0.35rem 0.5rem;
 }
 textarea { width: 100%; resize: vertical; }
-button[type="submit"], .danger {
+button[type="submit"], .danger, .plain {
   cursor: pointer; background: var(--accent); border-color: var(--accent);
   color: var(--bg); font-weight: 600; padding: 0.4rem 1rem;
 }
-.danger { background: none; color: var(--warn); border-color: var(--line); font-weight: 500; }
+.danger, .plain { background: none; color: var(--warn); border-color: var(--line); font-weight: 500; }
+.plain { color: var(--accent); }
 button.linkish {
   background: none; border: 0; padding: 0; font: inherit; color: var(--accent);
   cursor: pointer; text-align: left;
@@ -416,6 +417,11 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
   font-size: 0.85rem; color: var(--ink); cursor: pointer;
 }
 .batch button[disabled] { opacity: 0.45; cursor: default; }
+/* Hidden runs: a quiet tag in the list, a line on the run's own page. */
+.hiddentag { border-style: dashed; }
+.hiddennote { color: var(--muted); font-style: italic; }
+.mine-adopt { margin-top: 0.8rem; }
+.mine-adopt .mine-edit { max-width: 36rem; }
 /* The page-size picker sits above My uploads on its own. */
 .minebar { display: flex; justify-content: flex-end; margin-bottom: 0.5rem; }
 

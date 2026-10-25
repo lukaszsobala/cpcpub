@@ -74,6 +74,9 @@ MAX_OFFSET = 1 << 30        # how far into a listing paging may go; past the end
 MAX_TEXT = 200
 MAX_NOTES = 2000
 MAX_EDIT_BODY = 3 * (MAX_TEXT + MAX_NOTES) + 256   # a label and notes, escaped
+MAX_ADOPT = 100             # delete tokens one request may adopt: what the page
+                            # keeps of a browser's anonymous uploads
+MAX_ADOPT_BODY = MAX_ADOPT * 64 + 256
 # How long apart two variants of one --variants run may land and still be
 # called one upload. A variant takes minutes on a laptop and can take most of
 # an hour on a machine with a hundred cores to walk; this is the far side of
@@ -253,16 +256,19 @@ RUN_COLUMNS = [
     "vectorize", "fma", "sysname", "os_release", "machine", "cpus",
     "cpu_models", "cpu_key", "cpu_layout", "cpus_offline", "threads", "seconds", "reps", "warmup", "mem_bytes", "pin",
     "clock", "seed", "dram_name", "dram_mhz_min", "dram_mhz_max", "checksum",
-    "upload_id",
+    "upload_id", "hidden_at",
 ]
 
 
 class HttpError(Exception):
     """A refusal with the status it should be reported as."""
 
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, extra: dict | None = None):
         super().__init__(message)
         self.status = status
+        # Fields the reply carries beside "error", for a client that can act
+        # on more than the words.
+        self.extra = extra or {}
 
 
 class Invalid(HttpError):
@@ -277,6 +283,53 @@ class Denied(HttpError):
 
     def __init__(self, message: str, status: int = HTTPStatus.FORBIDDEN):
         super().__init__(status, message)
+
+
+class Duplicate(HttpError):
+    """An upload of a document the hub already holds.
+
+    The reply names the run it already is and nothing more: the raw document
+    of every run is public, so anyone can send one back, and the delete token
+    must never be what they get for it.
+    """
+
+    def __init__(self, run_id: int):
+        super().__init__(
+            HTTPStatus.CONFLICT,
+            f"this result is already on the hub, as run {run_id}. If it is "
+            f"yours, its delete token adds it to your account (My uploads)",
+            {"id": run_id, "url": f"/#run={run_id}"})
+        self.run_id = run_id
+
+
+def document_digest(raw: str) -> str | None:
+    """SHA-256 of an uploaded document, for telling a re-upload from a run.
+
+    Over the parsed document rather than its bytes, so the page re-serialising
+    what was pasted into it, or a file saved with other whitespace, is still
+    the same document. The label and notes are left out: they say what the
+    uploader calls the run, not what was measured, and the same run sent
+    again under a new label is still the same run. None for a body that does
+    not parse, which an upload has already been refused for.
+
+    Every number is read as a double, which is all a browser keeps of one:
+    the page's JSON.parse and JSON.stringify write the benchmark's 20000.0 as
+    20000, and a seed past 2^53 as the nearest double, so the copy the page
+    sends hashes the same as the file it was given. (+ 0.0 folds -0.0 into
+    0.0, as JSON.stringify does.)
+    """
+    def num(s: str) -> float:
+        return float(s) + 0.0
+
+    try:
+        doc = json.loads(raw, parse_float=num, parse_int=num)
+    except ValueError:
+        return None
+    if isinstance(doc, dict):
+        doc = {k: v for k, v in doc.items() if k not in ("label", "notes")}
+    canon = json.dumps(doc, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -1196,13 +1249,20 @@ def comparable(row: dict) -> bool:
 
     Not one that named no CPU, and not one measured with CPUs switched off:
     that machine was less than its CPU line says, by an amount the line does
-    not say.
+    not say. Nor one its uploader has hidden.
     """
-    return bool(row.get("cpu_key")) and not row.get("cpus_offline")
+    return (bool(row.get("cpu_key")) and not row.get("cpus_offline")
+            and not row.get("hidden_at"))
 
 
-# The same condition in SQL, for the runs a comparison is drawn from.
-COMPARABLE_SQL = "r.cpu_key IS NOT NULL AND COALESCE(r.cpus_offline, 0) = 0"
+# A run its uploader hid is off the board, out of every comparison and out of
+# the counts. It is still there: its link works, and its owner still lists it.
+VISIBLE_SQL = "r.hidden_at IS NULL"
+
+# The same condition as comparable(), in SQL, for the runs a comparison is
+# drawn from.
+COMPARABLE_SQL = ("r.cpu_key IS NOT NULL AND COALESCE(r.cpus_offline, 0) = 0 "
+                  f"AND {VISIBLE_SQL}")
 
 
 def peer_key(row: dict, scope: str | None) -> tuple:
@@ -1230,7 +1290,8 @@ class Store:
                      ("attest_repo", "TEXT"), ("attest_workflow", "TEXT"),
                      ("attest_run_url", "TEXT"), ("attest_at", "TEXT"),
                      ("cpu_layout", "TEXT"), ("cpu_layout_guess", "TEXT"), ("cpu_key", "TEXT"),
-                     ("cpus_offline", "INTEGER"), ("upload_id", "INTEGER"))
+                     ("cpus_offline", "INTEGER"), ("upload_id", "INTEGER"),
+                     ("doc_sha256", "TEXT"), ("hidden_at", "TEXT"))
     # The same for `cores`, which schema.sql cannot widen either: CREATE TABLE
     # IF NOT EXISTS leaves an existing table as it was, so without this a new
     # metric's column never reaches an old database and every upload after it
@@ -1262,6 +1323,16 @@ class Store:
                        "ON runs(binary_sha256)")
             self._migrate_verified_builds(db)
             db.execute("CREATE INDEX IF NOT EXISTS runs_cpu_key ON runs(cpu_key)")
+            db.execute("CREATE INDEX IF NOT EXISTS runs_doc ON runs(doc_sha256)")
+            db.execute("CREATE INDEX IF NOT EXISTS runs_delete_token "
+                       "ON runs(delete_token)")
+            # Runs stored before re-uploads were refused. Not a unique index:
+            # a database from then may hold the same document twice already,
+            # and both copies stay -- only a new one is turned away.
+            for r in db.execute("SELECT id, raw FROM runs "
+                                "WHERE doc_sha256 IS NULL").fetchall():
+                db.execute("UPDATE runs SET doc_sha256 = ? WHERE id = ?",
+                           (document_digest(r["raw"]), r["id"]))
             # Every run, every start: the merge list may have changed since,
             # or the rules, and a run from before either is classified the way
             # one uploaded now would be.
@@ -1340,14 +1411,27 @@ class Store:
     def insert(self, run: dict, cores: list[dict], raw: str,
                label: str | None, notes: str | None,
                user_id: int | None = None) -> tuple[int, str]:
+        """Store one validated upload: (run id, delete token).
+
+        Raises Duplicate when the hub already holds this document. The check
+        and the write share one transaction, so the same document posted twice
+        at once -- a retry racing the original -- is stored once.
+        """
         token = secrets.token_urlsafe(24)
+        digest = document_digest(raw)
         # The delete token is issued whether or not an account owns the run:
         # signing in later must not be the only way back to something uploaded
         # from a shell, and an account holder loses nothing by also having one.
         run = dict(run, created_at=iso_now(), delete_token=token,
-                   label=label, notes=notes, raw=raw, user_id=user_id)
+                   label=label, notes=notes, raw=raw, user_id=user_id,
+                   doc_sha256=digest)
         cols = list(run)
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            same = db.execute("SELECT id FROM runs WHERE doc_sha256 = ? "
+                              "ORDER BY id LIMIT 1", (digest,)).fetchone()
+            if same is not None:            # leaving the block rolls back
+                raise Duplicate(int(same["id"]))
             cur = db.execute(
                 f"INSERT INTO runs ({','.join(cols)}) "
                 f"VALUES ({','.join('?' * len(cols))})",
@@ -1425,11 +1509,15 @@ class Store:
 
     def edit_run(self, run_id: int, changes: dict, token: str | None = None,
                  user_id: int | None = None) -> dict | None:
-        """Change a run's label and/or notes, for whoever could withdraw it.
+        """Change a run's label and/or notes, or hide it, for whoever could
+        withdraw it.
 
-        `changes` holds only the fields to set; None clears one. Returns the
-        run's label and notes as they now stand, or None when there is no such
-        run or it is not the asker's.
+        `changes` holds only the fields to set; None clears one. `hidden` is a
+        bool: True takes the run off the board and out of every comparison,
+        False puts it back. Hiding a run already hidden keeps the time it was
+        first hidden. Returns the run's label, notes and whether it is hidden,
+        as they now stand, or None when there is no such run or it is not the
+        asker's.
         """
         with self.connect() as db:
             row = db.execute("SELECT delete_token, user_id FROM runs WHERE id = ?",
@@ -1438,13 +1526,55 @@ class Store:
                 return None
             # Names from the fixed pair below, never from the request.
             sets = [f"{c} = ?" for c in ("label", "notes") if c in changes]
-            vals = [changes[c] for c in ("label", "notes") if c in changes]
+            vals: list[object] = [changes[c] for c in ("label", "notes") if c in changes]
+            if "hidden" in changes:
+                sets.append("hidden_at = COALESCE(hidden_at, ?)" if changes["hidden"]
+                            else "hidden_at = NULL")
+                if changes["hidden"]:
+                    vals.append(iso_now())
             if sets:
                 db.execute(f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
                            vals + [run_id])
-            out = db.execute("SELECT id, label, notes FROM runs WHERE id = ?",
-                             (run_id,)).fetchone()
-        return dict(out)
+            out = dict(db.execute("SELECT id, label, notes, hidden_at FROM runs "
+                                  "WHERE id = ?", (run_id,)).fetchone())
+        out["hidden"] = out["hidden_at"] is not None
+        return out
+
+    def adopt(self, user_id: int, tokens: list[str]) -> dict:
+        """Put the anonymous runs these delete tokens belong to on an account.
+
+        A token proves the run is the asker's exactly as it does for
+        withdrawing one, so holding it is enough. A run already on another
+        account stays there: the token is still a claim to it, but not one
+        that outranks the account it was uploaded under. The delete token
+        keeps working afterwards, as it does on any run an account owns.
+
+        Adopted runs are then tied into uploads as if the account had sent
+        them, so the variants of one --variants run sent anonymously list as
+        one upload. Returns the ids adopted, those already this account's, and
+        how many tokens matched nothing this account could take.
+        """
+        adopted: list[int] = []
+        already: list[int] = []
+        refused = 0
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for token in dict.fromkeys(tokens):       # each once, in order
+                row = db.execute("SELECT id, user_id FROM runs WHERE delete_token = ?",
+                                 (token,)).fetchone()
+                if row is None or row["user_id"] not in (None, user_id):
+                    refused += 1
+                elif row["user_id"] == user_id:
+                    already.append(int(row["id"]))
+                else:
+                    adopted.append(int(row["id"]))
+            for run_id in adopted:
+                db.execute("UPDATE runs SET user_id = ? WHERE id = ?", (user_id, run_id))
+            # In the order they arrived, as _join_upload expects to meet them.
+            for run_id in sorted(adopted):
+                self._join_upload(db, run_id)
+        return {"adopted": sorted(adopted), "already": sorted(already),
+                "refused": refused}
 
     def _classify(self, db: sqlite3.Connection, run_id: int) -> None:
         """Store what a run is compared as, and its core counts where it did
@@ -1538,7 +1668,7 @@ class Store:
         """How this run stands among its peers, per metric: whole machine and best core."""
         with self.connect() as db:
             run = db.execute(f"SELECT r.cpu_models, r.cpu_key, {LAYOUT_SQL} AS cpu_layout, r.target, "
-                             f"r.vectorize, r.fma, r.threads, r.cpus_offline "
+                             f"r.vectorize, r.fma, r.threads, r.cpus_offline, r.hidden_at "
                              f"FROM runs r WHERE r.id = ?", (run_id,)).fetchone()
             scopes = {r["scope"] for r in db.execute(
                 "SELECT DISTINCT scope FROM cores WHERE run_id = ?", (run_id,))}
@@ -1651,10 +1781,22 @@ class Store:
             row = db.execute("SELECT raw FROM runs WHERE id = ?", (run_id,)).fetchone()
         return row["raw"] if row else None
 
+    @staticmethod
+    def _runs_where(user_id: int | None, include_hidden: bool) -> tuple[str, list]:
+        """The WHERE that runs() and run_total() share, so a page and its
+        count agree. Hidden runs are left out unless the listing is their
+        owner's own."""
+        where, args = [], []
+        if user_id is not None:
+            where.append("r.user_id = ?")
+            args.append(user_id)
+        if not include_hidden:
+            where.append(VISIBLE_SQL)
+        return (f"WHERE {' AND '.join(where)} " if where else ""), args
+
     def runs(self, limit: int = 50, offset: int = 0,
-             user_id: int | None = None) -> list[dict]:
-        where = "WHERE r.user_id = ? " if user_id is not None else ""
-        args: list[object] = [user_id] if user_id is not None else []
+             user_id: int | None = None, include_hidden: bool = False) -> list[dict]:
+        where, args = self._runs_where(user_id, include_hidden)
         with self.connect() as db:
             rows = db.execute(
                 f"SELECT {run_columns_sql()}, {SUBMITTER}, {RELEASE_BUILD}, "
@@ -1665,7 +1807,7 @@ class Store:
                 args + [limit, offset]).fetchall()
         return [dict(r) for r in rows]
 
-    def uploads(self, user_id: int) -> list[dict]:
+    def uploads(self, user_id: int, include_hidden: bool = False) -> list[dict]:
         """One account's runs as its list shows them: by CPU, then by upload.
 
         A CPU here is the line the run reported, as the list prints it, and not
@@ -1674,18 +1816,24 @@ class Store:
         CPU holds its uploads, newest first, and each upload its runs in the
         order they arrived -- a --variants run's builds in the order it ran
         them. CPUs come in the order of their newest upload.
+
+        Hidden runs are listed only with `include_hidden`, which is for the
+        account's own list: everyone else's view of it is the board's.
         """
+        visible = "" if include_hidden else f" AND {VISIBLE_SQL}"
         with self.connect() as db:
             rows = db.execute(
                 f"SELECT r.id, r.created_at, r.label, r.notes, r.mode, r.target, "
                 f"       r.vectorize, r.fma, r.threads, r.sysname, r.machine, "
                 f"       r.cpu_models, r.cpu_key, {LAYOUT_SQL} AS cpu_layout, "
-                f"       r.cpus_offline, COALESCE(r.upload_id, r.id) AS upload_id "
-                f"FROM runs r WHERE r.user_id = ? ORDER BY r.id DESC",
+                f"       r.cpus_offline, r.hidden_at, "
+                f"       COALESCE(r.upload_id, r.id) AS upload_id "
+                f"FROM runs r WHERE r.user_id = ?{visible} ORDER BY r.id DESC",
                 (user_id,)).fetchall()
         uploads: dict[int, list[dict]] = {}
         for r in rows:
             run = dict(r)
+            run["hidden"] = run.pop("hidden_at") is not None
             base, tagged = split_variant(run["label"])
             run["variant"] = (f"{'vector' if run['vectorize'] else 'scalar'}-"
                               f"{'fma' if run['fma'] else 'nofma'}")
@@ -1734,6 +1882,11 @@ class Store:
         """
         where = ["1 = 1"]
         args: list[object] = []
+        # A listing that names its records -- one run's, or a comparison
+        # link's -- shows them hidden or not, as the run's own page does. Every
+        # other listing is the board, and a hidden run is not on it.
+        if run is None and not ids:
+            where.append(VISIBLE_SQL)
         if scope is not None:
             where.append("c.scope = ?")
             args.append(scope)
@@ -1899,6 +2052,7 @@ class Store:
                     f"        AND r.vectorize IS ? AND r.fma IS ? "
                     # Runs with CPUs switched off are measured but not counted.
                     f"        AND COALESCE(r.cpus_offline, 0) = 0 "
+                    f"        AND {VISIBLE_SQL} "
                     f"      GROUP BY c.run_id) best",
                     (mine, scope, run_id, run["vectorize"], run["fma"])).fetchone()
                 total = row["total"] or 0
@@ -1915,22 +2069,30 @@ class Store:
 
     def stats(self) -> dict:
         with self.connect() as db:
-            runs = db.execute("SELECT COUNT(*) AS n FROM runs").fetchone()["n"]
-            cores = db.execute("SELECT COUNT(*) AS n FROM cores").fetchone()["n"]
+            # What the board holds, so hidden runs are not counted: a picker
+            # offering an architecture that shows nothing when picked is a
+            # broken picker.
+            runs = db.execute(f"SELECT COUNT(*) AS n FROM runs r "
+                              f"WHERE {VISIBLE_SQL}").fetchone()["n"]
+            cores = db.execute(f"SELECT COUNT(*) AS n FROM cores c "
+                               f"JOIN runs r ON r.id = c.run_id "
+                               f"WHERE {VISIBLE_SQL}").fetchone()["n"]
             users = db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
             release_builds = db.execute(
-                "SELECT COUNT(*) AS n FROM runs r WHERE EXISTS "
-                "(SELECT 1 FROM verified_builds vb "
-                " WHERE vb.sha256 = r.binary_sha256)").fetchone()["n"]
+                f"SELECT COUNT(*) AS n FROM runs r WHERE {VISIBLE_SQL} AND EXISTS "
+                f"(SELECT 1 FROM verified_builds vb "
+                f" WHERE vb.sha256 = r.binary_sha256)").fetchone()["n"]
             targets = db.execute(
-                "SELECT target, COUNT(*) AS n FROM runs WHERE target IS NOT NULL "
-                "GROUP BY target ORDER BY n DESC").fetchall()
+                f"SELECT target, COUNT(*) AS n FROM runs r "
+                f"WHERE target IS NOT NULL AND {VISIBLE_SQL} "
+                f"GROUP BY target ORDER BY n DESC").fetchall()
             # The operating systems this hub actually holds, for the OS picker:
             # there is no fixed list to draw it from, since uname says whatever
             # the machine it ran on says.
             systems = db.execute(
-                "SELECT sysname, COUNT(*) AS n FROM runs WHERE sysname IS NOT NULL "
-                "GROUP BY sysname ORDER BY n DESC").fetchall()
+                f"SELECT sysname, COUNT(*) AS n FROM runs r "
+                f"WHERE sysname IS NOT NULL AND {VISIBLE_SQL} "
+                f"GROUP BY sysname ORDER BY n DESC").fetchall()
             # Every CPU this hub can compare, with its core counts, for the CPU
             # picker: one entry per peer set, as group=cpu draws them. Grouped
             # by the expression rather than its alias, which SQLite would read
@@ -2104,19 +2266,19 @@ class Store:
             db.execute("DELETE FROM users WHERE id = ?", (user_id,))
         return len(ids)
 
-    def run_count(self, user_id: int) -> int:
-        with self.connect() as db:
-            return db.execute("SELECT COUNT(*) AS n FROM runs WHERE user_id = ?",
-                              (user_id,)).fetchone()["n"]
+    def run_count(self, user_id: int, include_hidden: bool = False) -> int:
+        """How many runs an account has: what its profile says to everyone,
+        or, with the hidden ones too, what its owner is told."""
+        return self.run_total(user_id, include_hidden)
 
-    def run_total(self, user_id: int | None = None) -> int:
+    def run_total(self, user_id: int | None = None,
+                  include_hidden: bool = False) -> int:
         """How many runs a listing of them has in all: the whole hub, or one
         account's, matching whatever `runs()` was narrowed to."""
-        where = "WHERE user_id = ?" if user_id is not None else ""
-        args = (user_id,) if user_id is not None else ()
+        where, args = self._runs_where(user_id, include_hidden)
         with self.connect() as db:
             return db.execute(
-                f"SELECT COUNT(*) AS n FROM runs {where}", args).fetchone()["n"]
+                f"SELECT COUNT(*) AS n FROM runs r {where}", args).fetchone()["n"]
 
     # -- sessions ----------------------------------------------------------
 
@@ -2438,7 +2600,7 @@ class Handler(BaseHTTPRequestHandler):
             # request on a keep-alive connection, which then reads a JSON
             # document where a request line should be.
             self.drain_unread()
-            self.fail(e.status, str(e))
+            self.send_json(e.status, {"error": str(e), **e.extra})
         except BrokenPipeError:
             pass
         except Exception as e:                      # noqa: BLE001
@@ -2476,11 +2638,12 @@ class Handler(BaseHTTPRequestHandler):
                 limit = clamp_int(query.get("limit", ["50"])[0], 1, MAX_PAGE, 50)
                 offset = clamp_int(query.get("offset", ["0"])[0], 0, MAX_OFFSET, 0)
                 who = self.who_filter(query)
-                runs = self.store.runs(limit, offset, who)
+                mine = self.is_asker(who)
+                runs = self.store.runs(limit, offset, who, include_hidden=mine)
                 return self.send_json(HTTPStatus.OK, {
                     "runs": runs, "limit": limit, "offset": offset,
                     "total": self.total(len(runs), limit, offset,
-                                        lambda: self.store.run_total(who))})
+                                        lambda: self.store.run_total(who, mine))})
             if method == "POST":
                 return self.upload()
             return self.fail(HTTPStatus.METHOD_NOT_ALLOWED, "method not allowed")
@@ -2525,7 +2688,8 @@ class Handler(BaseHTTPRequestHandler):
             raise Invalid("say whose uploads: user=<name>, or user=me")
         limit = clamp_int(query.get("limit", ["50"])[0], 1, MAX_PAGE, 50)
         offset = clamp_int(query.get("offset", ["0"])[0], 0, MAX_OFFSET, 0)
-        cpus = self.store.uploads(who) if who >= 0 else []
+        cpus = (self.store.uploads(who, include_hidden=self.is_asker(who))
+                if who >= 0 else [])
         return {"cpus": cpus[offset:offset + limit], "limit": limit,
                 "offset": offset, "total": len(cpus),
                 "runs": sum(c["runs"] for c in cpus),
@@ -2547,13 +2711,17 @@ class Handler(BaseHTTPRequestHandler):
         if not token and user is None:
             raise Denied("sign in, or send the run's delete token",
                          HTTPStatus.UNAUTHORIZED)
-        changes = {}
+        changes: dict[str, object] = {}
         if "label" in body:
             changes["label"] = _text(body["label"], MAX_TEXT, "label")
         if "notes" in body:
             changes["notes"] = _text(body["notes"], MAX_NOTES, "notes")
+        if "hidden" in body:
+            if not isinstance(body["hidden"], bool):
+                raise Invalid("hidden must be true or false")
+            changes["hidden"] = body["hidden"]
         if not changes:
-            raise Invalid("nothing to change: send label, notes or both")
+            raise Invalid("nothing to change: send label, notes or hidden")
         out = self.store.edit_run(run_id, changes, token or None,
                                   user["id"] if user else None)
         if out is None:
@@ -2575,6 +2743,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(HTTPStatus.FORBIDDEN,
                              "no such run, or it is not yours to withdraw")
         return self.send_json(HTTPStatus.OK, {"deleted": run_id})
+
+    def is_asker(self, user_id: int | None) -> bool:
+        """Whether a listing narrowed to `user_id` is the asker's own -- the
+        one listing that also shows the runs its owner has hidden."""
+        if user_id is None:
+            return False
+        user, _ = self.identify()
+        return user is not None and int(user["id"]) == user_id
 
     def who_filter(self, query: dict) -> int | None:
         """The account a listing is narrowed to, from `user=name` or `user=me`.
@@ -2642,7 +2818,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.set_cookie(CSRF_COOKIE, csrf, SESSION_DAYS * 86400,
                                 http_only=False)
             return self.send_json(HTTPStatus.OK, {
-                "user": public_user(user, runs=self.store.run_count(user["id"]),
+                "user": public_user(user, runs=self.store.run_count(
+                                        user["id"], include_hidden=True),
                                     token=(how == "cookie"))})
 
         if method != "POST":
@@ -2663,6 +2840,8 @@ class Handler(BaseHTTPRequestHandler):
             user = self.require_account()
             return self.send_json(HTTPStatus.OK,
                                   {"api_token": self.store.rotate_api_token(user["id"])})
+        if action == "adopt":
+            return self.adopt()
         if action == "password":
             return self.change_password()
         if action == "rename":
@@ -2751,9 +2930,31 @@ class Handler(BaseHTTPRequestHandler):
             raise Denied("wrong name or password", HTTPStatus.UNAUTHORIZED)
         csrf = self.start_session(user)
         self.send_json(HTTPStatus.OK, {
-            "user": public_user(user, runs=self.store.run_count(user["id"]),
+            "user": public_user(user, runs=self.store.run_count(user["id"], include_hidden=True),
                                 token=True),
             "csrf": csrf})
+
+    def adopt(self):
+        """Move anonymous runs onto the signed-in account by their delete
+        tokens: `{"tokens": [...]}`, as many as MAX_ADOPT at once.
+
+        A request with a token nobody holds still adopts the rest. The reply
+        says how many matched nothing this account could take, but not which:
+        a token that names another account's run is not something to confirm
+        to whoever sent it.
+        """
+        user = self.require_account()
+        body = self.read_json(MAX_ADOPT_BODY)
+        tokens = body.get("tokens")
+        if not isinstance(tokens, list) or not tokens:
+            raise Invalid("send tokens: a list of the runs' delete tokens")
+        if len(tokens) > MAX_ADOPT:
+            raise Invalid(f"at most {MAX_ADOPT} tokens at once")
+        if not all(isinstance(t, str) and 0 < len(t) <= 64 for t in tokens):
+            raise Invalid("each token must be a delete token, as the upload "
+                          "reply gave it")
+        out = self.store.adopt(user["id"], [t.strip() for t in tokens])
+        self.send_json(HTTPStatus.OK, out)
 
     def change_password(self):
         self.auth_allowed()
@@ -2778,7 +2979,7 @@ class Handler(BaseHTTPRequestHandler):
             raise Denied("wrong password", HTTPStatus.UNAUTHORIZED)
         renamed = self.store.rename_user(user["id"], check_name(body.get("name")))
         self.send_json(HTTPStatus.OK, {
-            "user": public_user(renamed, runs=self.store.run_count(user["id"]),
+            "user": public_user(renamed, runs=self.store.run_count(user["id"], include_hidden=True),
                                 token=True)})
 
     def close_account(self):

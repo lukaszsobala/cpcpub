@@ -1,6 +1,6 @@
 # cpcpub privacy policy
 
-Last updated 18 October 2026.
+Last updated 26 October 2026.
 
 This policy covers the cpcpub results hub, currently at
 [cpcpub.qd.je](https://cpcpub.qd.je:30210/), and the cpcpub apps that upload
@@ -122,6 +122,11 @@ the European Union. Mikrus stores the data but does not use it.
 
 - Remove a result: on the website, under My uploads (with your account, or in
   the browser you uploaded from), or in the Android app after an upload.
+- Hide a result instead: also under My uploads. A hidden result is taken off
+  the leaderboard and out of comparisons, but is not deleted. Anyone with its
+  link can still open it, and you can show it again.
+- Move results you uploaded without an account onto one: under My uploads,
+  with their delete tokens. Your account name is then shown beside them.
 - Close your account: under Account → Close this account. This deletes the
   account and all its results.
 - For anything else, write to [lsobala1@gmail.com](mailto:lsobala1@gmail.com).

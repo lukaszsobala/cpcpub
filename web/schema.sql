@@ -56,8 +56,18 @@ CREATE TABLE IF NOT EXISTS runs (
     -- on arrival (see Store._join_upload) so an account's list can show one
     -- upload rather than four unrelated rows. Its own id when it came alone.
     upload_id     INTEGER,
+    -- SHA-256 of the document as uploaded, label and notes aside (see
+    -- server.document_digest), so the same result sent twice is refused the
+    -- second time. Indexed but not unique: a database from before the check
+    -- may hold two copies already, and both stay.
+    doc_sha256    TEXT,
+    -- When the run's owner hid it, or NULL. A hidden run is off the board, out
+    -- of every comparison and every count, and still reachable by its link
+    -- and in its owner's own list; the same two claims that can withdraw it
+    -- can hide it and show it again.
+    hidden_at     TEXT,
 
-    mode          TEXT    NOT NULL,   -- threads | per-core | full
+    mode         TEXT    NOT NULL,   -- threads | per-core | full
     -- SHA-256 of the binary that produced the run, when it could take one.
     -- Matched against verified_builds; see the note on that table.
     binary_sha256 TEXT,

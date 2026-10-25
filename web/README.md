@@ -48,6 +48,25 @@ uploads* lists them that way, by CPU. Labels and notes can be changed there
 afterwards. A `--disp-sweep` dump is refused — it is a
 diagnostic curve with no summary metrics to rank.
 
+**The same result twice is refused.** A document the hub already holds is
+turned away with `409` and the id of the run it already is — a retry after a
+lost reply, a double click, the same file dropped twice. "The same" is the
+parsed document, label and notes aside, so a re-indented copy or a new label
+does not make it another run; a real second run always differs, since no two
+measure alike. A withdrawn run's document may be sent again. The reply never
+carries the first copy's delete token: every run's raw document is public, and
+anyone can send one back.
+
+**Hiding a run.** Whoever can withdraw a run — its account, or the holder of
+its delete token — can instead hide it, from *My uploads* or with
+`PATCH {"hidden": true}`. A hidden run is off the board, out of every
+comparison (its CPU's peers, `/rank`'s populations, `group=cpu`) and out of
+`/api/stats`, so the pickers offer nothing it alone holds. It is not gone: its
+link still opens it, saying it is hidden, a comparison link naming its records
+still shows them, and its owner's own listings still list it, marked
+`hidden`. Everyone else's listing of that account leaves it out, and the
+profile's run count with it. `{"hidden": false}` puts it back.
+
 **`build.flags` is verbatim.** It is whatever `CFLAGS` the binary was built
 with, so a cross-compile carrying `--sysroot=/home/you/...` uploads that path
 along with the numbers. An upload also names your CPU model and kernel release.
@@ -58,6 +77,13 @@ Optional throughout; an anonymous upload is never second-class. An account puts
 your name on your runs, lets you withdraw them from any browser, carries the
 upload token, and gets a larger upload allowance. It is a name and a password —
 **no email**, and so no password reset. Closing one deletes its runs.
+
+Runs uploaded without one can join it later: their delete tokens move them onto
+the signed-in account (*My uploads* offers the ones the browser kept, and takes
+pasted ones from the command line or an app). A token is the same proof it is
+for withdrawing, so it is enough on its own — but a run already on another
+account stays there. The variants of an anonymous `--variants` run are tied
+into one upload as they move, as if the account had sent them.
 
 Registering costs a small proof of work (a SHA-256 search the browser does in
 about half a second) and is capped per address. Neither stops a determined
@@ -140,11 +166,11 @@ python3 verified.py --db runs.sqlite3 --forget v0.1.0
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/runs?label=&notes=` | upload one document; returns `{id, delete_token, user, records}` |
+| `POST` | `/api/runs?label=&notes=` | upload one document; returns `{id, delete_token, user, records}`, or `409` with `{error, id, url}` when the hub already holds it |
 | `GET` | `/api/runs?limit=&offset=&user=` | recent runs, optionally one submitter's |
 | `GET` | `/api/runs/<id>`, `/raw`, `/rank` | one run, with its kinds of core; the document as uploaded; per metric, the share of other runs its best record beats (one value per run: each one's best record in the same scope, same Vectorize and FMA, every CPU online), and its standing on the same CPU |
 | `DELETE` | `/api/runs/<id>` | withdraw; needs `X-Delete-Token` or a signed-in owner |
-| `PATCH` | `/api/runs/<id>` | change the label and/or notes (`{label, notes}`; only the keys sent change, `null` or `""` clears one); the same `X-Delete-Token` or signed-in owner as withdrawing |
+| `PATCH` | `/api/runs/<id>` | change the label and/or notes, or hide the run (`{label, notes, hidden}`; only the keys sent change, `null` or `""` clears a label or notes, `hidden` is `true` or `false`); the same `X-Delete-Token` or signed-in owner as withdrawing |
 | `GET` | `/api/uploads?user=&limit=&offset=` | one account's runs by CPU, then by upload, a page of CPUs at a time; `user=me` for your own |
 | `GET` | `/api/cores?scope=&target=&os=&vectorize=&fma=&q=&cpu=&layout=&threads=&user=&verified=release&sort=&order=&norm=&limit=&offset=` | leaderboard rows: one per upload, each its best record at `sort`, with `cpu_fit` |
 | `GET` | `/api/cores?group=cpu&scope=…` | the same filters, one row per CPU: the medians of its runs |
@@ -155,6 +181,7 @@ python3 verified.py --db runs.sqlite3 --forget v0.1.0
 | `GET` | `/api/auth/challenge` | the same, plus a single-use puzzle to register with |
 | `POST` | `/api/auth/register` | `{name, password, challenge, nonce}`, plus `invite` where required |
 | `POST` | `/api/auth/login` `/logout` `/token` `/password` `/rename` `/close` | sign in; sign out; reissue the upload token; change password; change the account's name (`{name, password}`; once every 7 days, refused with 409 if taken); delete the account |
+| `POST` | `/api/auth/adopt` | `{tokens: [...]}`, up to 100 delete tokens: move those anonymous runs onto the signed-in account; returns `{adopted, already, refused}` — ids, ids, and how many matched nothing this account can take |
 | `GET` | `/api/auth/me` | the signed-in account, or `{"user": null}` |
 
 `norm` is which reading of `sort` to rank on: `abs` (default) for the figure as
