@@ -453,7 +453,7 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
   border: 1px solid var(--line); border-radius: 5px;
 }
 .tokenbox .copy:hover { color: var(--ink); }
-#uploadform { display: flex; flex-direction: column; gap: 0.75rem; max-width: 40rem; }
+#uploadform { display: flex; flex-direction: column; gap: 0.75rem; }
 #uploadform button { align-self: flex-start; }
 #uploadresult { margin-top: 1rem; }
 
@@ -485,7 +485,7 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
 
 .drop {
   border: 2px dashed var(--line); border-radius: 12px; background: var(--panel);
-  padding: 2rem 1rem; text-align: center; cursor: pointer; max-width: 40rem;
+  padding: 2rem 1rem; text-align: center; cursor: pointer;
   display: flex; flex-direction: column; gap: 0.3rem; transition: border-color 0.1s;
 }
 .drop:hover, .drop:focus-visible { border-color: var(--accent); outline: none; }
@@ -493,7 +493,7 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));
 }
-.picked { margin: 0.85rem 0; max-width: 40rem; }
+.picked { margin: 0.85rem 0; }
 .picked-list { margin: 0.3rem 0 0; padding-left: 1.2rem; font-size: 0.85rem; }
 .receipt {
   border-left: 3px solid var(--ok); padding: 0.1rem 0 0.1rem 0.8rem;
@@ -552,7 +552,7 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
 .batch-builds { display: flex; flex-wrap: wrap; gap: 0.3rem; grid-column: 1; }
 .batch-up input { grid-column: 2; grid-row: 1 / span 2; width: 100%; }
 .count.held { text-decoration: line-through; opacity: 0.7; }
-.batch-howto ol { padding-left: 1.4rem; }
+.batch-howto { padding-left: 1.4rem; }
 .batch-howto li { margin: 0.3rem 0; }
 @media (max-width: 560px) {
   .batch-up { grid-template-columns: minmax(0, 1fr); }

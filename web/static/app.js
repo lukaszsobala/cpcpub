@@ -2203,8 +2203,7 @@ function renderBatchLimits(b) {
 function renderCommands() {
   const token = state.user && state.user.api_token;
   $("#cmd-submit").textContent =
-    "make\n" +
-    `bench/cpcpub --full --submit ${location.origin}` +
+    `cpcpub --full --submit ${location.origin}` +
     (token ? ` --token ${token}` : "") + " --label \"my box\"";
 
   $("#shell-note").textContent = token
@@ -2214,9 +2213,9 @@ function renderCommands() {
       "the upload is anonymous and you get a delete token to keep.";
 
   $("#cmd-batch").textContent =
-    "# on each machine\n" +
+    "# on each machine, one file each\n" +
     "cpcpub --full --variants --json > \"$(hostname).json\"\n\n" +
-    "# then, with the files together\n" +
+    "# then, with the files together in one directory\n" +
     "cat *.json > batch.json\n" +
     `curl -fsS -X POST "${location.origin}/api/batch?label=first+machine&label=second" \\\n` +
     `     -H "Authorization: Bearer ${token || "YOUR-TOKEN"}" --data-binary @batch.json`;
