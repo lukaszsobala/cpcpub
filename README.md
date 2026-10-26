@@ -107,7 +107,7 @@ make submit         # build, measure, upload -- one row on the board
 
 A machine that cannot reach the hub itself can hand its `run.json` to the *Submit a result* tab instead — drag it on, or click, or paste.
 
-An account is optional and adds three things: your name on the runs you upload, withdrawing them from any browser rather than only from the one holding a delete token, and the upload token above. Anonymous uploads are not second-class and rank the same. See [web/README.md](web/README.md).
+An account is optional and adds four things: your name on the runs you upload, withdrawing them from any browser rather than only from the one holding a delete token, the upload token above, and batches — many machines' results in one file, uploaded at once. Anonymous uploads are not second-class and rank the same. See [web/README.md](web/README.md).
 
 ## What a result means
 

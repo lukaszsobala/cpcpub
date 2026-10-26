@@ -147,6 +147,33 @@
         file here. From a microcontroller, <code>mcu/cpcpub-serial.py</code>
         saves the file to bring.
       </p>
+      <details class="more batch-howto">
+        <summary>Many machines at once (needs an account)</summary>
+        <p class="note">
+          Signed in, you can send the results of many machines together, as a
+          batch:
+        </p>
+        <ol class="note">
+          <li>On each machine, run
+            <code>cpcpub --full --variants --json &gt; NAME.json</code>, one
+            file per machine. <code>--variants</code> measures every build
+            the machine can run; leave it out for the default build alone.</li>
+          <li>Bring the files together and drop them here all at once, or join
+            them first with <code>cat *.json &gt; batch.json</code>. Don't edit
+            them: a result changed by hand is refused, and one refused result
+            stops the whole batch.</li>
+          <li>Each machine is listed with its builds. Give each a label, then
+            upload.</li>
+        </ol>
+        <p class="note">
+          One machine's results become one upload when they sit next to each
+          other in the file, which a file per machine always does. A result
+          already on the hub is skipped, so sending a batch again after adding
+          to it stores only what is new.
+          <span id="batch-limits"></span>
+        </p>
+        <div class="cmd"><pre id="cmd-batch"></pre><button type="button" class="copy" data-copy="cmd-batch">Copy</button></div>
+      </details>
       <div class="drop" id="drop" tabindex="0" role="button"
            aria-label="Choose or drop a cpcpub result file">
         <strong>Drop <code>run.json</code> here</strong>

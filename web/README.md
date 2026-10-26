@@ -39,6 +39,34 @@ curl -fsS -X POST 'http://my.server:8782/api/runs?label=my+box' \
     -H 'Content-Type: application/json' --data-binary @run.json
 ```
 
+**Many machines at once** is a batch, and needs an account. On each machine
+write one file, then put the files together — dropped on the Submit tab all
+at once, or joined with `cat` first:
+
+```sh
+cpcpub --full --variants --json > "$(hostname).json"     # on each machine
+cat *.json > batch.json
+curl -fsS -X POST 'http://my.server:8782/api/batch?label=box+one&label=box+two' \
+    -H 'Authorization: Bearer YOUR-TOKEN' --data-binary @batch.json
+```
+
+A batch file is JSON values one after another, each a result or a
+`--variants` array of them. The hub groups them into uploads, one per machine:
+up to one result per build variant, next to each other in the file, with the
+same machine, binary and settings — what a `--variants` run prints, and what
+separate `--variant` runs of one machine catted in a row are. An array never
+joins its neighbours, and a build seen twice starts the machine's next upload.
+`label=` names the uploads in file order (each run gets the label plus its
+variant tag, as `--variants --submit` gives it); `notes=` goes on every run.
+The Submit tab asks the hub first (`?dry=1`, which stores nothing), lists the
+machines it found, and takes a label for each.
+
+It is all or nothing: one result the hub would refuse refuses the batch, and
+says which. Results the hub already holds are skipped, not refused, so a file
+sent again after adding to it stores only what is new. Up to 400 results a
+batch, and batches have their own allowance — `--batch-limit` results per
+account per hour, default 1000 — apart from single uploads' `--rate-limit`.
+
 Submit `--full` runs where you can: only the pair of halves is interpretable.
 A `--variants` run uploads as one run per build variant, since results only
 compare between matching builds. On an account, the hub ties them back into one upload as they
@@ -75,7 +103,8 @@ along with the numbers. An upload also names your CPU model and kernel release.
 
 Optional throughout; an anonymous upload is never second-class. An account puts
 your name on your runs, lets you withdraw them from any browser, carries the
-upload token, and gets a larger upload allowance. It is a name and a password —
+upload token, gets a larger upload allowance, and can send
+batches. It is a name and a password —
 **no email**, and so no password reset. Closing one deletes its runs.
 
 Runs uploaded without one can join it later: their delete tokens move them onto
@@ -104,8 +133,9 @@ python3 server.py --signup-token CODE       # invite-only, still readable by all
 python3 server.py --no-register             # take no new accounts at all
 ```
 
-Also: `--rate-limit` (uploads per hour, default 30, four times that for an
-account), `--auth-limit` (sign-in attempts per address per 15 minutes).
+Also: `--rate-limit` (single uploads per hour, default 30, four times that for
+an account), `--batch-limit` (results per account per hour in batches, default
+1000), `--auth-limit` (sign-in attempts per address per 15 minutes).
 
 ## What a result proves
 
@@ -167,6 +197,7 @@ python3 verified.py --db runs.sqlite3 --forget v0.1.0
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/runs?label=&notes=` | upload one document; returns `{id, delete_token, user, records}`, or `409` with `{error, id, url}` when the hub already holds it |
+| `POST` | `/api/batch?label=&label=&notes=&dry=` | upload a batch file, for an account (token or signed-in page): returns `{user, stored, skipped, uploads}`, each upload `{id, label, runs}` and each run `{index, variant, id, label, delete_token}` or `{index, variant, duplicate_of}`. `dry=1` stores nothing and returns `{uploads, results, held}`. The page sends `{batch, labels, notes}` as the body instead |
 | `GET` | `/api/runs?limit=&offset=&user=` | recent runs, optionally one submitter's |
 | `GET` | `/api/runs/<id>`, `/raw`, `/rank` | one run, with its kinds of core; the document as uploaded; per metric, the share of other runs its best record beats (one value per run: each one's best record in the same scope, same Vectorize and FMA, every CPU online), and its standing on the same CPU |
 | `DELETE` | `/api/runs/<id>` | withdraw; needs `X-Delete-Token` or a signed-in owner |
@@ -175,7 +206,7 @@ python3 verified.py --db runs.sqlite3 --forget v0.1.0
 | `GET` | `/api/cores?scope=&target=&os=&vectorize=&fma=&q=&cpu=&layout=&threads=&user=&verified=release&sort=&order=&norm=&limit=&offset=` | leaderboard rows: one per upload, each its best record at `sort`, with `cpu_fit` |
 | `GET` | `/api/cores?group=cpu&scope=…` | the same filters, one row per CPU: the medians of its runs |
 | `GET` | `/api/cores?run=<id>` / `?ids=1,2,3` | every record of one run, each with its `type` / named records |
-| `GET` | `/api/metrics`, `/api/stats`, `/api/builds` | metric definitions; counts, including one per architecture, one per operating system and one per CPU with its core counts (`cpus`: `cpu_key`, `cpu_layout`, `n`), which is what fills the board's **Arch** and **OS** pickers and the CPUs its **Search** box suggests; recognised release digests |
+| `GET` | `/api/metrics`, `/api/stats`, `/api/builds` | metric definitions; counts and what a batch may hold (`batch: {max_results, per_hour}`), including one per architecture, one per operating system and one per CPU with its core counts (`cpus`: `cpu_key`, `cpu_layout`, `n`), which is what fills the board's **Arch** and **OS** pickers and the CPUs its **Search** box suggests; recognised release digests |
 | `GET` | `/api/users/<name>` | public profile: name, since, run count |
 | `GET` | `/api/auth/policy` | what registering here costs: `{open, invite_required, bits}` |
 | `GET` | `/api/auth/challenge` | the same, plus a single-use puzzle to register with |

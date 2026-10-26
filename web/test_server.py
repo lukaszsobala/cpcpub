@@ -1620,6 +1620,242 @@ class ReuploadMigrationTest(unittest.TestCase):
             self.assertEqual(cm.exception.run_id, first)
 
 
+class BatchTest(unittest.TestCase):
+    """Many machines' results in one file, for an account."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        # Single uploads held to two an hour (eight for an account), batches
+        # to forty results: the two allowances are what is being told apart.
+        cls.server = srv.build_server(str(Path(cls.tmp.name) / "b.sqlite3"),
+                                      "127.0.0.1", 0, rate_limit=2, auth_limit=0,
+                                      register_pow=0, register_limit=0,
+                                      batch_limit=40)
+        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.seq = 0
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.tmp.cleanup()
+
+    def account(self):
+        type(self).seq += 1
+        b = Browser(self.base)
+        status, out = b.call("/api/auth/register", "POST",
+                             {"name": f"batcher{self.seq}", "password": "a good long password"})
+        self.assertEqual(status, 201, out)
+        return b, out["user"]["name"], out["user"]["api_token"]
+
+    VARIANTS = ((False, False), (True, False), (False, True), (True, True))
+
+    @staticmethod
+    def machine(cpu, which=VARIANTS, **over):
+        """One machine's results, one per build, as --variants writes them."""
+        docs = []
+        for vec, fma in which:
+            d = document(**over)
+            d["build"] = dict(d["build"], vectorize=vec, fma=fma)
+            d["system"] = dict(d["system"], cpu_models=cpu)
+            docs.append(d)
+        return docs
+
+    def send(self, text, token, query=""):
+        req = urllib.request.Request(f"{self.base}/api/batch{query}",
+                                     data=text.encode(), method="POST",
+                                     headers={"Authorization": f"Bearer {token}",
+                                              "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    # -- reading the file ------------------------------------------------
+    def test_a_catted_file_splits_into_its_documents(self):
+        a, b = document(), document()
+        text = "\ufeff" + json.dumps(a, indent=2) + "\n" + json.dumps(b) + "  \n"
+        docs = srv.split_documents(text)
+        self.assertEqual([d[2] for d in docs], [a, b])
+        # Each is stored as its own text, cut from the file.
+        self.assertEqual(json.loads(docs[0][1]), a)
+        self.assertEqual(docs[0][1], json.dumps(a, indent=2))
+
+    def test_arrays_are_parts_of_their_own(self):
+        one, two = self.machine("P1"), self.machine("P2")
+        loose = document()
+        text = json.dumps(one) + json.dumps(loose) + json.dumps(two, indent=1) + "[]"
+        parts = [d[0] for d in srv.split_documents(text)]
+        self.assertEqual(len(parts), 9)
+        self.assertEqual(len(set(parts[:4])), 1)
+        self.assertNotIn(parts[4], parts[:4] + parts[5:])
+        self.assertEqual(len(set(parts[5:])), 1)
+
+    def test_broken_json_says_where(self):
+        with self.assertRaises(srv.Invalid) as cm:
+            srv.split_documents(json.dumps(document()) + '\n{"schema": ')
+        self.assertIn("line 2", str(cm.exception))
+        with self.assertRaises(srv.Invalid) as cm:
+            srv.split_documents("[" + json.dumps(document()) + " x]")
+        self.assertIn("expected ',' or ']'", str(cm.exception))
+
+    def test_a_batch_has_a_ceiling(self):
+        with mock.patch.object(srv, "MAX_BATCH", 3):
+            with self.assertRaises(srv.Invalid):
+                srv.split_documents("{}" * 4)
+
+    # -- grouping --------------------------------------------------------
+    def groups(self, text):
+        return [[r["run"]["cpu_models"] + ":" + srv.variant_name(r["run"])
+                 for r in up["runs"]] for up in srv.plan_batch(text)]
+
+    def test_each_machines_variants_are_one_upload(self):
+        loose = "\n".join(json.dumps(d) for d in self.machine("G1") + self.machine("G2"))
+        self.assertEqual([len(g) for g in self.groups(loose)], [4, 4])
+        arrays = json.dumps(self.machine("G1")) + json.dumps(self.machine("G2"))
+        self.assertEqual([len(g) for g in self.groups(arrays)], [4, 4])
+
+    def test_the_same_machine_run_twice_is_two_uploads(self):
+        docs = self.machine("Twice", self.VARIANTS[:2]) * 1
+        docs += self.machine("Twice", self.VARIANTS[:2])
+        self.assertEqual([len(g) for g in self.groups("".join(json.dumps(d) for d in docs))],
+                         [2, 2])
+
+    def test_other_settings_are_another_upload(self):
+        a = self.machine("Same", self.VARIANTS[:1])
+        b = self.machine("Same", self.VARIANTS[1:2])
+        b[0]["config"] = dict(b[0]["config"], threads=4)
+        self.assertEqual([len(g) for g in self.groups(json.dumps(a[0]) + json.dumps(b[0]))],
+                         [1, 1])
+
+    def test_an_array_does_not_join_its_neighbours(self):
+        loose = self.machine("Near", self.VARIANTS[:1])[0]
+        arr = self.machine("Near", self.VARIANTS[1:])
+        self.assertEqual([len(g) for g in self.groups(json.dumps(loose) + json.dumps(arr))],
+                         [1, 3])
+
+    def test_one_bad_result_names_itself(self):
+        docs = self.machine("Bad", self.VARIANTS[:2])
+        docs[1]["schema"] = "nope"
+        with self.assertRaises(srv.Invalid) as cm:
+            srv.plan_batch("".join(json.dumps(d) for d in docs))
+        self.assertIn("result 2 of 2", str(cm.exception))
+
+    # -- the endpoint ----------------------------------------------------
+    def test_a_batch_needs_an_account(self):
+        text = json.dumps(self.machine("Anon"))
+        status, _ = Browser(self.base).call("/api/batch", "POST", text.encode())
+        self.assertEqual(status, 401)
+        b, _, _ = self.account()
+        self.assertEqual(b.call("/api/batch", "POST", text.encode(), csrf=False)[0], 403)
+        self.assertEqual(self.send(text, "no-such-token")[0], 401)
+
+    def test_a_dry_run_stores_nothing(self):
+        b, _, token = self.account()
+        text = "".join(json.dumps(d) for d in self.machine("Dry 1") + self.machine("Dry 2", self.VARIANTS[:1]))
+        status, plan = self.send(text, token, "?dry=1")
+        self.assertEqual(status, 200, plan)
+        self.assertEqual(plan["results"], 5)
+        self.assertEqual([(u["cpu_models"], len(u["runs"])) for u in plan["uploads"]],
+                         [("Dry 1", 4), ("Dry 2", 1)])
+        self.assertEqual(plan["uploads"][0]["runs"][3]["variant"], "vector-fma")
+        self.assertEqual(b.call("/api/uploads?user=me")[1]["runs"], 0)
+
+    def test_a_batch_stores_each_machine_as_one_upload(self):
+        b, name, token = self.account()
+        text = "".join(json.dumps(d) for d in self.machine("Store 1") + self.machine("Store 2", self.VARIANTS[:1]))
+        status, out = self.send(text, token, "?label=rack+a&label=&notes=lab")
+        self.assertEqual(status, 201, out)
+        self.assertEqual((out["stored"], out["skipped"], out["user"]), (5, 0, name))
+        first, second = out["uploads"]
+        self.assertEqual([r["label"] for r in first["runs"]],
+                         ["rack a (scalar-nofma)", "rack a (vector-nofma)",
+                          "rack a (scalar-fma)", "rack a (vector-fma)"])
+        # A machine with one build keeps its label bare, and a blank one is none.
+        self.assertIsNone(second["runs"][0]["label"])
+        _, listing = b.call("/api/uploads?user=me")
+        shape = sorted((c["cpu_models"], [len(u["runs"]) for u in c["uploads"]])
+                       for c in listing["cpus"])
+        self.assertEqual(shape, [("Store 1", [4]), ("Store 2", [1])])
+        _, run = b.call(f"/api/runs/{first['runs'][0]['id']}")
+        self.assertEqual((run["notes"], run["user"]), ("lab", name))
+
+    def test_the_page_sends_labels_in_the_body(self):
+        b, _, _ = self.account()
+        text = json.dumps(self.machine("Form 1", self.VARIANTS[:2])) + \
+            json.dumps(self.machine("Form 2", self.VARIANTS[:1]))
+        status, out = b.call("/api/batch", "POST",
+                             {"batch": text, "labels": ["one", "two"], "notes": "n"})
+        self.assertEqual(status, 201, out)
+        self.assertEqual([r["label"] for up in out["uploads"] for r in up["runs"]],
+                         ["one (scalar-nofma)", "one (vector-nofma)", "two"])
+        status, _ = b.call("/api/batch", "POST", {"batch": text, "labels": ["a", "b", "c"]})
+        self.assertEqual(status, 400)
+
+    def test_results_already_held_are_skipped_not_refused(self):
+        b, _, token = self.account()
+        docs = self.machine("Again", self.VARIANTS[:2])
+        _, out = self.send(json.dumps(docs[0]), token)
+        held = out["uploads"][0]["runs"][0]["id"]
+        # The one already stored, the new one, and the new one once more.
+        text = "".join(json.dumps(d) for d in (docs[0], docs[1])) + json.dumps([docs[1]])
+        _, plan = self.send(text, token, "?dry=1")
+        self.assertEqual(plan["held"], 1)
+        status, out = self.send(text, token)
+        self.assertEqual(status, 201, out)
+        self.assertEqual((out["stored"], out["skipped"]), (1, 2))
+        self.assertEqual(out["uploads"][0]["runs"][0]["duplicate_of"], held)
+        new = out["uploads"][0]["runs"][1]["id"]
+        self.assertEqual(out["uploads"][1]["runs"][0]["duplicate_of"], new)
+        status, out = self.send(text, token)
+        self.assertEqual((status, out["stored"]), (200, 0))
+
+    def test_a_refused_batch_stores_nothing(self):
+        b, _, token = self.account()
+        docs = self.machine("Atomic")
+        docs[3]["cores"] = []
+        status, err = self.send("".join(json.dumps(d) for d in docs), token)
+        self.assertEqual(status, 400)
+        self.assertIn("result 4 of 4", err["error"])
+        self.assertEqual(b.call("/api/uploads?user=me")[1]["runs"], 0)
+
+    def test_batches_have_their_own_allowance(self):
+        _, _, token = self.account()
+        # Single uploads: two an hour here, an account four times that, and
+        # then no more.
+        for expect in [201] * 2 * srv.ACCOUNT_RATE_FACTOR + [429]:
+            status, _ = self.send_single(token)
+            self.assertEqual(status, expect)
+        # A batch is still welcome, up to forty results; past that, refused
+        # whole, with nothing counted.
+        text = "".join(json.dumps(d) for i in range(9) for d in self.machine(f"Many {i}"))
+        status, out = self.send(text, token)
+        self.assertEqual((status, out["stored"]), (201, 36))
+        status, err = self.send("".join(json.dumps(d) for d in self.machine("Over 1") + self.machine("Over 2")), token)
+        self.assertEqual(status, 429)
+        self.assertIn("8 results", err["error"])
+        status, out = self.send("".join(json.dumps(d) for d in self.machine("Fits")), token)
+        self.assertEqual((status, out["stored"]), (201, 4))
+
+    def send_single(self, token):
+        req = urllib.request.Request(f"{self.base}/api/runs", data=json.dumps(document()).encode(),
+                                     method="POST", headers={"Authorization": f"Bearer {token}",
+                                                             "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_the_hub_says_what_a_batch_may_hold(self):
+        _, stats = Browser(self.base).call("/api/stats")
+        self.assertEqual(stats["batch"], {"max_results": srv.MAX_BATCH, "per_hour": 40})
+
+
 class ConsistencyTest(unittest.TestCase):
     """A document has to agree with itself.
 

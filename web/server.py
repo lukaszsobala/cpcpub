@@ -77,6 +77,13 @@ MAX_EDIT_BODY = 3 * (MAX_TEXT + MAX_NOTES) + 256   # a label and notes, escaped
 MAX_ADOPT = 100             # delete tokens one request may adopt: what the page
                             # keeps of a browser's anonymous uploads
 MAX_ADOPT_BODY = MAX_ADOPT * 64 + 256
+# A batch: many machines' results in one file, for an account. Big enough for
+# a hundred machines with all four build variants each; the body cap is that
+# many large documents. Its own hourly allowance, per account and counted in
+# documents stored, is --batch-limit.
+MAX_BATCH = 400
+MAX_BATCH_BODY = 16 << 20
+BATCH_LIMIT = 1000
 # How long apart two variants of one --variants run may land and still be
 # called one upload. A variant takes minutes on a laptop and can take most of
 # an hour on a machine with a hundred cores to walk; this is the far side of
@@ -355,6 +362,116 @@ def parse_json(raw: bytes) -> object:
         return json.loads(text, parse_constant=_reject_constant)
     except json.JSONDecodeError as e:
         raise Invalid(f"invalid JSON: {e.msg} at line {e.lineno} column {e.colno}")
+
+
+def _skip_ws(text: str, i: int) -> int:
+    """The first index at or after `i` that is not JSON whitespace."""
+    while i < len(text) and text[i] in " \t\r\n":
+        i += 1
+    return i
+
+
+def split_documents(text: str) -> list[tuple[int, str, object]]:
+    """The documents in a batch file, as (part, raw, parsed), in file order.
+
+    A batch file is what `cat` makes of result files: JSON values one after
+    another. Each is a document, or an array of them as `cpcpub --variants
+    --json` prints. `part` says which ran together: every array is a part of
+    its own, and so is each stretch of documents between arrays. `raw` is the
+    document's own text, cut out of the file, so a batch stores each one as
+    exactly as a single upload does.
+    """
+    dec = json.JSONDecoder(parse_constant=_reject_constant)
+
+    def one(i: int) -> tuple[object, int]:
+        try:
+            return dec.raw_decode(text, i)
+        except json.JSONDecodeError as e:
+            raise Invalid(f"invalid JSON: {e.msg} at line {e.lineno} column {e.colno}")
+
+    def where(i: int) -> str:
+        return (f"line {text.count(chr(10), 0, i) + 1} "
+                f"column {i - text.rfind(chr(10), 0, i)}")
+
+    out: list[tuple[int, str, object]] = []
+    part, loose = 0, False
+    pos = _skip_ws(text, 1 if text.startswith("\ufeff") else 0)
+    while pos < len(text):
+        if text[pos] == "[":
+            part, loose = part + 1, False
+            pos = _skip_ws(text, pos + 1)
+            if text.startswith("]", pos):
+                pos += 1
+            else:
+                while True:
+                    obj, end = one(pos)
+                    out.append((part, text[pos:end], obj))
+                    pos = _skip_ws(text, end)
+                    if text.startswith(",", pos):
+                        pos = _skip_ws(text, pos + 1)
+                    elif text.startswith("]", pos):
+                        pos += 1
+                        break
+                    else:
+                        raise Invalid(f"invalid JSON: expected ',' or ']' at {where(pos)}")
+        else:
+            if not loose:
+                part, loose = part + 1, True
+            obj, end = one(pos)
+            out.append((part, text[pos:end], obj))
+            pos = end
+        if len(out) > MAX_BATCH:
+            raise Invalid(f"a batch holds at most {MAX_BATCH} results")
+        pos = _skip_ws(text, pos)
+    return out
+
+
+# What the variants of one machine's run share, as validate() reads them:
+# everything about the machine and the measurement, the build aside.
+MACHINE_SAME = ("cpu_models", "machine", "sysname", "os_release",
+                "binary_sha256", "mode", "threads", "seconds", "reps",
+                "warmup", "mem_bytes", "pin", "seed")
+
+
+def variant_name(run: dict) -> str:
+    """A run's build as cpcpub names it: scalar-nofma ... vector-fma."""
+    return (f"{'vector' if run.get('vectorize') else 'scalar'}-"
+            f"{'fma' if run.get('fma') else 'nofma'}")
+
+
+def plan_batch(text: str) -> list[dict]:
+    """Validate every document in a batch and group them into uploads.
+
+    An upload is one machine's run: up to one result per build variant, next
+    to each other in the file, from one part of it (see split_documents), with
+    the same machine, binary and settings. That is what a --variants run
+    prints, and what separate --variant runs of one machine catted in a row
+    are. A build seen twice starts a new upload: the same machine run again.
+
+    Any document that is not a valid result refuses the whole batch, naming
+    it -- a batch is stored all or nothing. Returns the uploads, each
+    {"runs": [{index, raw, payload, run, cores}]}, in file order.
+    """
+    docs = split_documents(text)
+    if not docs:
+        raise Invalid("the batch holds no results")
+    groups: list[dict] = []
+    for n, (part, raw, payload) in enumerate(docs, 1):
+        try:
+            run, cores = validate(payload)
+        except Invalid as e:
+            raise Invalid(f"result {n} of {len(docs)}: {e}")
+        key = tuple(run.get(c) for c in MACHINE_SAME)
+        build = (run["vectorize"], run["fma"])
+        g = groups[-1] if groups else None
+        if (g is None or g["part"] != part or g["key"] != key
+                or build in g["builds"] or len(g["runs"]) >= 4):
+            g = {"part": part, "key": key, "builds": set(), "runs": []}
+            groups.append(g)
+        g["builds"].add(build)
+        g["runs"].append({"index": n, "raw": raw, "payload": payload,
+                          "run": run, "cores": cores})
+    return groups
 
 
 def _text(v, maxlen=MAX_TEXT, field="value"):
@@ -1417,8 +1534,29 @@ class Store:
         and the write share one transaction, so the same document posted twice
         at once -- a retry racing the original -- is stored once.
         """
-        token = secrets.token_urlsafe(24)
         digest = document_digest(raw)
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            same = self._holding(db, digest)
+            if same is not None:            # leaving the block rolls back
+                raise Duplicate(same)
+            run_id, token = self._store(db, run, cores, raw, label, notes,
+                                        user_id, digest)
+            self._join_upload(db, run_id)
+        return run_id, token
+
+    @staticmethod
+    def _holding(db: sqlite3.Connection, digest: str | None) -> int | None:
+        """The run that already is this document, if the hub holds one."""
+        row = db.execute("SELECT id FROM runs WHERE doc_sha256 = ? "
+                         "ORDER BY id LIMIT 1", (digest,)).fetchone()
+        return int(row["id"]) if row else None
+
+    def _store(self, db: sqlite3.Connection, run: dict, cores: list[dict],
+               raw: str, label: str | None, notes: str | None,
+               user_id: int | None, digest: str | None) -> tuple[int, str]:
+        """Write one run and its records, inside the caller's transaction."""
+        token = secrets.token_urlsafe(24)
         # The delete token is issued whether or not an account owns the run:
         # signing in later must not be the only way back to something uploaded
         # from a shell, and an account holder loses nothing by also having one.
@@ -1426,34 +1564,78 @@ class Store:
                    label=label, notes=notes, raw=raw, user_id=user_id,
                    doc_sha256=digest)
         cols = list(run)
+        cur = db.execute(
+            f"INSERT INTO runs ({','.join(cols)}) "
+            f"VALUES ({','.join('?' * len(cols))})",
+            [run[c] for c in cols])
+        # sqlite3 sets lastrowid on every successful INSERT into a rowid
+        # table; None here would mean the row above did not happen.
+        assert cur.lastrowid is not None
+        run_id = int(cur.lastrowid)
+        ccols = ["run_id", "scope"] + CORE_COLUMNS
+        db.executemany(
+            f"INSERT INTO cores ({','.join(ccols)}) "
+            f"VALUES ({','.join('?' * len(ccols))})",
+            [[run_id] + [c.get(col) for col in ccols[1:]] for c in cores])
+        self._classify(db, run_id)
+        return run_id, token
+
+    def held(self, digests: list[str | None]) -> dict[str, int]:
+        """Which of these documents the hub already holds: digest -> run id."""
+        want = [d for d in dict.fromkeys(digests) if d]
+        out: dict[str, int] = {}
+        with self.connect() as db:
+            for i in range(0, len(want), 500):      # under SQLite's variable cap
+                chunk = want[i:i + 500]
+                for r in db.execute(
+                        f"SELECT doc_sha256, MIN(id) AS id FROM runs "
+                        f"WHERE doc_sha256 IN ({','.join('?' * len(chunk))}) "
+                        f"GROUP BY doc_sha256", chunk):
+                    out[r["doc_sha256"]] = int(r["id"])
+        return out
+
+    def insert_batch(self, uploads: list[dict], user_id: int) -> list[dict]:
+        """Store a planned batch (see plan_batch) in one transaction.
+
+        Each entry of `uploads` is a planned upload with a "label" and
+        "notes" for its runs set by the caller. A run whose document the hub
+        already holds, or that came earlier in this same batch, is skipped
+        and named. The runs of each upload are tied together as one upload
+        here and now, not by _join_upload's guess: the batch said which they
+        are. Returns, per upload, its id and each run's outcome.
+        """
+        out = []
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            same = db.execute("SELECT id FROM runs WHERE doc_sha256 = ? "
-                              "ORDER BY id LIMIT 1", (digest,)).fetchone()
-            if same is not None:            # leaving the block rolls back
-                raise Duplicate(int(same["id"]))
-            cur = db.execute(
-                f"INSERT INTO runs ({','.join(cols)}) "
-                f"VALUES ({','.join('?' * len(cols))})",
-                [run[c] for c in cols])
-            # sqlite3 sets lastrowid on every successful INSERT into a rowid
-            # table; None here would mean the row above did not happen.
-            assert cur.lastrowid is not None
-            run_id = int(cur.lastrowid)
-            ccols = ["run_id", "scope"] + CORE_COLUMNS
-            db.executemany(
-                f"INSERT INTO cores ({','.join(ccols)}) "
-                f"VALUES ({','.join('?' * len(ccols))})",
-                [[run_id] + [c.get(col) for col in ccols[1:]] for c in cores])
-            self._classify(db, run_id)
-            self._join_upload(db, run_id)
-        return run_id, token
+            seen: dict[str, int] = {}
+            for up in uploads:
+                stored: list[int] = []
+                runs = []
+                for r in up["runs"]:
+                    digest = document_digest(r["raw"])
+                    same = seen.get(digest or "") or self._holding(db, digest)
+                    entry = {"index": r["index"], "variant": variant_name(r["run"])}
+                    if same is not None:
+                        entry["duplicate_of"] = same
+                    else:
+                        run_id, token = self._store(db, r["run"], r["cores"], r["raw"],
+                                                    r["label"], up["notes"], user_id,
+                                                    digest)
+                        if digest:
+                            seen[digest] = run_id
+                        stored.append(run_id)
+                        entry.update(id=run_id, label=r["label"], delete_token=token)
+                    runs.append(entry)
+                if stored:
+                    db.execute(f"UPDATE runs SET upload_id = ? WHERE id IN "
+                               f"({','.join('?' * len(stored))})", [stored[0], *stored])
+                out.append({"id": stored[0] if stored else None,
+                            "label": up["label"], "runs": runs})
+        return out
 
     # What two variants of one upload share. Everything the run was told or
     # found about the machine and the measurement; only the build differs.
-    SAME_UPLOAD = ("cpu_models", "machine", "sysname", "os_release",
-                   "binary_sha256", "mode", "threads", "seconds", "reps",
-                   "warmup", "mem_bytes", "pin", "seed", "notes")
+    SAME_UPLOAD = MACHINE_SAME + ("notes",)
 
     def _join_upload(self, db: sqlite3.Connection, run_id: int) -> None:
         """Set a run's upload_id: the upload just before it, if it continues
@@ -2343,10 +2525,12 @@ class RateLimiter:
             del self.hits[k]
         self.swept = now
 
-    def allow(self, key: str, limit: int | None = None) -> bool:
+    def allow(self, key: str, limit: int | None = None, cost: int = 1) -> bool:
         """Whether `key` may act now. `limit` overrides the default for one
         class of caller -- a signed-in account is a known submitter and gets
-        more room than a bare address."""
+        more room than a bare address. `cost` is how many hits the act counts
+        as -- a batch is as many as the results it stores -- and an act that
+        would go past the limit is refused whole, counting nothing."""
         limit = self.limit if limit is None else limit
         if self.limit <= 0:                 # 0 disables the limiter outright
             return True
@@ -2357,9 +2541,9 @@ class RateLimiter:
             q = self.hits[key]
             while q and now - q[0] > self.window:
                 q.popleft()
-            if len(q) >= limit:
+            if len(q) + cost > limit:
                 return False
-            q.append(now)
+            q.extend([now] * cost)
             if len(self.hits) > 10000:          # bound memory on a busy host
                 for k in [k for k, v in self.hits.items() if not v][:5000]:
                     del self.hits[k]
@@ -2412,6 +2596,10 @@ class Handler(BaseHTTPRequestHandler):
     @property
     def register_limiter(self) -> RateLimiter:
         return self.hub.register_limiter
+
+    @property
+    def batch_limiter(self) -> RateLimiter:
+        return self.hub.batch_limiter
 
     def client_key(self) -> str:
         if self.hub.trust_proxy:
@@ -2623,7 +2811,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(HTTPStatus.OK, {"metrics": METRICS,
                                                   "scopes": sorted(SCOPES)})
         if path == "/api/stats" and method == "GET":
-            return self.send_json(HTTPStatus.OK, self.store.stats())
+            # What a batch may hold here, for the page to say before anyone
+            # prepares one.
+            return self.send_json(HTTPStatus.OK, dict(
+                self.store.stats(),
+                batch={"max_results": MAX_BATCH,
+                       "per_hour": self.batch_limiter.limit}))
         if path == "/api/builds" and method == "GET":
             # Public on purpose: what a hub calls verified is a claim about
             # which binaries it trusts, and a claim nobody can read is not one
@@ -2646,6 +2839,10 @@ class Handler(BaseHTTPRequestHandler):
                                         lambda: self.store.run_total(who, mine))})
             if method == "POST":
                 return self.upload()
+            return self.fail(HTTPStatus.METHOD_NOT_ALLOWED, "method not allowed")
+        if path == "/api/batch":
+            if method == "POST":
+                return self.batch(query)
             return self.fail(HTTPStatus.METHOD_NOT_ALLOWED, "method not allowed")
         if path == "/api/uploads" and method == "GET":
             return self.send_json(HTTPStatus.OK, self.list_uploads(query))
@@ -3195,6 +3392,121 @@ class Handler(BaseHTTPRequestHandler):
             "records": len(cores),
         })
 
+    def batch(self, query: dict):
+        """Many results in one file, for an account: POST /api/batch.
+
+        The body is the file as `cat` made it -- documents and --variants
+        arrays one after another -- or, from the page, {"batch": <that text>,
+        "labels": [...], "notes": "..."}. Labels name the uploads in file
+        order, from the body or as repeated `label=` in the query; a shorter
+        list leaves the rest to the label inside their first document, if
+        any. `notes` goes on every run. `dry=1` stores nothing and answers
+        with the plan: the uploads the file makes and which of its results
+        the hub already holds.
+
+        All or nothing: one result the hub would refuse refuses the batch,
+        named. Results it already holds are skipped, not refused, so sending
+        a file again after adding to it stores only what is new.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise Invalid("bad Content-Length")
+        if length <= 0:
+            raise Invalid("empty body")
+        if length > MAX_BATCH_BODY:
+            self.drain(length)
+            self.body_read = True
+            return self.fail(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                             f"body larger than {MAX_BATCH_BODY} bytes")
+        self.body_read = True
+        body = self.rfile.read(length)
+        if len(body) != length:
+            raise Invalid("truncated body")
+        # After the body is consumed, as for a single upload. A batch is an
+        # account's: its allowance is the account's to lose.
+        user = self.require_account()
+        try:
+            text = body.decode("utf-8")
+        except UnicodeDecodeError:
+            raise Invalid("body must be UTF-8")
+
+        labels = [_text(v, MAX_TEXT, "label") for v in
+                  urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query,
+                                        keep_blank_values=True).get("label", [])]
+        notes = _text(query.get("notes", [None])[0], MAX_NOTES, "notes")
+        form = None
+        if text.lstrip().startswith("{"):
+            try:
+                form = json.loads(text, parse_constant=_reject_constant)
+            except ValueError:
+                form = None             # documents back to back: the plain file
+        if isinstance(form, dict) and "schema" not in form and "batch" in form:
+            if not isinstance(form["batch"], str):
+                raise Invalid("batch must be the file's text")
+            text = form["batch"]
+            given = form.get("labels") or []
+            if not isinstance(given, list):
+                raise Invalid("labels must be a list")
+            labels = [_text(v, MAX_TEXT, "label") for v in given]
+            notes = _text(form.get("notes"), MAX_NOTES, "notes")
+
+        dry = query.get("dry", ["0"])[0] in ("1", "true")
+        if dry and not self.limiter.allow(f"dry:{user['id']}",
+                                          self.limiter.limit * ACCOUNT_RATE_FACTOR):
+            raise Denied("too many batches checked from this account; try later",
+                         HTTPStatus.TOO_MANY_REQUESTS)
+        uploads = plan_batch(text)
+        if len(labels) > len(uploads):
+            raise Invalid(f"{len(labels)} labels for {len(uploads)} uploads")
+        held = self.store.held([document_digest(r["raw"])
+                                for up in uploads for r in up["runs"]])
+
+        for i, up in enumerate(uploads):
+            first = up["runs"][0]["payload"]
+            own = split_variant(_text(first.get("label"), MAX_TEXT, "label"))[0]
+            base = labels[i] if i < len(labels) and labels[i] is not None else own
+            many = len(up["runs"]) > 1
+            up["label"] = base
+            up["notes"] = notes if notes is not None else _text(first.get("notes"),
+                                                                MAX_NOTES, "notes")
+            for r in up["runs"]:
+                tag = variant_name(r["run"])
+                r["label"] = (f"{base + ' ' if base else ''}({tag})" if many else base)
+
+        for up in uploads:
+            for r in up["runs"]:
+                r["held"] = held.get(document_digest(r["raw"]) or "")
+        if dry:
+            plan = []
+            for up in uploads:
+                head = up["runs"][0]["run"]
+                runs = []
+                for r in up["runs"]:
+                    entry = {"index": r["index"], "variant": variant_name(r["run"])}
+                    if r["held"] is not None:
+                        entry["duplicate_of"] = r["held"]
+                    runs.append(entry)
+                plan.append({"label": up["label"], "runs": runs,
+                             **{k: head[k] for k in ("cpu_models", "machine", "sysname",
+                                                     "mode", "threads")}})
+            return self.send_json(HTTPStatus.OK, {
+                "uploads": plan, "results": sum(len(up["runs"]) for up in uploads),
+                "held": sum(1 for up in uploads for r in up["runs"]
+                            if r["held"] is not None)})
+
+        new = sum(1 for up in uploads for r in up["runs"] if r["held"] is None)
+        if new and not self.batch_limiter.allow(f"batch:{user['id']}", cost=new):
+            raise Denied(f"this batch would store {new} results, past this hub's "
+                         f"{self.batch_limiter.limit} an hour per account; try "
+                         f"later, or send it in parts", HTTPStatus.TOO_MANY_REQUESTS)
+        stored = self.store.insert_batch(uploads, user["id"])
+        count = sum(1 for up in stored for r in up["runs"] if "id" in r)
+        self.send_json(HTTPStatus.CREATED if count else HTTPStatus.OK, {
+            "user": user["name"], "stored": count,
+            "skipped": sum(len(up["runs"]) for up in stored) - count,
+            "uploads": stored})
+
     def static(self, path: str):
         if path in ("/", ""):
             path = "/index.html"
@@ -3237,6 +3549,9 @@ class Server(ThreadingHTTPServer):
     # how many an address may create, and optionally an invite code -- or the
     # door shut entirely.
     register_limiter: RateLimiter
+    # Batches, per account and counted in results stored: a far larger
+    # allowance than single uploads get, for an account only.
+    batch_limiter: RateLimiter
     challenges: Challenges
     register_open: bool = True
     register_pow: int = REGISTER_POW_BITS
@@ -3249,7 +3564,8 @@ def build_server(db_path: str, host: str, port: int, *, rate_limit: int = 30,
                  auth_limit: int = 20, register_open: bool = True,
                  register_pow: int = REGISTER_POW_BITS,
                  register_limit: int = 5,
-                 signup_token: str | None = None) -> Server:
+                 signup_token: str | None = None,
+                 batch_limit: int = BATCH_LIMIT) -> Server:
     srv = Server((host, port), Handler)
     srv.store = Store(db_path)
     srv.limiter = RateLimiter(rate_limit, window)
@@ -3260,6 +3576,7 @@ def build_server(db_path: str, host: str, port: int, *, rate_limit: int = 30,
     # person makes one, ever, and the number that matters is how many a script
     # can make overnight.
     srv.register_limiter = RateLimiter(register_limit, 3600.0)
+    srv.batch_limiter = RateLimiter(batch_limit, window)
     srv.challenges = Challenges()
     srv.register_open = register_open
     srv.register_pow = max(0, min(MAX_POW_BITS, register_pow))
@@ -3279,6 +3596,10 @@ def main(argv=None) -> int:
     ap.add_argument("--rate-limit", type=int, default=30,
                     help="uploads per address per hour, 0 to disable "
                          f"(a signed-in account gets {ACCOUNT_RATE_FACTOR}x this)")
+    ap.add_argument("--batch-limit", type=int, default=BATCH_LIMIT,
+                    help="results an account may upload per hour in batches "
+                         f"(default {BATCH_LIMIT}), 0 to disable; single "
+                         "uploads keep --rate-limit")
     ap.add_argument("--auth-limit", type=int, default=20,
                     help="sign-in attempts per address per 15 minutes, "
                          "0 to disable")
@@ -3312,7 +3633,8 @@ def main(argv=None) -> int:
                        register_open=not args.no_register,
                        register_pow=args.register_pow,
                        register_limit=args.register_limit,
-                       signup_token=args.signup_token)
+                       signup_token=args.signup_token,
+                       batch_limit=args.batch_limit)
     host, port = srv.server_address[:2]
     print(f"cpcpub hub on http://{host}:{port}  (db: {args.db})", file=sys.stderr)
     try:

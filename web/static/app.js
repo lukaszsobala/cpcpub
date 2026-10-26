@@ -2193,6 +2193,13 @@ function renderVerifiedNote() {
   }
 }
 
+// What a batch may hold on this hub, said where the batch is explained.
+function renderBatchLimits(b) {
+  $("#batch-limits").textContent =
+    `This hub takes up to ${b.max_results} results in one batch` +
+    (b.per_hour > 0 ? `, and ${b.per_hour} an hour per account.` : ".");
+}
+
 function renderCommands() {
   const token = state.user && state.user.api_token;
   $("#cmd-submit").textContent =
@@ -2206,6 +2213,14 @@ function renderCommands() {
     : "Sign in to have results saved to your account. Without signing in, " +
       "the upload is anonymous and you get a delete token to keep.";
 
+  $("#cmd-batch").textContent =
+    "# on each machine\n" +
+    "cpcpub --full --variants --json > \"$(hostname).json\"\n\n" +
+    "# then, with the files together\n" +
+    "cat *.json > batch.json\n" +
+    `curl -fsS -X POST "${location.origin}/api/batch?label=first+machine&label=second" \\\n` +
+    `     -H "Authorization: Bearer ${token || "YOUR-TOKEN"}" --data-binary @batch.json`;
+
   $("#cmd-curl").textContent =
     `curl -fsS -X POST "${location.origin}/api/runs?label=my+box" \\\n` +
     (token ? `     -H "Authorization: Bearer ${token}" \\\n` : "") +
@@ -2216,23 +2231,59 @@ function renderCommands() {
 // that is not a result says so immediately rather than after a round trip, and
 // so a --variants array can be seen for what it is: several runs in one file.
 function takeFiles(files) {
-  const out = $("#uploadresult");
-  out.replaceChildren();
+  $("#uploadresult").replaceChildren();
+  return Promise.all([...files].map(async (f) => ({ name: f.name, text: await f.text() })))
+    .then(takeTexts);
+}
+
+// One result, or one machine's --variants array, goes up as it always has.
+// Signed in, anything more -- several files, a catted file -- is a batch: the
+// hub reads and groups it, and is asked first what it would make, so each
+// machine can be named before anything is stored. Signed out, a file of
+// results back to back is refused here, since only an account may send one.
+async function takeTexts(texts) {
   state.files = [];
-  const jobs = [...files].map(async (f) => {
-    const text = await f.text();
-    let doc;
+  state.batch = null;
+  const read = texts.map((t) => {
     try {
-      doc = JSON.parse(text);
+      const doc = JSON.parse(t.text);
+      return { name: t.name, text: t.text, docs: Array.isArray(doc) ? doc : [doc] };
     } catch (e) {
-      return { name: f.name, error: `not JSON: ${e.message}` };
+      return { name: t.name, text: t.text, parseError: e.message };
     }
-    return { name: f.name, docs: Array.isArray(doc) ? doc : [doc] };
   });
-  return Promise.all(jobs).then((picked) => {
-    state.files = picked;
+  const loose = read.some((f) => f.parseError);
+  const count = read.reduce((n, f) => n + (f.docs ? f.docs.length : 0), 0);
+  if (state.user && (loose || count > 1)) {
+    state.batch = { text: read.map((f) => f.text).join("\n"), names: read.map((f) => f.name),
+                    plan: null, labels: [], error: "" };
     renderPicked();
-  });
+    return planBatch(state.batch);
+  }
+  state.files = read.map((f) => (f.parseError
+    ? { name: f.name, error: `not one JSON document (${f.parseError}). A file of ` +
+        "several results one after another is a batch: sign in to upload one." }
+    : { name: f.name, docs: f.docs }));
+  renderPicked();
+}
+
+// What the hub would make of a batch: its uploads, one per machine, and which
+// results it already holds. Nothing is stored.
+async function planBatch(b) {
+  try {
+    const plan = await api("/api/batch?dry=1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ batch: b.text }),
+    });
+    if (state.batch !== b) return;      // something else was picked since
+    b.plan = plan;
+    b.labels = plan.uploads.map((u) => u.label || "");
+  } catch (e) {
+    if (state.batch !== b) return;
+    b.error = e.message;
+  }
+  renderPicked();
 }
 
 // One document per upload, in the order they will be sent, each with the label
@@ -2264,6 +2315,10 @@ function pending() {
 function renderPicked() {
   const box = $("#picked");
   box.replaceChildren();
+  // A batch names each machine on its own, so the one label box is put away.
+  $("#label").closest("label").hidden = Boolean(state.batch);
+  $("#uploadgo").disabled = false;
+  if (state.batch) return renderBatch(box, state.batch);
   const errors = state.files.filter((f) => f.error);
   const jobs = pending();
   box.hidden = !state.files.length;
@@ -2290,6 +2345,115 @@ function renderPicked() {
   $("#uploadgo").textContent = jobs.length > 1 ? `Upload ${jobs.length} runs` : "Upload";
 }
 
+// A batch as the hub would store it: a row per machine with its builds, and a
+// label box each. Results the hub already holds are shown, struck through.
+function renderBatch(box, b) {
+  box.hidden = false;
+  const go = $("#uploadgo");
+  go.textContent = "Upload";
+  const files = b.names.length > 1 ? `${b.names.length} files` : b.names[0];
+  if (b.error) {
+    box.append(el("p", "warn", `${files}: ${b.error}`));
+    return;
+  }
+  if (!b.plan) {
+    box.append(el("p", "muted", `Reading ${files}…`));
+    return;
+  }
+  const { uploads, results, held } = b.plan;
+  box.append(el("p", "ok",
+    `Ready: ${plural(results, "result")} from ${plural(uploads.length, "machine")}` +
+    (held ? `, ${held} of them already on the hub and skipped.` : ".")));
+  box.append(el("p", "note",
+    "Each machine's results, one per build, become one upload. Give each a " +
+    "label, or leave it blank."));
+  const list = el("div", "batch-plan");
+  uploads.forEach((u, i) => {
+    const row = el("div", "batch-up");
+    const head = el("div", "batch-head");
+    head.append(el("strong", null, machineName(u)),
+                el("span", "muted", [osName(u, ""), u.mode,
+                                     u.threads ? plural(u.threads, "thread") : ""]
+                  .filter(Boolean).join(" · ")));
+    const builds = el("div", "batch-builds");
+    for (const r of u.runs) {
+      const tag = el("span", r.duplicate_of ? "count held" : "count", r.variant);
+      if (r.duplicate_of) tag.title = `already on the hub as run ${r.duplicate_of}: skipped`;
+      builds.append(tag);
+    }
+    const input = el("input");
+    input.type = "text";
+    input.maxLength = 200;
+    input.value = b.labels[i];
+    input.placeholder = "label, e.g. rack 2 node 7";
+    input.setAttribute("aria-label", `label for ${machineName(u)}`);
+    if (u.runs.every((r) => r.duplicate_of)) {
+      input.disabled = true;
+      input.value = "";
+      input.placeholder = "already on the hub";
+    }
+    input.addEventListener("input", () => { b.labels[i] = input.value; });
+    row.append(head, builds, input);
+    list.append(row);
+  });
+  box.append(list);
+  const fresh = results - held;
+  go.textContent = fresh ? `Upload ${plural(fresh, "result")}` : "Nothing new to upload";
+  go.disabled = !fresh;
+}
+
+// A planned batch, sent. One request: the hub stores it all or none of it.
+async function doBatch(b) {
+  const out = $("#uploadresult");
+  if (!b.plan) {
+    out.append(el("p", "warn", b.error || "Still reading the batch; try again in a moment."));
+    return;
+  }
+  const go = $("#uploadgo");
+  go.disabled = true;
+  let done = false;
+  try {
+    const res = await api("/api/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ batch: b.text, labels: b.labels.map((l) => l.trim()),
+                             notes: $("#notes").value.trim() }),
+    });
+    const card = el("div", "receipt");
+    const made = res.uploads.filter((u) => u.id).length;
+    card.append(el("p", res.stored ? "ok" : "warn", res.stored
+      ? `Stored ${plural(res.stored, "result")} in ${plural(made, "upload")} on your ` +
+        `account (${res.user}).` + (res.skipped ? ` ${res.skipped} already on the hub, skipped.` : "")
+      : "Nothing stored: every result in it is already on the hub."));
+    const ul = el("ul", "picked-list");
+    res.uploads.forEach((u, i) => {
+      const li = el("li");
+      const name = machineName(b.plan.uploads[i]);
+      const first = u.runs.find((r) => r.id);
+      li.append(first ? runLink(first.id, name) : el("span", null, name));
+      if (u.label) li.append(el("span", "muted", ` · ${u.label}`));
+      li.append(el("span", "muted", first
+        ? ` · ${plural(u.runs.filter((r) => r.id).length, "run")}`
+        : " · already on the hub"));
+      ul.append(li);
+    });
+    card.append(ul, el("p", "muted", "They are under My uploads, one entry per machine."));
+    out.append(card);
+    state.batch = null;
+    $("#paste").value = "";
+    $("#file").value = "";
+    renderPicked();
+    $("#picked").hidden = true;
+    done = true;
+    await loadUser();
+    loadBoard().catch(() => {});
+  } catch (e) {
+    out.append(el("p", "warn", e.message));
+  }
+  // A refusal leaves the batch picked, to fix a label and press again.
+  if (!done) go.disabled = false;
+}
+
 // Everything chosen, in order, reporting each as it lands. Sequential rather
 // than parallel: the rate limiter counts uploads, and a four-variant run that
 // half-succeeded because four requests raced is a confusing thing to explain.
@@ -2297,19 +2461,17 @@ async function doUpload(ev) {
   ev.preventDefault();
   const out = $("#uploadresult");
   out.replaceChildren();
+  if (state.batch) return doBatch(state.batch);
 
   let jobs = pending();
   const pasted = $("#paste").value.trim();
   if (!jobs.length && pasted) {
-    let doc;
-    try {
-      doc = JSON.parse(pasted);
-    } catch (e) {
-      out.append(el("p", "warn", `That is not JSON: ${e.message}`));
-      return;
-    }
-    state.files = [{ name: "pasted", docs: Array.isArray(doc) ? doc : [doc] }];
+    // Read as a dropped file is. A batch is planned first and sent on the
+    // next press, once its machines can be named.
+    await takeTexts([{ name: "pasted", text: pasted }]);
+    if (state.batch) return;
     jobs = pending();
+    if (!jobs.length) return;           // why is in the list above
   }
   if (!jobs.length) {
     out.append(el("p", "warn", "Drop a result file, choose one, or paste the JSON first."));
@@ -3244,6 +3406,7 @@ async function boot() {
   api("/api/stats").then((s) => {
     state.release = s.release || null;
     state.held = typeof s.runs === "number" ? s.runs : null;
+    if (s.batch) renderBatchLimits(s.batch);
     fillTargets(s.targets || []);
     fillSystems(s.systems || []);
     fillCpus(s.cpus || []);
