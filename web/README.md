@@ -21,7 +21,10 @@ client address and session cookies are marked `Secure`. The address is the
 the proxy must append or set it (nginx: `$proxy_add_x_forwarded_for` or
 `$remote_addr`), and behind a CDN it must first restore the visitor's address
 from the CDN's header (nginx: the `realip` module, trusting only the CDN's
-ranges). Per-address limits count an IPv6 address by its /64.
+ranges). Cloudflare the hub handles itself: when the address the proxy saw is
+one of Cloudflare's published ranges, the visitor is `CF-Connecting-IP`, a
+header it ignores from anyone else. Per-address limits count an IPv6 address
+by its /64.
 
 ## Submitting
 

@@ -2605,6 +2605,34 @@ CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 TOKEN_IN_QUERY_RE = re.compile(r"([?&]token=)[^&\s\"]*")
 
 
+# Cloudflare's edge, as https://www.cloudflare.com/ips/ lists it (checked
+# 2026-10-30). Only consulted behind --trust-proxy, for the peer the proxy saw.
+CLOUDFLARE_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+    "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32"))
+
+
+def is_address(s: str) -> bool:
+    try:
+        ipaddress.ip_address(s)
+    except ValueError:
+        return False
+    return True
+
+
+def from_cloudflare(addr: str) -> bool:
+    """Whether an address is one of Cloudflare's edges."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return any(ip in net for net in CLOUDFLARE_NETS)
+
+
 def address_group(addr: str) -> str:
     """An address as a rate limit counts it: IPv4 whole, IPv6 by its /64."""
     try:
@@ -2680,7 +2708,15 @@ class Handler(BaseHTTPRequestHandler):
         if self.hub.trust_proxy:
             fwd = self.headers.get("X-Forwarded-For", "")
             if fwd.strip():
-                return fwd.split(",")[-1].strip()[:64]
+                peer = fwd.split(",")[-1].strip()[:64]
+                # A Cloudflare edge is a proxy too, and names the visitor in a
+                # header of its own -- believed only from Cloudflare's ranges,
+                # where the edge overwrites whatever the visitor sent.
+                if from_cloudflare(peer):
+                    visitor = self.headers.get("CF-Connecting-IP", "").strip()
+                    if is_address(visitor):
+                        return visitor
+                return peer
         return self.client_address[0]
 
     def limit_key(self) -> str:

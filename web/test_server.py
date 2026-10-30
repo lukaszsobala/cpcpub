@@ -2945,6 +2945,22 @@ class HardeningTest(unittest.TestCase):
         self.assertEqual(codes, [401, 401, 429])
         self.assertEqual(self.login("2001:db8:7:8::1"), 401)
 
+    def test_cloudflare_names_the_visitor_and_no_one_else_does(self):
+        # Through an edge: the visitor's address counts, not the edge's.
+        codes = [self.send("/api/auth/login", "POST",
+                           {"name": "nobody", "password": "not the password"},
+                           {"X-Forwarded-For": f"2606:4700::{i}",
+                            "CF-Connecting-IP": "198.51.100.33"})[0]
+                 for i in range(1, 4)]
+        self.assertEqual(codes, [401, 401, 429])
+        # From anywhere else the header is the client's own, and ignored.
+        codes = [self.send("/api/auth/login", "POST",
+                           {"name": "nobody", "password": "not the password"},
+                           {"X-Forwarded-For": "198.51.100.44",
+                            "CF-Connecting-IP": f"198.51.100.{50 + i}"})[0]
+                 for i in range(3)]
+        self.assertEqual(codes, [401, 401, 429])
+
     def test_address_groups(self):
         self.assertEqual(srv.address_group("2001:db8::1"), "2001:db8::/64")
         self.assertEqual(srv.address_group("::ffff:192.0.2.1"), "192.0.2.1")
