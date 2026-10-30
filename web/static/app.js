@@ -3513,14 +3513,12 @@ function renderDownloadHero(d) {
   if (dev.os === "windows" && pkg.windows && pkg.windows.file) {
     say("For Windows");
     buttons.append(fileButton(pkg.windows.file, "Windows setup",
-                              "x64 and Arm64, with the window"));
+                              "x64 and Arm64, with the GUI"));
     hero.append(buttons);
     const bare = ["x86_64", "arm64"].map((v) => findBinary(d, "windows", v))
       .filter(Boolean).map((f) => fileChip(f, f.variant));
     if (bare.length) hero.append(chipRow("Or just the .exe:", bare));
-    hero.append(el("p", "note", "The setup puts the benchmark on PATH and the " +
-      "window in the Start menu. It is unsigned, so SmartScreen may ask " +
-      "before running it the first time."));
+    hero.append(el("p", "note", "Unsigned, so SmartScreen may ask before the first run."));
   } else if (dev.os === "android" && pkg.android && pkg.android.file) {
     say("For Android");
     buttons.append(fileButton(pkg.android.file, "Android app", "64- and 32-bit Arm"));
@@ -3537,9 +3535,8 @@ function renderDownloadHero(d) {
     if (arm) buttons.append(fileButton(arm, "Apple silicon", "M1 and later"));
     if (intel) buttons.append(fileButton(intel, "Intel Mac", "", !!arm));
     hero.append(buttons);
-    hero.append(el("p", "note", "Run it from Terminal. A file saved by the " +
-      "browser is quarantined and needs xattr -d com.apple.quarantine " +
-      "FILE before it will start. curl does not set that, so this is the quickest way:"));
+    hero.append(el("p", "note", "Saved from the browser, it needs " +
+      "xattr -d com.apple.quarantine FILE before it runs. Or in Terminal:"));
     hero.append(commandBlock("dl-cmd", runCommand(arm || intel)));
   } else if (dev.os === "linux") {
     const arch = dev.arch && LINUX_PLAIN[dev.arch] ? dev.arch : "x86-64";
@@ -3550,24 +3547,17 @@ function renderDownloadHero(d) {
       const f = pkg[id] && pkg[id].bench.find((b) => b.arch === arch);
       if (f) buttons.append(fileButton(f, label, f.name.match(/\.(deb|rpm|pkg\.tar\.zst)$/)[0]));
     }
-    if (buttons.childElementCount) {
-      hero.append(buttons);
-      hero.append(el("p", "note", "The packages need glibc 2.38 or newer, which " +
-        "Debian 12, Ubuntu 22.04 and RHEL 9 do not have. The window is a " +
-        "package of its own, listed below."));
-    }
+    if (buttons.childElementCount) hero.append(buttons);
     const plain = findBinary(d, "linux", LINUX_PLAIN[arch]);
     if (plain) {
-      hero.append(el("p", "note", "Or run it without installing anything:"));
+      hero.append(el("p", "note", "Or run it without installing:"));
       hero.append(commandBlock("dl-cmd", runCommand(plain)));
     }
     if (!dev.arch) {
-      hero.append(el("p", "note", "Your browser does not say which processor " +
-        "this is; every architecture is listed below."));
+      hero.append(el("p", "note", "Not x86-64? Every architecture is below."));
     }
   } else {
-    hero.append(el("p", "note", "There is no build of cpcpub for this device. " +
-      "Everything there is is listed below, for the machine you mean to measure."));
+    hero.append(el("p", "note", "No build for this device."));
   }
   return hero;
 }
@@ -3586,14 +3576,12 @@ function renderDownloads(d) {
         { year: "numeric", month: "long", day: "numeric" })}. `));
     }
   }
-  sub.append(el("span", null, "The release's own files, served from this hub " +
-    "and checked against its checksums. "));
   if (d.url) {
-    const notes = el("a", "linkish", "Release notes and older releases");
+    const notes = el("a", "linkish", "Release notes");
     notes.href = d.url;
     notes.rel = "noopener noreferrer";
     notes.target = "_blank";
-    sub.append(notes, el("span", null, " are on GitHub."));
+    sub.append(notes);
   }
   head.append(sub);
   box.append(head);
@@ -3604,17 +3592,11 @@ function renderDownloads(d) {
   // Packages.
   if (d.packages.length) {
     box.append(el("h2", null, "Install a package"));
-    box.append(el("p", "note", "Each carries the same binaries as the standalone " +
-      "downloads below, byte for byte, so its results count as a published build's."));
     const grid = el("div", "dl-grid");
     const blurb = {
-      debian: "Needs glibc 2.38: Debian 13, Ubuntu 24.04 or newer.",
-      fedora: "Needs glibc 2.38: Fedora 39, openSUSE Tumbleweed or newer.",
-      arch: "",
-      windows: "One setup for x64 and Arm64: the benchmark on PATH, the window " +
-               "in the Start menu.",
-      android: "One app for 64- and 32-bit Arm.",
-      termux: "The benchmark for Termux's command line.",
+      debian: "Debian 13, Ubuntu 24.04 or newer.",
+      fedora: "Fedora 39, openSUSE Tumbleweed or newer.",
+      windows: "x64 and Arm64, with the GUI.",
     };
     for (const p of d.packages) {
       const card = el("div", "dl-card");
@@ -3622,7 +3604,7 @@ function renderDownloads(d) {
       if (p.bench.length) {
         card.append(chipRow("Benchmark", p.bench.map((f) => fileChip(f, f.arch))));
       }
-      if (p.gui) card.append(chipRow("Window", [fileChip(p.gui, "any architecture")]));
+      if (p.gui) card.append(chipRow("GUI", [fileChip(p.gui, "any architecture")]));
       if (p.file) {
         card.append(chipRow(null, [fileChip(p.file,
           p.id === "windows" ? "Setup" : p.id === "android" ? "App (.apk)" : p.file.name)]));
@@ -3636,10 +3618,8 @@ function renderDownloads(d) {
   // Standalone binaries.
   if (d.binaries.rows.length) {
     box.append(el("h2", null, "Or a standalone binary"));
-    box.append(el("p", "note", "Nothing to install: one file that runs as it is. " +
-      "The -v3, -rva23 and -neon builds need a newer processor and will not " +
-      "start on an older one; the plain build runs everywhere. armv6 is for the " +
-      "first Raspberry Pi and the Pi Zero."));
+    box.append(el("p", "note", "-v3, -rva23 and -neon need a newer CPU; the plain " +
+      "build runs everywhere."));
     const table = el("table", "dl-table");
     const hr = el("tr");
     hr.append(el("th"));
@@ -3673,9 +3653,8 @@ function renderDownloads(d) {
       card.append(el("h3", null, fam.family));
       card.append(chipRow(null, fam.chips.map((f) => fileChip(f, f.chip))));
       card.append(el("p", "note", fam.family === "Raspberry Pi"
-        ? "Hold BOOTSEL while plugging the board in, and copy the .uf2 to the drive that appears."
-        : "The whole flash image, written at 0x0: esptool write-flash 0x0 FILE, " +
-          "or Espressif's browser flasher."));
+        ? "Hold BOOTSEL, plug in, copy the .uf2 to the drive."
+        : "Flash at 0x0 with esptool."));
       grid.append(card);
     }
     box.append(grid);
@@ -3685,8 +3664,7 @@ function renderDownloads(d) {
       link.href = d.url.replace("/releases/tag/", "/blob/") + "/mcu/README.md";
       link.rel = "noopener noreferrer";
       link.target = "_blank";
-      more.append(el("span", null, "How to run a board and save its result: "),
-                  link, el("span", null, "."));
+      more.append(el("span", null, "More in "), link, el("span", null, "."));
       box.append(more);
     }
   }
@@ -3694,8 +3672,7 @@ function renderDownloads(d) {
   // Checksums.
   const sums = el("details", "more dl-sums");
   sums.append(el("summary", null, "Check a download"));
-  sums.append(el("p", "note", "Save this as SHA256SUMS beside what you downloaded, " +
-    "then run sha256sum -c --ignore-missing SHA256SUMS (shasum -a 256 -c on macOS)."));
+  sums.append(el("p", "note", "Save as SHA256SUMS, then: sha256sum -c --ignore-missing SHA256SUMS"));
   sums.append(commandBlock("dl-sums",
     d.files.map((f) => `${f.sha256}  ${f.name}`).join("\n")));
   box.append(sums);
