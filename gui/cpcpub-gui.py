@@ -548,11 +548,18 @@ def default_hub(binary):
     return found.group(1) if found else ""
 
 
+def runnable(binary):
+    """Whether the program field names something the window can start: an
+    executable file, or a name found on PATH, as a shell would take it."""
+    return bool(binary) and (os.access(binary, os.X_OK)
+                             or bool(GLib.find_program_in_path(binary)))
+
+
 def binary_version(binary):
     """What a build says of itself under --version: {"version", "build",
     "text"} -- the release it is, its compiler and target, and the whole
     report -- or {} where there is no build to ask."""
-    if not binary or not os.access(binary, os.X_OK):
+    if not runnable(binary):
         return {}
     try:
         done = subprocess.run(
@@ -594,7 +601,7 @@ def curl_hint():
 
 def list_variants(binary):
     """Ask the binary which variants it carries. Falls back to the four names."""
-    if not binary or not os.access(binary, os.X_OK):
+    if not runnable(binary):
         return FALLBACK_VARIANTS
     try:
         done = subprocess.run(
@@ -1910,7 +1917,7 @@ class Window(Gtk.ApplicationWindow):
         if self.proc is not None:
             return
         binary = self.binary.get_text().strip()
-        if not binary or not (os.access(binary, os.X_OK) or GLib.find_program_in_path(binary)):
+        if not runnable(binary):
             self.fail(f"No runnable benchmark at {binary!r} -- pick one with Browse.")
             return
         outdir = self.outdir.get_text().strip()
