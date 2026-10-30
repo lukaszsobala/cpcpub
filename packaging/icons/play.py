@@ -6,10 +6,12 @@ and the 1024x500 feature graphic.
 
 Needs inkscape, imagemagick and the Roboto font. The pictures are for the Play
 Console, not for the build. The listing's current pair is kept in play/ beside
-this script: after changing the logo or the words, run `play.py
-packaging/icons/play` and commit what it wrote.
+this script: after changing the logo or the words, run
+`python3 packaging/icons/play.py packaging/icons/play` from the repository
+root and commit what it wrote.
 """
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,7 +38,10 @@ def render(svg: str, out: Path, width: int, height: int, flat: bool = False) -> 
     if flat:
         # Play takes no alpha channel on the feature graphic; the ground is
         # solid, so dropping it changes no pixel.
-        subprocess.run(["convert", str(out), "-alpha", "off", f"PNG24:{out}"],
+        # ImageMagick 7 is `magick`; `convert` is 6's name, and on Windows
+        # can be the system's own disk tool.
+        tool = ["magick"] if shutil.which("magick") else ["convert"]
+        subprocess.run([*tool, str(out), "-alpha", "off", f"PNG24:{out}"],
                        check=True)
 
 
