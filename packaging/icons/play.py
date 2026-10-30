@@ -10,6 +10,7 @@ this script: after changing the logo or the words, run
 `python3 packaging/icons/play.py packaging/icons/play` from the repository
 root and commit what it wrote.
 """
+import os
 import re
 import shutil
 import subprocess
@@ -38,11 +39,20 @@ def render(svg: str, out: Path, width: int, height: int, flat: bool = False) -> 
     if flat:
         # Play takes no alpha channel on the feature graphic; the ground is
         # solid, so dropping it changes no pixel.
-        # ImageMagick 7 is `magick`; `convert` is 6's name, and on Windows
-        # can be the system's own disk tool.
-        tool = ["magick"] if shutil.which("magick") else ["convert"]
-        subprocess.run([*tool, str(out), "-alpha", "off", f"PNG24:{out}"],
+        subprocess.run([imagemagick(), str(out), "-alpha", "off", f"PNG24:{out}"],
                        check=True)
+
+
+def imagemagick() -> str:
+    """ImageMagick's command, resolved: `magick` (version 7), else 6's
+    `convert` -- but not on Windows, where System32 is always on PATH and its
+    convert.exe is the disk tool, so a found `convert` proves nothing."""
+    for name in ("magick",) if os.name == "nt" else ("magick", "convert"):
+        found = shutil.which(name)
+        if found:
+            return found
+    sys.exit("play.py needs ImageMagick on PATH: `magick`"
+             + ("" if os.name == "nt" else ", or ImageMagick 6's `convert`"))
 
 
 def icon() -> str:
