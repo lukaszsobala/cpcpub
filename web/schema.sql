@@ -199,6 +199,18 @@ CREATE TABLE IF NOT EXISTS verified_builds (
 -- named here so a rebuilt table cannot lose it silently.
 CREATE INDEX IF NOT EXISTS verified_builds_sha ON verified_builds(sha256);
 
+-- How many times each release file has been downloaded from this hub: a count
+-- and nothing else. No address, no user agent, no time -- the privacy policy
+-- promises that a visitor's address is never stored, and a counter has no use
+-- for one. A row per (release, file), so a release run again under the same tag
+-- carries on counting.
+CREATE TABLE IF NOT EXISTS download_counts (
+    release TEXT    NOT NULL,  -- the tag, as in /downloads/TAG/NAME
+    name    TEXT    NOT NULL,
+    count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (release, name)
+);
+
 CREATE INDEX IF NOT EXISTS cores_run   ON cores(run_id);
 CREATE INDEX IF NOT EXISTS cores_scope ON cores(scope, score);
 CREATE INDEX IF NOT EXISTS runs_target ON runs(target, vectorize, fma);

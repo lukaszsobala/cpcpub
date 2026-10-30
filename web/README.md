@@ -225,6 +225,13 @@ hourly allowance. A fetch by hand shows on a running hub without a restart.
 `/downloads/TAG/NAME`, with `Range` for resumed downloads, and
 `/downloads/latest/NAME` redirects to it, for a link that outlives the release.
 
+Downloads are counted, in the hub's database (`download_counts`), and the counts
+are in `/api/downloads`. A count is all that is stored -- no address, no user
+agent, no time -- so it fits what PRIVACY.md promises. A download is counted
+where it starts: a `GET` that begins at byte 0, so a `HEAD`, a refusal and the
+rest of a resumed file are not. Downloads served from an edge cache never reach
+the hub and are not counted.
+
 ## API
 
 | Method | Path | Purpose |
@@ -240,7 +247,7 @@ hourly allowance. A fetch by hand shows on a running hub without a restart.
 | `GET` | `/api/cores?group=cpu&scope=…` | the same filters, one row per CPU: the medians of its runs |
 | `GET` | `/api/cores?run=<id>` / `?ids=1,2,3` | every record of one run, each with its `type` / named records |
 | `GET` | `/api/metrics`, `/api/stats`, `/api/builds` | metric definitions; counts and what a batch may hold (`batch: {max_results, per_hour}`), including one per architecture, one per operating system and one per CPU with its core counts (`cpus`: `cpu_key`, `cpu_layout`, `n`), which is what fills the board's **Arch** and **OS** pickers and the CPUs its **Search** box suggests; recognised release digests |
-| `GET` | `/api/downloads` | the release this hub serves, grouped for the Download tab (`packages`, `binaries`, `firmware`, and every file with its size and SHA-256), or `{"release": null}` |
+| `GET` | `/api/downloads` | the release this hub serves, grouped for the Download tab (`packages`, `binaries`, `firmware`, and every file with its size and SHA-256, and `downloads`: the count of each file and the total over every release), or `{"release": null}` |
 | `GET` | `/api/users/<name>` | public profile: name, since, run count |
 | `GET` | `/api/auth/policy` | what registering here costs: `{open, invite_required, bits}` |
 | `GET` | `/api/auth/challenge` | the same, plus a single-use puzzle to register with |

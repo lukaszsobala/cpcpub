@@ -3249,6 +3249,36 @@ class DownloadsTest(unittest.TestCase):
         status, _, resp = self.get("/download")
         self.assertEqual((status, resp.getheader("Location")), (302, "/#download"))
 
+    def test_downloads_are_counted_as_a_number_and_nothing_else(self):
+        self.gh.publish("v0.5.0", SOME)
+        self.mirror.sync()
+        apk, binary = "cpcpub-0.5.0-android.apk", "cpcpub-linux-x86_64"
+
+        def counts():
+            return json.loads(self.get("/api/downloads")[1])["downloads"]
+
+        self.assertEqual(counts(), {"total": 0, "files": {}})
+        self.get(f"/downloads/v0.5.0/{apk}")
+        self.get(f"/downloads/v0.5.0/{apk}")
+        self.get(f"/downloads/v0.5.0/{binary}")
+        self.assertEqual(counts(), {"total": 3, "files": {apk: 2, binary: 1}})
+
+        # Not downloads: a HEAD, the rest of a file already begun, a refusal,
+        # and a name that is not served.
+        self.get(f"/downloads/v0.5.0/{binary}", "HEAD")
+        self.get(f"/downloads/v0.5.0/{binary}", headers={"Range": "bytes=3-9"})
+        self.get(f"/downloads/v0.5.0/{binary}", headers={"Range": "bytes=999999-"})
+        self.get("/downloads/v0.5.0/SHA256SUMS")
+        self.assertEqual(counts()["total"], 3)
+        # The first part of one is the start of a download.
+        self.get(f"/downloads/v0.5.0/{binary}", headers={"Range": "bytes=0-4"})
+        self.assertEqual(counts()["files"][binary], 2)
+
+        # All that is stored is the count.
+        with self.server.store.connect() as db:
+            cols = [r["name"] for r in db.execute("PRAGMA table_info(download_counts)")]
+        self.assertEqual(cols, ["release", "name", "count"])
+
     def test_an_unchanged_release_is_asked_about_cheaply(self):
         self.gh.publish("v0.5.0", SOME)
         self.mirror.sync()

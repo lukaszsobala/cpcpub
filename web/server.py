@@ -2291,6 +2291,28 @@ class Store:
         out["cpu"] = self.cpu_fit(run_id)
         return out
 
+    def count_download(self, release: str, name: str) -> None:
+        """Add one to a release file's download count.
+
+        A count and nothing else: no address, no user agent, no time. The
+        privacy policy says what is kept, and this is all of it.
+        """
+        with self.connect() as db:
+            db.execute("INSERT INTO download_counts (release, name, count) "
+                       "VALUES (?, ?, 1) ON CONFLICT (release, name) "
+                       "DO UPDATE SET count = count + 1", (release, name))
+
+    def download_counts(self, release: str | None) -> dict:
+        """What has been downloaded: {"total": all releases, "files": {name:
+        count}} for `release`'s files."""
+        with self.connect() as db:
+            total = db.execute("SELECT COALESCE(SUM(count), 0) AS n "
+                               "FROM download_counts").fetchone()["n"]
+            files = {r["name"]: r["count"] for r in db.execute(
+                "SELECT name, count FROM download_counts WHERE release = ?",
+                (release,))}
+        return {"total": total, "files": files}
+
     def stats(self) -> dict:
         with self.connect() as db:
             # What the board holds, so hidden runs are not counted: a picker
@@ -2977,8 +2999,11 @@ class Handler(BaseHTTPRequestHandler):
                        "per_hour": self.batch_limiter.limit}))
         if path == "/api/downloads" and method == "GET":
             manifest = self.hub.downloads.manifest()
-            return self.send_json(HTTPStatus.OK,
-                                  layout(manifest) if manifest else {"release": None},
+            body = {"release": None}
+            if manifest:
+                body = dict(layout(manifest), downloads=self.store.download_counts(
+                    manifest["tag"]))
+            return self.send_json(HTTPStatus.OK, body,
                                   {"Cache-Control": "no-cache"})
         if path == "/api/builds" and method == "GET":
             # Public on purpose: what a hub calls verified is a claim about
@@ -3736,6 +3761,14 @@ class Handler(BaseHTTPRequestHandler):
             for k, v in headers.items():
                 self.send_header(k, v)
             self.end_headers()
+            if self.command == "GET" and start == 0:
+                # A download is counted where it starts: a resumed one, which
+                # asks for the rest of the file, is the same download, and a
+                # HEAD is not one. One that is abandoned halfway still counts.
+                try:
+                    self.store.count_download(tag, name)
+                except sqlite3.Error:
+                    pass                # a counter must not fail a download
             if self.command != "HEAD" and end >= start:
                 # Straight from the file to the socket: the Windows setup is
                 # fifty megabytes, and the hub is given a quarter of a gigabyte.

@@ -16,6 +16,8 @@ requests go to [lsobala1@gmail.com](mailto:lsobala1@gmail.com).
 - There are no ads, no analytics, no tracking and no third-party code, in the
   apps or on the hub.
 - An account is optional and needs no email address.
+- The hub counts how many times each file on its Download tab is downloaded. It
+  is a number per file, kept with nothing about who downloaded it.
 - Your IP address reaches the server, as it does with any website, and on
   the way it passes through Cloudflare, which delivers the site. It is used to
   stop abuse and deleted from the hub's logs within 14 days.
@@ -66,6 +68,14 @@ request. The hub's own request log and the web server's access log record the
 address, the time and the page requested. They are used only to look into
 faults and abuse. The hub's log is deleted within 7 days and the web server's
 within 14. IP addresses are never stored with a result or an account.
+
+## Download counts
+
+The hub counts how many times each file on its Download tab has been
+downloaded, to see which ones people use. All it stores is the file's name and
+a number. The count is not tied to your IP address, your browser or anything
+else about you, and it cannot be traced back to anyone. The numbers are public
+(in the hub's API) and are kept for as long as the hub runs.
 
 ## Cookies and browser storage
 

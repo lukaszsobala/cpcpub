@@ -37,7 +37,7 @@ const state = {
   files: [],            // result documents chosen but not yet uploaded
   release: null,        // the newest release this hub verifies against, if any
   downloads: null,      // the release this hub serves, from /api/downloads
-  wantDownload: false,  // the page was opened at #download
+  tab: "board",         // the tab showing, which the address bar names
   held: null,           // how many runs this hub holds at all, from /api/stats
 };
 
@@ -1313,20 +1313,36 @@ async function toggleSelect(row, on) {
 
 // Keep what the page is showing in the URL, so a comparison or one
 // submitter's board can be shared as a link.
-function syncHash() {
+function syncHash(push = false) {
   const parts = [];
   if (state.submitter) parts.push(`user=${state.submitter}`);
   const ids = [...state.selected.keys()];
   if (ids.length) parts.push(`compare=${ids.join(",")}`);
   // The run open over the page, so the address bar is its link while it is.
   if (state.openRun) parts.push(`run=${state.openRun}`);
+  // The tab, named bare ahead of the rest, so a link opens where it was copied.
+  if (state.tab !== "board") parts.unshift(state.tab);
   const want = parts.length ? "#" + parts.join("&") : "";
   if (location.hash !== want) {
-    history.replaceState(null, "", location.pathname + want);
+    // A new tab is somewhere to go Back from; a filter or a ticked box is not.
+    (push ? history.pushState : history.replaceState).call(
+      history, null, "", location.pathname + location.search + want);
   }
 }
 
-function showTab(name) {
+// The tabs, as the address bar spells them: the data-tab of each button.
+const TABS = ["board", "compare", "download", "upload", "mine", "account"];
+
+// The tab the address names, "board" when it names none.
+function hashTab() {
+  return location.hash.slice(1).split("&").find((p) => TABS.includes(p)) || "board";
+}
+
+// `nav` is how the address bar follows: "push" for a click, "replace" for the
+// page arranging itself, "none" when the address is what asked for the tab.
+function showTab(name, nav = "push") {
+  state.tab = name;
+  if (nav !== "none") syncHash(nav === "push");
   for (const b of document.querySelectorAll("#tabs button")) {
     b.classList.toggle("active", b.dataset.tab === name);
   }
@@ -3404,14 +3420,19 @@ async function loadDownloads() {
   try {
     d = await api("/api/downloads");
   } catch {
+    d = null;
+  }
+  if (!d || !d.release) {
+    if (state.tab === "download") showTab("board", "replace");
     return;
   }
-  if (!d || !d.release) return;
   state.downloads = d;
   $("#tab-download").hidden = false;
   renderDownloads(d);
   renderVerifiedNote();
-  if (state.wantDownload) showTab("download");
+  // A page opened at #download could not show the tab until it knew there was
+  // one; a hub with no release has none, so the address is put right.
+  if (state.tab === "download") showTab("download", "replace");
 }
 
 function fmtSize(n) {
@@ -3682,8 +3703,20 @@ async function boot() {
   // Read before anything rewrites the hash: restoring a comparison does, and
   // would drop the run from a link carrying both.
   const deepRun = location.hash.match(/run=(\d+)/);
-  state.wantDownload = location.hash === "#download";
+  // A tab is shown at once, except Download, which waits to learn the hub has
+  // one; state.tab names it meanwhile so nothing rewrites the address.
+  state.tab = hashTab();
+  if (state.tab !== "download") showTab(state.tab, "replace");
   setupTabs();
+  // The title and the icon are the way back to the board, as on any site.
+  $("#home").addEventListener("click", (e) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    if (state.openRun) closeRun();
+    if (state.submitter) return filterBySubmitter("");
+    showTab("board");
+    window.scrollTo(0, 0);
+  });
   setupDropzone();
   setupPageSizes();
   for (const b of document.querySelectorAll("button.copy[data-copy]")) {
@@ -3782,7 +3815,11 @@ async function boot() {
   // A #run=N typed or pasted into the address bar, or reached by Back, opens
   // that run; its absence closes the one open.
   window.addEventListener("hashchange", () => {
-    if (location.hash === "#download" && state.downloads) showTab("download");
+    // Back and Forward, or an edited address, move between tabs.
+    const tab = hashTab();
+    if (tab !== state.tab && (tab !== "download" || state.downloads)) {
+      showTab(tab, "none");
+    }
     const want = location.hash.match(/run=(\d+)/);
     if (want && Number(want[1]) !== state.openRun) {
       showRun(Number(want[1])).catch((e) => alert(e.message));
@@ -3831,7 +3868,7 @@ async function boot() {
     syncHash();
     renderSelection();
     renderBoard();
-    if (kept.length) showTab("compare");
+    if (kept.length && state.tab === "board") showTab("compare", "replace");
   }
   if (deepRun) showRun(Number(deepRun[1])).catch(() => {});
 }
