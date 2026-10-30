@@ -3670,8 +3670,29 @@ class Handler(BaseHTTPRequestHandler):
         if ctype.startswith("text/") or ctype in ("application/javascript",
                                                   "text/javascript"):
             ctype += "; charset=utf-8"
-        self.send_bytes(HTTPStatus.OK, target.read_bytes(), ctype,
-                        {"Cache-Control": "no-cache"})
+        body = target.read_bytes()
+        if target.name == "index.html":
+            body = versioned_assets(body)
+        self.send_bytes(HTTPStatus.OK, body, ctype, {"Cache-Control": "no-cache"})
+
+
+# The page's own script and stylesheet, as index.html links them.
+ASSET_LINK_RE = re.compile(rb'(src|href)="/(app\.js|style\.css)"')
+
+
+def versioned_assets(page: bytes) -> bytes:
+    """index.html with its script and stylesheet links naming their contents.
+
+    A CDN in front may hold app.js for hours whatever Cache-Control says --
+    Cloudflare's browser cache TTL overrides a shorter one -- and a page
+    from a new hub running last deploy's script is a page whose requests the
+    hub no longer understands. A link that changes when the file does is
+    fetched afresh however long the old one is kept.
+    """
+    def link(m: re.Match) -> bytes:
+        digest = hashlib.sha256((STATIC_DIR / m.group(2).decode()).read_bytes())
+        return m.group(0)[:-1] + b"?v=" + digest.hexdigest()[:12].encode() + b'"'
+    return ASSET_LINK_RE.sub(link, page)
 
 
 def clamp_int(v, lo: int, hi: int, default: int) -> int:
