@@ -16,7 +16,12 @@ From the repo root: `make serve`, `make test`, and `make check` (which also runs
 **Run it behind a TLS-terminating proxy if it is public** — there is no TLS
 here, and a password or an upload token would otherwise cross the network in the
 clear. With a proxy in front, pass `--trust-proxy` so rate limits see the real
-client address and session cookies are marked `Secure`.
+client address and session cookies are marked `Secure`. The address is the
+**last** entry of `X-Forwarded-For` -- the one the proxy itself appended -- so
+the proxy must append or set it (nginx: `$proxy_add_x_forwarded_for` or
+`$remote_addr`), and behind a CDN it must first restore the visitor's address
+from the CDN's header (nginx: the `realip` module, trusting only the CDN's
+ranges). Per-address limits count an IPv6 address by its /64.
 
 ## Submitting
 
@@ -291,7 +296,11 @@ can be read: every result is reachable by paging.
 Two ways to authenticate: `Authorization: Bearer <upload token>` for a machine,
 or the `cpb_session` cookie for a browser. A cookie-authenticated write must
 also echo the `cpb_csrf` cookie in an `X-CSRF-Token` header; a token-authenticated
-one needs nothing else. An upload token that names no account is a `401`, never
+one needs nothing else. Over https both cookies are named with the `__Host-`
+prefix (`__Host-cpb_session`, `__Host-cpb_csrf`), so no other host under the
+same parent domain can plant one. The JSON bodies of `/api/auth/*` and `PATCH`
+must be sent as `Content-Type: application/json` (otherwise `415`), which is
+what keeps a form on another site from signing its visitors in. An upload token that names no account is a `401`, never
 a silent anonymous upload.
 
 `/api/metrics` is what the front end builds its columns from, so adding a metric

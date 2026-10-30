@@ -180,7 +180,11 @@ async function api(path, opts) {
   // Anything that changes something carries the CSRF token. Reads do not need
   // it, and neither does a request with no session behind it.
   if (o.method && o.method !== "GET") {
-    const csrf = cookie(CSRF_COOKIE);
+    // Over https the hub names it with the __Host- prefix, which only this
+    // host can set; the bare name is a plain-http hub's. The hub compares the
+    // header only with the cookie of the name it uses, so a bare one planted
+    // beside a prefixed one gains nothing.
+    const csrf = cookie(`__Host-${CSRF_COOKIE}`) || cookie(CSRF_COOKIE);
     if (csrf) o.headers = { ...(o.headers || {}), "X-CSRF-Token": csrf };
   }
   const r = await fetch(path, o);

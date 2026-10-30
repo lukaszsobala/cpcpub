@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import math
 import mimetypes
@@ -93,6 +94,11 @@ UPLOAD_GAP = timedelta(hours=3)
 VARIANT_TAG_RE = re.compile(r"(?:^| )\((?:scalar|vector)-(?:fma|nofma)\)$")
 MAX_VALUE = 1e12            # nothing this benchmark reports comes near this
 ACCOUNT_RATE_FACTOR = 4     # how much more room a signed-in submitter gets
+SQLITE_MAX_INT = (1 << 63) - 1   # the largest integer a column can hold
+HANDLER_TIMEOUT = 30.0      # seconds a connection may sit silent, so a client
+                            # that opens sockets and sends nothing cannot hold
+                            # a thread each for ever
+MAX_KEYS = 100_000          # addresses a rate limiter remembers at most
 
 # Accounts -------------------------------------------------------------------
 #
@@ -138,6 +144,10 @@ CSRF_HEADER = "X-CSRF-Token"
 # because OpenSSL's default is below what n=2^14 asks for on some builds.
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 1 << 14, 8, 1
 SCRYPT_MAXMEM = 64 << 20
+# How many scrypt computations run at once. Each takes 16 MiB, and every
+# request is a thread of its own, so without a bound a burst of sign-ins is a
+# burst of memory. The rest wait their turn.
+SCRYPT_SLOTS = threading.BoundedSemaphore(4)
 
 # The metric table is the single source of truth for the API and the UI.
 #   kind  rate  -> per-clock normalisation divides by GHz
@@ -406,6 +416,11 @@ def split_documents(text: str) -> list[tuple[int, str, object]]:
                 while True:
                     obj, end = one(pos)
                     out.append((part, text[pos:end], obj))
+                    # Inside the array as well as after it: one array of
+                    # millions of tiny values would otherwise all be held
+                    # before the count was looked at.
+                    if len(out) > MAX_BATCH:
+                        raise Invalid(f"a batch holds at most {MAX_BATCH} results")
                     pos = _skip_ws(text, end)
                     if text.startswith(",", pos):
                         pos = _skip_ws(text, pos + 1)
@@ -748,6 +763,12 @@ def validate(payload: object) -> tuple[dict, list[dict]]:
         records += [("thread", t) for t in threads]
         if payload.get("total") is not None:
             records.append(("total", payload["total"]))
+    # `--seed` takes any unsigned 64-bit number, and a column holds a signed
+    # one. A seed past that is kept only in the raw document; nothing ranks or
+    # shows it, and refusing the upload for it would refuse an honest run.
+    if run["seed"] is not None and run["seed"] > SQLITE_MAX_INT:
+        run["seed"] = None
+
     if not records:
         raise Invalid(f"a {mode} run must carry the matching result array "
                       "('cores' and/or 'threads')")
@@ -817,10 +838,23 @@ def check_password(v) -> str:
     return v
 
 
+def same_secret(given: str, held: str) -> bool:
+    """Whether two secrets match, in constant time.
+
+    As bytes: compare_digest refuses a str holding anything but ASCII with a
+    TypeError, and what a client sends can hold anything.
+    """
+    return secrets.compare_digest(given.encode("utf-8", "surrogatepass"),
+                                  held.encode("utf-8", "surrogatepass"))
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=SCRYPT_N,
-                        r=SCRYPT_R, p=SCRYPT_P, maxmem=SCRYPT_MAXMEM, dklen=32)
+    with SCRYPT_SLOTS:
+        # surrogatepass: JSON can spell a lone surrogate, and a password
+        # holding one must hash, not fail.
+        dk = hashlib.scrypt(password.encode("utf-8", "surrogatepass"), salt=salt, n=SCRYPT_N,
+                            r=SCRYPT_R, p=SCRYPT_P, maxmem=SCRYPT_MAXMEM, dklen=32)
     return "$".join(["scrypt", str(SCRYPT_N), str(SCRYPT_R), str(SCRYPT_P),
                      salt.hex(), dk.hex()])
 
@@ -832,9 +866,11 @@ def password_matches(password: str, stored: str) -> bool:
         if algo != "scrypt":
             return False
         want = bytes.fromhex(want_hex)
-        got = hashlib.scrypt(password.encode("utf-8"), salt=bytes.fromhex(salt_hex),
-                             n=int(n), r=int(r), p=int(p),
-                             maxmem=SCRYPT_MAXMEM, dklen=len(want))
+        with SCRYPT_SLOTS:
+            got = hashlib.scrypt(password.encode("utf-8", "surrogatepass"),
+                                 salt=bytes.fromhex(salt_hex),
+                                 n=int(n), r=int(r), p=int(p),
+                                 maxmem=SCRYPT_MAXMEM, dklen=len(want))
     except (ValueError, TypeError):
         return False
     return secrets.compare_digest(got, want)
@@ -1685,8 +1721,7 @@ class Store:
         owns = user_id is not None and row["user_id"] == user_id
         # compare_digest even though a token mismatch is not timed against
         # anything an attacker controls the length of; it costs nothing.
-        holds = token is not None and secrets.compare_digest(
-            row["delete_token"], token)
+        holds = token is not None and same_secret(token, row["delete_token"])
         return owns or holds
 
     def edit_run(self, run_id: int, changes: dict, token: str | None = None,
@@ -2544,15 +2579,44 @@ class RateLimiter:
             if len(q) + cost > limit:
                 return False
             q.extend([now] * cost)
-            if len(self.hits) > 10000:          # bound memory on a busy host
-                for k in [k for k, v in self.hits.items() if not v][:5000]:
-                    del self.hits[k]
+            if len(self.hits) > MAX_KEYS:
+                self.shed()
             return True
+
+    def shed(self) -> None:
+        """Forget the half of the keys heard from least recently.
+
+        A hard bound on memory, for a flood from more addresses than the
+        sweep can keep up with -- an IPv6 network holds billions. Whoever is
+        forgotten starts afresh, which is the price of the bound; the keys
+        that go are the ones furthest from their limit in time.
+        """
+        by_age = sorted(self.hits, key=lambda k: self.hits[k][-1] if self.hits[k] else 0.0)
+        for k in by_age[:len(by_age) // 2]:
+            del self.hits[k]
 
 
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
+
+# What log_message() spells out or blanks in a request line.
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+TOKEN_IN_QUERY_RE = re.compile(r"([?&]token=)[^&\s\"]*")
+
+
+def address_group(addr: str) -> str:
+    """An address as a rate limit counts it: IPv4 whole, IPv6 by its /64."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return addr
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.IPv6Network((ip, 64), strict=False))
+    return str(ip)
+
 
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -2562,13 +2626,15 @@ SECURITY_HEADERS = {
         "frame-ancestors 'none'; object-src 'none'"),
 }
 
-ID_RE = re.compile(r"^/api/runs/(\d+)(/raw|/rank)?$")
+# Eighteen digits is every id a column can hold; a longer one names nothing.
+ID_RE = re.compile(r"^/api/runs/(\d{1,18})(/raw|/rank)?$")
 USER_RE = re.compile(r"^/api/users/([A-Za-z0-9._-]{3,32})$")
 
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "cpcpub-hub/1.0"
     protocol_version = "HTTP/1.1"       # every response below sets Content-Length
+    timeout = HANDLER_TIMEOUT
 
     # -- plumbing ----------------------------------------------------------
     @property
@@ -2602,11 +2668,28 @@ class Handler(BaseHTTPRequestHandler):
         return self.hub.batch_limiter
 
     def client_key(self) -> str:
+        """The client's address: the peer's, or behind a trusted proxy the one
+        it reports.
+
+        The last entry of X-Forwarded-For, not the first. A proxy appends the
+        address it saw to whatever the client already sent, so everything
+        before the last entry is the client's own say -- and a first entry
+        believed would let anyone pick a new address per request and walk past
+        every limit keyed on it.
+        """
         if self.hub.trust_proxy:
             fwd = self.headers.get("X-Forwarded-For", "")
-            if fwd:
-                return fwd.split(",")[0].strip()[:64]
+            if fwd.strip():
+                return fwd.split(",")[-1].strip()[:64]
         return self.client_address[0]
+
+    def limit_key(self) -> str:
+        """Who a per-address limit counts this request against.
+
+        An IPv6 address is counted by its /64: that is what one subscriber is
+        handed, and any host on it can take a fresh address per request.
+        """
+        return address_group(self.client_key())
 
     def send_bytes(self, status: int, body: bytes, ctype: str, extra=None):
         self.send_response(status)
@@ -2636,8 +2719,13 @@ class Handler(BaseHTTPRequestHandler):
     # by keyword would not survive.
     def log_message(self, format, *args):   # one tidy line per request
         # `format % args` is this handler's own contract with http.server and
-        # stays as it is; only the line around it is ours to write.
-        sys.stderr.write(f"{self.client_key()} - {format % args}\n")
+        # stays as it is; only the line around it is ours to write. The
+        # request line is the client's own text: control characters in it are
+        # spelled out rather than sent to a terminal, and a delete token in a
+        # query string is a credential, not something to keep in a log.
+        line = TOKEN_IN_QUERY_RE.sub(r"\1[redacted]",
+                                     f"{self.client_key()} - {format % args}")
+        sys.stderr.write(CONTROL_RE.sub(lambda m: f"\\x{ord(m.group()):02x}", line) + "\n")
 
     # -- who is asking -----------------------------------------------------
     #
@@ -2676,8 +2764,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise Denied("unknown upload token; the account page has "
                                  "the current one", HTTPStatus.UNAUTHORIZED)
                 self._who = (user, "token")
-            elif SESSION_COOKIE in self.cookies():
-                user = self.store.user_by_session(self.cookies()[SESSION_COOKIE])
+            elif self.cookie_name(SESSION_COOKIE) in self.cookies():
+                user = self.store.user_by_session(
+                    self.cookies()[self.cookie_name(SESSION_COOKIE)])
                 if user:
                     self._who = (user, "cookie")
         return self._who
@@ -2692,8 +2781,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def check_csrf(self) -> None:
         sent = self.headers.get(CSRF_HEADER, "")
-        held = self.cookies().get(CSRF_COOKIE, "")
-        if not sent or not held or not secrets.compare_digest(sent, held):
+        held = self.cookies().get(self.cookie_name(CSRF_COOKIE), "")
+        if not sent or not held or not same_secret(sent, held):
             raise Denied("stale page: reload and try again")
 
     def is_secure(self) -> bool:
@@ -2707,8 +2796,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.headers.get("X-Forwarded-Proto", "").lower() == "https"
         return False
 
+    def cookie_name(self, name: str) -> str:
+        """A cookie's name as this request carries it.
+
+        `__Host-` over TLS: a browser takes such a cookie only from this very
+        host, never from a sibling that sets one for the parent domain. That
+        matters on a host under a shared domain nobody listed as public, where
+        any other name under it could otherwise plant a session or a CSRF
+        token here. Plain http cannot have the prefix, so it keeps the bare
+        name.
+        """
+        return "__Host-" + name if self.is_secure() else name
+
     def set_cookie(self, name: str, value: str, max_age: int, *,
                    http_only: bool = True) -> None:
+        name = self.cookie_name(name)
         parts = [f"{name}={value}", "Path=/", f"Max-Age={max_age}", "SameSite=Lax"]
         if http_only:
             parts.append("HttpOnly")
@@ -2725,7 +2827,7 @@ class Handler(BaseHTTPRequestHandler):
         return csrf
 
     def end_session(self) -> None:
-        token = self.cookies().get(SESSION_COOKIE)
+        token = self.cookies().get(self.cookie_name(SESSION_COOKIE))
         if token:
             self.store.end_session(token)
         self.set_cookie(SESSION_COOKIE, "", 0)
@@ -2738,6 +2840,14 @@ class Handler(BaseHTTPRequestHandler):
             raise Invalid("bad Content-Length")
         if length <= 0:
             raise Invalid("empty body")
+        # A form on any other site can POST text/plain that parses as JSON,
+        # and would sign its visitor in or up to an account of the form's
+        # choosing. application/json is a type no page can send to another
+        # origin without the browser asking first, and nothing here says yes.
+        ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            raise HttpError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                            "send the body as Content-Type: application/json")
         if length > cap:
             self.drain(length)
             self.body_read = True
@@ -2993,7 +3103,7 @@ class Handler(BaseHTTPRequestHandler):
             # Limited on its own key, and loosely: what the limit is for is a
             # script filling the challenge store, and for that a generous
             # ceiling is still a ceiling.
-            if not self.auth_limiter.allow("chal:" + self.client_key(),
+            if not self.auth_limiter.allow("chal:" + self.limit_key(),
                                            self.auth_limiter.limit * 5):
                 raise Denied("too many requests from this address; try later",
                              HTTPStatus.TOO_MANY_REQUESTS)
@@ -3010,7 +3120,7 @@ class Handler(BaseHTTPRequestHandler):
             # the session, but a browser may drop it alone) can do nothing but
             # read. Reissuing here costs one header and keeps a returning tab
             # working without a sign-in it does not need.
-            if how == "cookie" and CSRF_COOKIE not in self.cookies():
+            if how == "cookie" and self.cookie_name(CSRF_COOKIE) not in self.cookies():
                 csrf = secrets.token_urlsafe(24)
                 self.set_cookie(CSRF_COOKIE, csrf, SESSION_DAYS * 86400,
                                 http_only=False)
@@ -3052,7 +3162,7 @@ class Handler(BaseHTTPRequestHandler):
 
         Per name would let anyone lock an account out by guessing at it.
         """
-        if not self.auth_limiter.allow("auth:" + self.client_key()):
+        if not self.auth_limiter.allow("auth:" + self.limit_key()):
             raise Denied("too many attempts from this address; try later",
                          HTTPStatus.TOO_MANY_REQUESTS)
 
@@ -3074,7 +3184,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.hub.signup_token:
             given = body.get("invite")
-            if not isinstance(given, str) or not secrets.compare_digest(
+            if not isinstance(given, str) or not same_secret(
                     given, self.hub.signup_token):
                 raise Denied("this hub needs an invite code to register")
 
@@ -3104,7 +3214,7 @@ class Handler(BaseHTTPRequestHandler):
             if not pow_solved(challenge, nonce, bits):
                 raise Denied("the challenge was not solved")
 
-        if not self.register_limiter.allow("reg:" + self.client_key()):
+        if not self.register_limiter.allow("reg:" + self.limit_key()):
             raise Denied("too many accounts from this address; try later",
                          HTTPStatus.TOO_MANY_REQUESTS)
 
@@ -3214,6 +3324,8 @@ class Handler(BaseHTTPRequestHandler):
                 run = int(run)
             except ValueError:
                 raise Invalid("run must be an integer")
+            if not 0 <= run <= SQLITE_MAX_INT:
+                raise Invalid("no such run")
         sort = one("sort", "score")
         if sort not in METRIC_KEYS and sort != "mhz":
             raise Invalid(f"unknown sort metric {sort!r}")
@@ -3229,9 +3341,11 @@ class Handler(BaseHTTPRequestHandler):
         ids = None
         if raw_ids:
             try:
-                ids = [int(x) for x in raw_ids.split(",") if x][:64]
+                ids = [int(x) for x in raw_ids.split(",")[:64] if x]
             except ValueError:
                 raise Invalid("ids must be a comma-separated list of integers")
+            if not all(0 <= i <= SQLITE_MAX_INT for i in ids):
+                raise Invalid("ids must be record ids")
         # One value left. `1`, `ci` and `attested` are older spellings from
         # when this hub also checked GitHub signatures; they are kept working
         # as the release filter rather than turned into errors, so a saved link
@@ -3364,7 +3478,7 @@ class Handler(BaseHTTPRequestHandler):
                                          self.limiter.limit * ACCOUNT_RATE_FACTOR)
             whose = "from this account"
         else:
-            allowed = self.limiter.allow(self.client_key())
+            allowed = self.limiter.allow(self.limit_key())
             whose = "from this address"
         if not allowed:
             return self.fail(HTTPStatus.TOO_MANY_REQUESTS,
@@ -3419,13 +3533,14 @@ class Handler(BaseHTTPRequestHandler):
             self.body_read = True
             return self.fail(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                              f"body larger than {MAX_BATCH_BODY} bytes")
+        # Before the body is read, unlike a single upload: a batch is an
+        # account's, and sixteen megabytes is too much to take in for anyone
+        # who is not one. A refusal drains what it can (see route()).
+        user = self.require_account()
         self.body_read = True
         body = self.rfile.read(length)
         if len(body) != length:
             raise Invalid("truncated body")
-        # After the body is consumed, as for a single upload. A batch is an
-        # account's: its allowance is the account's to lose.
-        user = self.require_account()
         try:
             text = body.decode("utf-8")
         except UnicodeDecodeError:
@@ -3511,7 +3626,9 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", ""):
             path = "/index.html"
         target = (STATIC_DIR / path.lstrip("/")).resolve()
-        if not str(target).startswith(str(STATIC_DIR)) or not target.is_file():
+        # is_relative_to, not a string prefix: "static" is a prefix of
+        # "static-old" too.
+        if not target.is_relative_to(STATIC_DIR) or not target.is_file():
             return self.fail(HTTPStatus.NOT_FOUND, "not found")
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript",

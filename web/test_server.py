@@ -2890,5 +2890,134 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(rows[0]["int_thr"], 20000.0)
 
 
+class HardeningTest(unittest.TestCase):
+    """What a hostile client might try, behind a proxy as the public hub is."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.server = srv.build_server(str(Path(cls.tmp.name) / "h.sqlite3"),
+                                      "127.0.0.1", 0, rate_limit=0, auth_limit=2,
+                                      register_pow=0, register_limit=0,
+                                      trust_proxy=True)
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.tmp.cleanup()
+
+    def send(self, path, method="GET", body=None, headers=None,
+             ctype="application/json"):
+        """(status, reply, headers), with nothing added that was not asked for."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        data = body if body is None or isinstance(body, bytes) \
+            else json.dumps(body).encode()
+        h = dict(headers or {})
+        if data is not None and ctype:
+            h["Content-Type"] = ctype
+        conn.request(method, path, body=data, headers=h)
+        resp = conn.getresponse()
+        out = resp.read()
+        conn.close()
+        try:
+            reply = json.loads(out)
+        except ValueError:
+            reply = out
+        return resp.status, reply, resp.headers
+
+    def login(self, via):
+        return self.send("/api/auth/login", "POST",
+                         {"name": "nobody", "password": "not the password"},
+                         {"X-Forwarded-For": via})[0]
+
+    def test_a_forged_forwarded_for_does_not_reset_the_limit(self):
+        # The proxy appends the address it saw; what comes before is the
+        # client's to write, and must not be a fresh address per request.
+        codes = [self.login(f"10.9.9.{i}, 198.51.100.7") for i in range(3)]
+        self.assertEqual(codes, [401, 401, 429])
+
+    def test_one_ipv6_network_is_one_address(self):
+        codes = [self.login(f"2001:db8:7:7::{i}") for i in range(1, 4)]
+        self.assertEqual(codes, [401, 401, 429])
+        self.assertEqual(self.login("2001:db8:7:8::1"), 401)
+
+    def test_address_groups(self):
+        self.assertEqual(srv.address_group("2001:db8::1"), "2001:db8::/64")
+        self.assertEqual(srv.address_group("::ffff:192.0.2.1"), "192.0.2.1")
+        self.assertEqual(srv.address_group("192.0.2.1"), "192.0.2.1")
+        self.assertEqual(srv.address_group("not an address"), "not an address")
+
+    def test_a_form_on_another_site_cannot_sign_anyone_up(self):
+        # text/plain is what an HTML form can send anywhere without asking.
+        body = {"name": "formfilled", "password": "a good long password"}
+        status, _, _ = self.send("/api/auth/register", "POST", body,
+                                 {"X-Forwarded-For": "203.0.113.50"},
+                                 ctype="text/plain")
+        self.assertEqual(status, 415)
+        self.assertIsNone(self.server.store.user_by_name("formfilled"))
+
+    def test_https_cookies_are_host_only(self):
+        via = {"X-Forwarded-For": "203.0.113.60", "X-Forwarded-Proto": "https"}
+        status, _, headers = self.send(
+            "/api/auth/register", "POST",
+            {"name": "hostonly", "password": "a good long password"}, via)
+        self.assertEqual(status, 201)
+        cookies = headers.get_all("Set-Cookie")
+        self.assertTrue(all(c.startswith("__Host-") and "Secure" in c
+                            for c in cookies), cookies)
+        session = next(c for c in cookies
+                       if c.startswith(f"__Host-{srv.SESSION_COOKIE}="))
+        value = session.split(";")[0].split("=", 1)[1]
+        # The same session under the bare name -- which a sibling host could
+        # have set for the parent domain -- is not believed over https.
+        _, me, _ = self.send("/api/auth/me", headers=dict(
+            via, Cookie=f"{srv.SESSION_COOKIE}={value}"))
+        self.assertIsNone(me["user"])
+        _, me, _ = self.send("/api/auth/me", headers=dict(
+            via, Cookie=f"__Host-{srv.SESSION_COOKIE}={value}"))
+        self.assertEqual(me["user"]["name"], "hostonly")
+
+    def test_a_token_that_is_not_ascii_is_refused_not_crashed_on(self):
+        status, out, _ = self.send("/api/runs", "POST", document())
+        self.assertEqual(status, 201)
+        for method in ("DELETE", "PATCH"):
+            status, _, _ = self.send(
+                f"/api/runs/{out['id']}", method,
+                {"label": "x"} if method == "PATCH" else None,
+                {"X-Delete-Token": "été".encode().decode("latin-1")})
+            self.assertEqual(status, 403, method)
+
+    def test_a_seed_past_a_signed_integer_still_uploads(self):
+        doc = document()
+        doc["config"]["seed"] = (1 << 64) - 1
+        status, out, _ = self.send("/api/runs", "POST", doc)
+        self.assertEqual(status, 201, out)
+        _, run, _ = self.send(f"/api/runs/{out['id']}")
+        self.assertIsNone(run["seed"])
+        _, raw, _ = self.send(f"/api/runs/{out['id']}/raw")
+        self.assertEqual(raw["config"]["seed"], (1 << 64) - 1)
+
+    def test_ids_too_large_for_a_column_are_refused(self):
+        self.assertEqual(self.send("/api/runs/" + "9" * 30)[0], 404)
+        self.assertEqual(self.send("/api/cores?run=" + "9" * 30)[0], 400)
+        self.assertEqual(self.send("/api/cores?ids=" + "9" * 30)[0], 400)
+
+    def test_a_batch_of_one_long_array_stops_at_the_limit(self):
+        text = "[" + ",".join(["{}"] * (srv.MAX_BATCH + 5)) + "]"
+        with self.assertRaises(srv.Invalid) as cm:
+            srv.split_documents(text)
+        self.assertIn("at most", str(cm.exception))
+
+    def test_log_lines_hide_tokens_and_control_characters(self):
+        line = srv.TOKEN_IN_QUERY_RE.sub(
+            r"\1[redacted]", '"DELETE /api/runs/1?token=s3cret&x=1 HTTP/1.1"')
+        self.assertNotIn("s3cret", line)
+        self.assertEqual(srv.CONTROL_RE.sub("?", "a\x1b[31mb"), "a?[31mb")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
