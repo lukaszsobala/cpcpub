@@ -17,6 +17,10 @@ small proof of work as well, which is what keeps a script from taking every
 name on the hub overnight (--register-pow, --register-limit, --signup-token,
 --no-register).
 
+It can also serve the latest release's downloads, for its Download tab:
+--mirror OWNER/REPO keeps a copy of them, fetched from GitHub and checked
+against the release's checksums (see downloads.py).
+
 Nothing here claims an uploaded number was produced by the machine it names:
 an account says the same person uploaded these runs, not that they are true.
 """
@@ -29,6 +33,7 @@ import ipaddress
 import json
 import math
 import mimetypes
+import os
 import re
 import secrets
 import sqlite3
@@ -44,6 +49,8 @@ from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
+
+from downloads import NAME_RE, REPO_RE, TAG_RE, Mirror, layout
 
 HERE = Path(__file__).resolve().parent
 STATIC_DIR = HERE / "static"
@@ -2924,6 +2931,11 @@ class Handler(BaseHTTPRequestHandler):
 
             if path.startswith("/api/"):
                 self.api(method, path, query)
+            elif method == "GET" and path.startswith("/downloads/"):
+                self.download(path)
+            elif method == "GET" and path in ("/download", "/downloads"):
+                # A short address to give out for the Download tab.
+                self.redirect("/#download")
             elif method == "GET":
                 self.static(path)
             else:
@@ -2963,6 +2975,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.stats(),
                 batch={"max_results": MAX_BATCH,
                        "per_hour": self.batch_limiter.limit}))
+        if path == "/api/downloads" and method == "GET":
+            manifest = self.hub.downloads.manifest()
+            return self.send_json(HTTPStatus.OK,
+                                  layout(manifest) if manifest else {"release": None},
+                                  {"Cache-Control": "no-cache"})
         if path == "/api/builds" and method == "GET":
             # Public on purpose: what a hub calls verified is a claim about
             # which binaries it trusts, and a claim nobody can read is not one
@@ -3658,6 +3675,72 @@ class Handler(BaseHTTPRequestHandler):
             "skipped": sum(len(up["runs"]) for up in stored) - count,
             "uploads": stored})
 
+    def redirect(self, location: str, cache: str = "no-cache"):
+        self.send_bytes(HTTPStatus.FOUND, b"", "text/plain; charset=utf-8",
+                        {"Location": location, "Cache-Control": cache})
+
+    def download(self, path: str):
+        """One file of the mirrored release, by /downloads/TAG/NAME.
+
+        Looked up by name in the release's manifest, never by path on disk, so
+        nothing outside it can be named. /downloads/latest/NAME is a redirect
+        to the release being served, for a link that outlives it.
+        """
+        parts = path.split("/")
+        if (len(parts) != 4 or not TAG_RE.fullmatch(parts[2])
+                or not NAME_RE.fullmatch(parts[3])):
+            return self.fail(HTTPStatus.NOT_FOUND, "not found")
+        tag, name = parts[2], parts[3]
+        mirror = self.hub.downloads
+        if tag == "latest":
+            manifest = mirror.manifest()
+            if manifest and mirror.find(manifest["tag"], name):
+                return self.redirect(f"/downloads/{manifest['tag']}/{name}")
+            return self.fail(HTTPStatus.NOT_FOUND, "not in the latest release")
+        found = mirror.find(tag, name)
+        if not found:
+            return self.fail(HTTPStatus.NOT_FOUND,
+                             "not here: this hub serves only its latest release")
+        file_path, entry = found
+        try:
+            f = open(file_path, "rb")
+        except OSError:
+            return self.fail(HTTPStatus.NOT_FOUND, "not found")
+        with f:
+            size = os.fstat(f.fileno()).st_size
+            start, end = 0, size - 1
+            status = HTTPStatus.OK
+            headers = {
+                "Accept-Ranges": "bytes",
+                "Content-Disposition": f'attachment; filename="{name}"',
+                # A day, not forever: a release run again under the same tag
+                # rebuilds its files, and the edge should catch up.
+                "Cache-Control": "public, max-age=86400",
+                "ETag": f'"{entry["sha256"]}"',
+            }
+            wanted = byte_range(self.headers.get("Range"), size)
+            if wanted == "unsatisfiable":
+                headers["Content-Range"] = f"bytes */{size}"
+                return self.send_bytes(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+                                       b"", "text/plain; charset=utf-8", headers)
+            if wanted:
+                start, end = wanted
+                status = HTTPStatus.PARTIAL_CONTENT
+                headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            self.send_response(status)
+            self.send_header("Content-Type", DOWNLOAD_TYPES.get(
+                Path(name).suffix, "application/octet-stream"))
+            self.send_header("Content-Length", str(end - start + 1))
+            for k, v in SECURITY_HEADERS.items():
+                self.send_header(k, v)
+            for k, v in headers.items():
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command != "HEAD" and end >= start:
+                # Straight from the file to the socket: the Windows setup is
+                # fifty megabytes, and the hub is given a quarter of a gigabyte.
+                self.connection.sendfile(f, start, end - start + 1)
+
     def static(self, path: str):
         if path in ("/", ""):
             path = "/index.html"
@@ -3693,6 +3776,33 @@ def versioned_assets(page: bytes) -> bytes:
         digest = hashlib.sha256((STATIC_DIR / m.group(2).decode()).read_bytes())
         return m.group(0)[:-1] + b"?v=" + digest.hexdigest()[:12].encode() + b'"'
     return ASSET_LINK_RE.sub(link, page)
+
+
+# What a download is sent as. Everything else is a plain stream of bytes, which
+# is what it is: the browser saves it, which is all a download page wants.
+DOWNLOAD_TYPES = {".apk": "application/vnd.android.package-archive"}
+RANGE_RE = re.compile(r"bytes=(\d{0,19})-(\d{0,19})")
+
+
+def byte_range(header: str | None, size: int):
+    """(first, last) for a single-range Range header, "unsatisfiable", or None
+    to send the whole file -- which is also the answer to several ranges, or to
+    a header this does not understand, as HTTP allows."""
+    m = RANGE_RE.fullmatch((header or "").strip())
+    if not m or (not m.group(1) and not m.group(2)):
+        return None
+    if not m.group(1):                          # bytes=-N: the last N bytes
+        n = int(m.group(2))
+        if n == 0:
+            return "unsatisfiable"
+        return max(0, size - n), size - 1
+    first = int(m.group(1))
+    last = int(m.group(2)) if m.group(2) else size - 1
+    if m.group(2) and last < first:
+        return None
+    if first >= size:
+        return "unsatisfiable"
+    return first, min(last, size - 1)
 
 
 def clamp_int(v, lo: int, hi: int, default: int) -> int:
@@ -3731,6 +3841,7 @@ class Server(ThreadingHTTPServer):
     register_pow: int = REGISTER_POW_BITS
     signup_token: str | None = None
     trust_proxy: bool = False
+    downloads: Mirror
 
 
 def build_server(db_path: str, host: str, port: int, *, rate_limit: int = 30,
@@ -3739,8 +3850,14 @@ def build_server(db_path: str, host: str, port: int, *, rate_limit: int = 30,
                  register_pow: int = REGISTER_POW_BITS,
                  register_limit: int = 5,
                  signup_token: str | None = None,
-                 batch_limit: int = BATCH_LIMIT) -> Server:
+                 batch_limit: int = BATCH_LIMIT,
+                 downloads: str | Path | None = None,
+                 mirror: str | None = None) -> Server:
     srv = Server((host, port), Handler)
+    # Beside the database unless told otherwise: the one place a hub is sure to
+    # be allowed to write.
+    srv.downloads = Mirror(downloads if downloads is not None
+                           else Path(db_path).resolve().parent / "downloads", mirror)
     srv.store = Store(db_path)
     srv.limiter = RateLimiter(rate_limit, window)
     # Sign-ins are limited separately and much harder: uploading a lot is
@@ -3799,7 +3916,17 @@ def main(argv=None) -> int:
                     help="take the client address from X-Forwarded-For, and "
                          "the scheme from X-Forwarded-Proto so session cookies "
                          "are marked Secure (only behind a proxy that sets them)")
+    ap.add_argument("--downloads", metavar="DIR",
+                    help="where the release downloads are kept and served "
+                         "from (default: downloads/ beside --db)")
+    ap.add_argument("--mirror", metavar="OWNER/REPO",
+                    help="keep --downloads up to date with this GitHub "
+                         "repository's latest release, checking hourly -- "
+                         "e.g. lukaszsobala/cpcpub. Without it the hub serves "
+                         "whatever downloads.py last put there")
     args = ap.parse_args(argv)
+    if args.mirror and not REPO_RE.fullmatch(args.mirror):
+        ap.error(f"--mirror wants OWNER/REPO, not {args.mirror!r}")
 
     srv = build_server(args.db, args.host, args.port,
                        rate_limit=args.rate_limit, trust_proxy=args.trust_proxy,
@@ -3808,9 +3935,12 @@ def main(argv=None) -> int:
                        register_pow=args.register_pow,
                        register_limit=args.register_limit,
                        signup_token=args.signup_token,
-                       batch_limit=args.batch_limit)
+                       batch_limit=args.batch_limit,
+                       downloads=args.downloads, mirror=args.mirror)
     host, port = srv.server_address[:2]
     print(f"cpcpub hub on http://{host}:{port}  (db: {args.db})", file=sys.stderr)
+    if args.mirror:
+        srv.downloads.start(lambda line: print(line, file=sys.stderr))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

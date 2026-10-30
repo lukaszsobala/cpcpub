@@ -23,6 +23,8 @@ bench/.build-flags
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+# The release files a hub serves, which it keeps beside its database.
+/web/downloads/
 
 # What the workflows produce. They run in a CI checkout, but these are the same
 # commands anyone reproducing a release runs by hand in this directory.

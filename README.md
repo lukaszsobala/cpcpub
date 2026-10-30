@@ -6,7 +6,7 @@ It runs a set of tiny kernels for a fixed wall-clock slice each and reports the 
 
 ## Get it
 
-Download a binary from [the latest release][rel] — each is self-contained and needs nothing installed:
+Download a binary from [the hub's download page](https://cpcpub.app/download) or [the latest release][rel] — the same files, each self-contained and needing nothing installed:
 
 | | Linux | macOS | Windows | Android |
 | --- | --- | --- | --- | --- |

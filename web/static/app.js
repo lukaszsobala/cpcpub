@@ -36,6 +36,8 @@ const state = {
   submitter: "",        // board narrowed to one account's uploads, by name
   files: [],            // result documents chosen but not yet uploaded
   release: null,        // the newest release this hub verifies against, if any
+  downloads: null,      // the release this hub serves, from /api/downloads
+  wantDownload: false,  // the page was opened at #download
   held: null,           // how many runs this hub holds at all, from /api/stats
 };
 
@@ -2183,10 +2185,22 @@ function renderVerifiedNote() {
                      "fairly with each other, so use one if you can."));
   box.append(p);
 
-  if (state.release) {
+  if (state.downloads) {
     const line = el("p", "note");
-    line.append(el("span", null, "Published binaries: "));
-    const link = el("a", "linkish", state.release.release);
+    const link = el("a", "linkish", "Download tab");
+    link.href = "#download";
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      showTab("download");
+      window.scrollTo(0, 0);
+    });
+    line.append(el("span", null, "Get a published binary from the "), link,
+                el("span", null, "."));
+    box.append(line);
+  } else if (state.release) {
+    const line = el("p", "note");
+    line.append(el("span", null, "Get a published binary from "));
+    const link = el("a", "linkish", `the ${state.release.release} release`);
     if (state.release.url) {
       link.href = state.release.url;
       link.rel = "noopener noreferrer";
@@ -3378,10 +3392,320 @@ function setupDropzone() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Download
+// ---------------------------------------------------------------------------
+
+// The release this hub serves, grouped as the release's own notes group it:
+// packages by system, standalone binaries by OS and architecture, firmware by
+// chip. A hub that serves none has no Download tab at all.
+async function loadDownloads() {
+  let d;
+  try {
+    d = await api("/api/downloads");
+  } catch {
+    return;
+  }
+  if (!d || !d.release) return;
+  state.downloads = d;
+  $("#tab-download").hidden = false;
+  renderDownloads(d);
+  renderVerifiedNote();
+  if (state.wantDownload) showTab("download");
+}
+
+function fmtSize(n) {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} kB`;
+}
+
+// A small link to one file, its name and size in the tooltip.
+function fileChip(file, label) {
+  const a = el("a", "dl-chip", label);
+  a.href = file.href;
+  a.download = file.name;
+  a.title = `${file.name}, ${fmtSize(file.size)}`;
+  return a;
+}
+
+// A large one, for what this device most likely wants.
+function fileButton(file, title, sub, secondary) {
+  const a = el("a", secondary ? "dl-button secondary" : "dl-button");
+  a.href = file.href;
+  a.download = file.name;
+  a.title = file.name;
+  a.append(el("strong", null, title),
+           el("span", null, [sub, fmtSize(file.size)].filter(Boolean).join(" · ")));
+  return a;
+}
+
+function chipRow(what, chips) {
+  const row = el("div", "dl-row");
+  if (what) row.append(el("span", "what", what));
+  row.append(...chips);
+  return row;
+}
+
+// A shell line with its Copy button, as the Submit tab draws them.
+function commandBlock(id, text) {
+  const box = el("div", "cmd");
+  const pre = el("pre", null, text);
+  pre.id = id;
+  const copy = el("button", "copy", "Copy");
+  copy.type = "button";
+  copy.dataset.copy = id;
+  copy.addEventListener("click", () => copyButton(copy));
+  box.append(pre, copy);
+  return box;
+}
+
+// What this browser runs on, as far as it says. Only a guess, which is why the
+// whole list is always there under it.
+function guessDevice() {
+  const ua = navigator.userAgent || "";
+  const plat = (navigator.userAgentData && navigator.userAgentData.platform) ||
+               navigator.platform || "";
+  if (/Android/i.test(ua)) return { os: "android" };
+  // iPadOS asks for the desktop site as a Mac; its touch screen gives it away.
+  if (/iPhone|iPad|iPod/i.test(ua) ||
+      (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1)) return { os: "ios" };
+  if (/Windows/i.test(ua) || /^Win/i.test(plat)) return { os: "windows" };
+  if (/Macintosh|Mac OS X/i.test(ua) || /^Mac/i.test(plat)) return { os: "macos" };
+  if (/Linux|X11|CrOS/i.test(ua) || /Linux/i.test(plat)) {
+    const s = `${ua} ${plat}`;
+    const arch = /aarch64|arm64/i.test(s) ? "Arm64"
+      : /armv[67]|armv8l|armhf/i.test(s) ? "32-bit Arm"
+      : /riscv64/i.test(s) ? "RISC-V"
+      : /loongarch/i.test(s) ? "LoongArch"
+      : /ppc64/i.test(s) ? "ppc64le"
+      : /s390/i.test(s) ? "s390x"
+      : /x86_64|amd64|x64/i.test(s) ? "x86-64" : null;
+    return { os: "linux", arch };
+  }
+  return { os: null };
+}
+
+// The standalone binary each Linux architecture runs anywhere: the plain one,
+// never a newer-ISA build that would not start on an older machine.
+const LINUX_PLAIN = {
+  "x86-64": "x86_64", "Arm64": "aarch64", "32-bit Arm": "armv7", "RISC-V": "riscv64",
+  "LoongArch": "loongarch64", "ppc64le": "ppc64le", "s390x": "s390x",
+};
+
+function findBinary(d, os, variant) {
+  for (const row of d.binaries.rows) {
+    for (const f of row.cells[os] || []) if (f.variant === variant) return f;
+  }
+  return null;
+}
+
+function runCommand(file) {
+  return `curl -fLo cpcpub ${location.origin}${file.href}\n` +
+         "chmod +x cpcpub\n./cpcpub --full";
+}
+
+function renderDownloadHero(d) {
+  const pkg = Object.fromEntries(d.packages.map((p) => [p.id, p]));
+  const dev = guessDevice();
+  const hero = el("div", "dl-hero");
+  const buttons = el("div", "dl-buttons");
+  const say = (title) => hero.append(el("h3", null, title));
+
+  if (dev.os === "windows" && pkg.windows && pkg.windows.file) {
+    say("For Windows");
+    buttons.append(fileButton(pkg.windows.file, "Windows setup",
+                              "x64 and Arm64, with the window"));
+    hero.append(buttons);
+    const bare = ["x86_64", "arm64"].map((v) => findBinary(d, "windows", v))
+      .filter(Boolean).map((f) => fileChip(f, f.variant));
+    if (bare.length) hero.append(chipRow("Or just the .exe:", bare));
+    hero.append(el("p", "note", "The setup puts the benchmark on PATH and the " +
+      "window in the Start menu. It is unsigned, so SmartScreen may ask " +
+      "before running it the first time."));
+  } else if (dev.os === "android" && pkg.android && pkg.android.file) {
+    say("For Android");
+    buttons.append(fileButton(pkg.android.file, "Android app", "64- and 32-bit Arm"));
+    hero.append(buttons);
+    if (pkg.termux && pkg.termux.bench.length) {
+      hero.append(chipRow("Or for Termux:",
+                          pkg.termux.bench.map((f) => fileChip(f, f.arch))));
+    }
+  } else if (dev.os === "macos") {
+    const arm = findBinary(d, "macos", "arm64");
+    const intel = findBinary(d, "macos", "x86_64");
+    if (!arm && !intel) return null;
+    say("For macOS");
+    if (arm) buttons.append(fileButton(arm, "Apple silicon", "M1 and later"));
+    if (intel) buttons.append(fileButton(intel, "Intel Mac", "", !!arm));
+    hero.append(buttons);
+    hero.append(el("p", "note", "Run it from Terminal. A file saved by the " +
+      "browser is quarantined and needs xattr -d com.apple.quarantine " +
+      "FILE before it will start. curl does not set that, so this is the quickest way:"));
+    hero.append(commandBlock("dl-cmd", runCommand(arm || intel)));
+  } else if (dev.os === "linux") {
+    const arch = dev.arch && LINUX_PLAIN[dev.arch] ? dev.arch : "x86-64";
+    say(`For Linux on ${arch}`);
+    for (const [id, label] of [["debian", "Debian, Ubuntu"],
+                               ["fedora", "Fedora, openSUSE"],
+                               ["arch", "Arch Linux"]]) {
+      const f = pkg[id] && pkg[id].bench.find((b) => b.arch === arch);
+      if (f) buttons.append(fileButton(f, label, f.name.match(/\.(deb|rpm|pkg\.tar\.zst)$/)[0]));
+    }
+    if (buttons.childElementCount) {
+      hero.append(buttons);
+      hero.append(el("p", "note", "The packages need glibc 2.38 or newer, which " +
+        "Debian 12, Ubuntu 22.04 and RHEL 9 do not have. The window is a " +
+        "package of its own, listed below."));
+    }
+    const plain = findBinary(d, "linux", LINUX_PLAIN[arch]);
+    if (plain) {
+      hero.append(el("p", "note", "Or run it without installing anything:"));
+      hero.append(commandBlock("dl-cmd", runCommand(plain)));
+    }
+    if (!dev.arch) {
+      hero.append(el("p", "note", "Your browser does not say which processor " +
+        "this is; every architecture is listed below."));
+    }
+  } else {
+    hero.append(el("p", "note", "There is no build of cpcpub for this device. " +
+      "Everything there is is listed below, for the machine you mean to measure."));
+  }
+  return hero;
+}
+
+function renderDownloads(d) {
+  const box = $("#download-body");
+  box.replaceChildren();
+
+  const head = el("div", "dl-head");
+  head.append(el("h2", null, `cpcpub ${d.version}`));
+  const sub = el("p", "note");
+  if (d.published) {
+    const when = new Date(d.published);
+    if (!Number.isNaN(when.getTime())) {
+      sub.append(el("span", null, `Released ${when.toLocaleDateString(undefined,
+        { year: "numeric", month: "long", day: "numeric" })}. `));
+    }
+  }
+  sub.append(el("span", null, "The release's own files, served from this hub " +
+    "and checked against its checksums. "));
+  if (d.url) {
+    const notes = el("a", "linkish", "Release notes and older releases");
+    notes.href = d.url;
+    notes.rel = "noopener noreferrer";
+    notes.target = "_blank";
+    sub.append(notes, el("span", null, " are on GitHub."));
+  }
+  head.append(sub);
+  box.append(head);
+
+  const hero = renderDownloadHero(d);
+  if (hero) box.append(hero);
+
+  // Packages.
+  if (d.packages.length) {
+    box.append(el("h2", null, "Install a package"));
+    box.append(el("p", "note", "Each carries the same binaries as the standalone " +
+      "downloads below, byte for byte, so its results count as a published build's."));
+    const grid = el("div", "dl-grid");
+    const blurb = {
+      debian: "Needs glibc 2.38: Debian 13, Ubuntu 24.04 or newer.",
+      fedora: "Needs glibc 2.38: Fedora 39, openSUSE Tumbleweed or newer.",
+      arch: "",
+      windows: "One setup for x64 and Arm64: the benchmark on PATH, the window " +
+               "in the Start menu.",
+      android: "One app for 64- and 32-bit Arm.",
+      termux: "The benchmark for Termux's command line.",
+    };
+    for (const p of d.packages) {
+      const card = el("div", "dl-card");
+      card.append(el("h3", null, p.name));
+      if (p.bench.length) {
+        card.append(chipRow("Benchmark", p.bench.map((f) => fileChip(f, f.arch))));
+      }
+      if (p.gui) card.append(chipRow("Window", [fileChip(p.gui, "any architecture")]));
+      if (p.file) {
+        card.append(chipRow(null, [fileChip(p.file,
+          p.id === "windows" ? "Setup" : p.id === "android" ? "App (.apk)" : p.file.name)]));
+      }
+      if (blurb[p.id]) card.append(el("p", "note", blurb[p.id]));
+      grid.append(card);
+    }
+    box.append(grid);
+  }
+
+  // Standalone binaries.
+  if (d.binaries.rows.length) {
+    box.append(el("h2", null, "Or a standalone binary"));
+    box.append(el("p", "note", "Nothing to install: one file that runs as it is. " +
+      "The -v3, -rva23 and -neon builds need a newer processor and will not " +
+      "start on an older one; the plain build runs everywhere. armv6 is for the " +
+      "first Raspberry Pi and the Pi Zero."));
+    const table = el("table", "dl-table");
+    const hr = el("tr");
+    hr.append(el("th"));
+    for (const o of d.binaries.oses) hr.append(el("th", null, o.name));
+    const thead = el("thead");
+    thead.append(hr);
+    const tbody = el("tbody");
+    for (const row of d.binaries.rows) {
+      const tr = el("tr");
+      tr.append(el("th", null, row.arch));
+      for (const o of d.binaries.oses) {
+        const td = el("td");
+        const files = row.cells[o.id] || [];
+        if (files.length) td.append(chipRow(null, files.map((f) => fileChip(f, f.variant))));
+        tr.append(td);
+      }
+      tbody.append(tr);
+    }
+    table.append(thead, tbody);
+    const scroller = el("div", "scroller");
+    scroller.append(table);
+    box.append(scroller);
+  }
+
+  // Firmware.
+  if (d.firmware.length) {
+    box.append(el("h2", null, "Microcontroller firmware"));
+    const grid = el("div", "dl-grid");
+    for (const fam of d.firmware) {
+      const card = el("div", "dl-card");
+      card.append(el("h3", null, fam.family));
+      card.append(chipRow(null, fam.chips.map((f) => fileChip(f, f.chip))));
+      card.append(el("p", "note", fam.family === "Raspberry Pi"
+        ? "Hold BOOTSEL while plugging the board in, and copy the .uf2 to the drive that appears."
+        : "The whole flash image, written at 0x0: esptool write-flash 0x0 FILE, " +
+          "or Espressif's browser flasher."));
+      grid.append(card);
+    }
+    box.append(grid);
+    if (d.url) {
+      const more = el("p", "note");
+      const link = el("a", "linkish", "mcu/README.md");
+      link.href = d.url.replace("/releases/tag/", "/blob/") + "/mcu/README.md";
+      link.rel = "noopener noreferrer";
+      link.target = "_blank";
+      more.append(el("span", null, "How to run a board and save its result: "),
+                  link, el("span", null, "."));
+      box.append(more);
+    }
+  }
+
+  // Checksums.
+  const sums = el("details", "more dl-sums");
+  sums.append(el("summary", null, "Check a download"));
+  sums.append(el("p", "note", "Save this as SHA256SUMS beside what you downloaded, " +
+    "then run sha256sum -c --ignore-missing SHA256SUMS (shasum -a 256 -c on macOS)."));
+  sums.append(commandBlock("dl-sums",
+    d.files.map((f) => `${f.sha256}  ${f.name}`).join("\n")));
+  box.append(sums);
+}
+
 async function boot() {
   // Read before anything rewrites the hash: restoring a comparison does, and
   // would drop the run from a link carrying both.
   const deepRun = location.hash.match(/run=(\d+)/);
+  state.wantDownload = location.hash === "#download";
   setupTabs();
   setupDropzone();
   setupPageSizes();
@@ -3397,6 +3721,7 @@ async function boot() {
   fillSystems(null);
   fillCpus(null);
   renderVerifiedNote();
+  loadDownloads();
 
   const meta = await api("/api/metrics");
   state.metrics = meta.metrics;
@@ -3480,6 +3805,7 @@ async function boot() {
   // A #run=N typed or pasted into the address bar, or reached by Back, opens
   // that run; its absence closes the one open.
   window.addEventListener("hashchange", () => {
+    if (location.hash === "#download" && state.downloads) showTab("download");
     const want = location.hash.match(/run=(\d+)/);
     if (want && Number(want[1]) !== state.openRun) {
       showRun(Number(want[1])).catch((e) => alert(e.message));

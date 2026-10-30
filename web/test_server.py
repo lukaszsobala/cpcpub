@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import downloads
 import server as srv
 
 # A fixture has to be a document the benchmark could have written. The hub
@@ -3042,6 +3043,294 @@ class HardeningTest(unittest.TestCase):
             r"\1[redacted]", '"DELETE /api/runs/1?token=s3cret&x=1 HTTP/1.1"')
         self.assertNotIn("s3cret", line)
         self.assertEqual(srv.CONTROL_RE.sub("?", "a\x1b[31mb"), "a?[31mb")
+
+
+# The v0.5.0 release's assets, as GitHub lists them.
+RELEASE_050 = """
+SHA256SUMS verified-builds.json cpcpub-0.5.0-android.aab cpcpub-0.5.0-android.apk
+cpcpub-0.5.0-windows-setup.exe cpcpub-gui_0.5.0-1_all.deb cpcpub-gui-0.5.0-1.noarch.rpm
+cpcpub-gui-0.5.0-1-any.pkg.tar.zst cpcpub_0.5.0-1_amd64.deb cpcpub_0.5.0-1_arm64.deb
+cpcpub_0.5.0-1_armhf.deb cpcpub_0.5.0-1_riscv64.deb cpcpub_0.5.0-1_loong64.deb
+cpcpub_0.5.0-1_ppc64el.deb cpcpub_0.5.0-1_s390x.deb cpcpub-0.5.0-1.x86_64.rpm
+cpcpub-0.5.0-1.aarch64.rpm cpcpub-0.5.0-1.armv7hl.rpm cpcpub-0.5.0-1.riscv64.rpm
+cpcpub-0.5.0-1.loongarch64.rpm cpcpub-0.5.0-1.ppc64le.rpm cpcpub-0.5.0-1.s390x.rpm
+cpcpub-0.5.0-1-x86_64.pkg.tar.zst cpcpub-0.5.0-1-aarch64.pkg.tar.zst
+cpcpub-0.5.0-1-armv7h.pkg.tar.zst cpcpub-0.5.0-1-riscv64.pkg.tar.zst
+cpcpub-0.5.0-1-loong64.pkg.tar.zst cpcpub-0.5.0-1-ppc64le.pkg.tar.zst
+cpcpub-termux_0.5.0-1_aarch64.deb cpcpub-termux_0.5.0-1_arm.deb
+cpcpub-linux-x86_64 cpcpub-linux-x86_64-v3 cpcpub-linux-aarch64 cpcpub-linux-armv7
+cpcpub-linux-armv7-neon cpcpub-linux-armv6 cpcpub-linux-riscv64 cpcpub-linux-riscv64-rva23
+cpcpub-linux-loongarch64 cpcpub-linux-ppc64le cpcpub-linux-s390x cpcpub-macos-x86_64
+cpcpub-macos-arm64 cpcpub-windows-x86_64.exe cpcpub-windows-x86_64-v3.exe
+cpcpub-windows-arm64.exe cpcpub-android-arm64 cpcpub-android-armv7 cpcpub-rp2040.uf2
+cpcpub-rp2350-arm.uf2 cpcpub-rp2350-riscv.uf2 cpcpub-esp32.bin cpcpub-esp32s2.bin
+cpcpub-esp32s3.bin cpcpub-esp32c3.bin cpcpub-esp32c6.bin cpcpub-esp32p4.bin
+""".split()
+
+
+class FakeGitHub:
+    """Just enough of GitHub for the mirror: the latest release, its files."""
+
+    def __init__(self):
+        self.files: dict[str, bytes] = {}
+        self.release: dict = {}
+        self.asked_etag: list[str | None] = []
+        fake = self
+
+        class Handler(srv.BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+            def do_GET(self):
+                if self.path == "/latest":
+                    fake.asked_etag.append(self.headers.get("If-None-Match"))
+                    body = json.dumps(fake.release).encode()
+                    etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+                    if self.headers.get("If-None-Match") == etag:
+                        self.send_response(304)
+                        self.end_headers()
+                        return
+                    self.send_response(200)
+                    self.send_header("ETag", etag)
+                else:
+                    body = fake.files.get(self.path.rsplit("/", 1)[-1])
+                    if body is None:
+                        self.send_response(404)
+                        self.end_headers()
+                        return
+                    self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.httpd = srv.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.api_url = base + "/latest"
+        self.asset_url = base + "/{repo}/{tag}/{name}"
+
+    def publish(self, tag, names, *, sums_for=None, missing=()):
+        """A release `tag` holding `names`, each file's bytes its own name."""
+        version = tag.removeprefix("v")
+        self.files = {n.replace("VER", version): f"{tag} {n}".encode() * 50
+                      for n in names}
+        listed = sums_for if sums_for is not None else self.files
+        self.files["SHA256SUMS"] = "".join(
+            f"{hashlib.sha256(self.files[n]).hexdigest()}  {n}\n"
+            for n in listed).encode()
+        self.release = {
+            "tag_name": tag, "html_url": f"https://github.com/o/r/releases/tag/{tag}",
+            "published_at": "2026-10-30T14:29:58Z",
+            "assets": [{"name": n, "size": len(b), "state": "uploaded"}
+                       for n, b in self.files.items() if n not in missing],
+        }
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+SOME = ["cpcpub_VER-1_amd64.deb", "cpcpub-linux-x86_64", "cpcpub-VER-android.apk",
+        "cpcpub-VER-android.aab", "verified-builds.json", "cpcpub-rp2040.uf2"]
+
+
+class DownloadsTest(unittest.TestCase):
+    """The release mirror, and the hub serving what it holds."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name) / "downloads"
+        self.gh = FakeGitHub()
+        self.server = srv.build_server(str(Path(self.tmp.name) / "d.sqlite3"),
+                                       "127.0.0.1", 0, rate_limit=0)
+        self.mirror = srv.Mirror(self.dir, "o/r", api_url=self.gh.api_url,
+                                 asset_url=self.gh.asset_url)
+        self.server.downloads = self.mirror
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.gh.close()
+        self.tmp.cleanup()
+
+    def get(self, path, method="GET", headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request(method, path, headers=headers or {})
+        resp = conn.getresponse()
+        body = resp.read()
+        conn.close()
+        return resp.status, body, resp
+
+    def test_only_what_people_run_is_taken(self):
+        left = sorted(n for n in RELEASE_050 if not downloads.place("0.5.0", n))
+        self.assertEqual(left, ["SHA256SUMS", "cpcpub-0.5.0-android.aab",
+                                "verified-builds.json"])
+        # A Windows binary without .exe, or anything else with one, is no file
+        # the release makes.
+        self.assertIsNone(downloads.place("0.5.0", "cpcpub-windows-x86_64"))
+        self.assertIsNone(downloads.place("0.5.0", "cpcpub-linux-x86_64.exe"))
+        self.assertIsNone(downloads.place("0.5.0", "cpcpub_0.4.0-1_amd64.deb"))
+
+    def test_the_layout_groups_as_the_release_notes_do(self):
+        files = [{"name": n, "size": 1, "sha256": "0" * 64} for n in RELEASE_050
+                 if downloads.place("0.5.0", n)]
+        lay = downloads.layout({"tag": "v0.5.0", "files": files})
+        self.assertEqual([p["id"] for p in lay["packages"]],
+                         ["debian", "fedora", "arch", "windows", "android", "termux"])
+        debian = lay["packages"][0]
+        self.assertEqual([b["arch"] for b in debian["bench"]], downloads.ARCHES)
+        self.assertEqual(debian["gui"]["name"], "cpcpub-gui_0.5.0-1_all.deb")
+        self.assertEqual(lay["packages"][3]["file"]["href"],
+                         "/downloads/v0.5.0/cpcpub-0.5.0-windows-setup.exe")
+        self.assertEqual([o["id"] for o in lay["binaries"]["oses"]],
+                         ["linux", "macos", "windows", "android"])
+        x86 = lay["binaries"]["rows"][0]
+        self.assertEqual([f["variant"] for f in x86["cells"]["windows"]],
+                         ["x86_64", "x86_64-v3"])
+        self.assertEqual([c["chip"] for f in lay["firmware"] for c in f["chips"]],
+                         ["RP2040", "RP2350, Arm", "RP2350, RISC-V", "ESP32",
+                          "ESP32-S2", "ESP32-S3", "ESP32-C3", "ESP32-C6", "ESP32-P4"])
+        self.assertEqual(len(lay["files"]), len(files))
+
+    def test_a_hub_with_nothing_mirrored_says_so(self):
+        status, body, _ = self.get("/api/downloads")
+        self.assertEqual((status, json.loads(body)), (200, {"release": None}))
+        self.assertEqual(self.get("/downloads/v0.5.0/cpcpub-linux-x86_64")[0], 404)
+
+    def test_a_release_is_mirrored_and_served(self):
+        self.gh.publish("v0.5.0", SOME)
+        self.assertEqual(self.mirror.sync(), "now serving v0.5.0: 4 files")
+        status, body, _ = self.get("/api/downloads")
+        lay = json.loads(body)
+        self.assertEqual(lay["release"], "v0.5.0")
+        self.assertEqual(sorted(f["name"] for f in lay["files"]),
+                         ["cpcpub-0.5.0-android.apk", "cpcpub-linux-x86_64",
+                          "cpcpub-rp2040.uf2", "cpcpub_0.5.0-1_amd64.deb"])
+
+        want = self.gh.files["cpcpub-0.5.0-android.apk"]
+        status, body, resp = self.get("/downloads/v0.5.0/cpcpub-0.5.0-android.apk")
+        self.assertEqual((status, body), (200, want))
+        self.assertEqual(resp.getheader("Content-Type"),
+                         "application/vnd.android.package-archive")
+        self.assertIn("attachment", resp.getheader("Content-Disposition", ""))
+        self.assertEqual(resp.getheader("ETag"),
+                         '"' + hashlib.sha256(want).hexdigest() + '"')
+
+        # HEAD says the size and sends nothing; a range sends that part.
+        status, body, resp = self.get("/downloads/v0.5.0/cpcpub-linux-x86_64", "HEAD")
+        self.assertEqual((status, body), (200, b""))
+        self.assertEqual(int(resp.getheader("Content-Length", "-1")),
+                         len(self.gh.files["cpcpub-linux-x86_64"]))
+        status, body, resp = self.get("/downloads/v0.5.0/cpcpub-linux-x86_64",
+                                      headers={"Range": "bytes=3-9"})
+        self.assertEqual((status, body), (206, self.gh.files["cpcpub-linux-x86_64"][3:10]))
+        size = len(self.gh.files["cpcpub-linux-x86_64"])
+        self.assertEqual(resp.getheader("Content-Range"), f"bytes 3-9/{size}")
+        status, _, resp = self.get("/downloads/v0.5.0/cpcpub-linux-x86_64",
+                                   headers={"Range": f"bytes={size}-"})
+        self.assertEqual(status, 416)
+
+        # What is not a served file of the served release is not found.
+        for path in ("/downloads/v0.5.0/cpcpub-0.5.0-android.aab",
+                     "/downloads/v0.5.0/verified-builds.json",
+                     "/downloads/v0.5.0/SHA256SUMS",
+                     "/downloads/v0.5.0/manifest.json",
+                     "/downloads/v0.4.5/cpcpub-linux-x86_64",
+                     "/downloads/v0.5.0/../../d.sqlite3",
+                     "/downloads/v0.5.0/.hidden",
+                     "/downloads/CURRENT"):
+            self.assertEqual(self.get(path)[0], 404, path)
+
+        status, _, resp = self.get("/downloads/latest/cpcpub-linux-x86_64")
+        self.assertEqual((status, resp.getheader("Location")),
+                         (302, "/downloads/v0.5.0/cpcpub-linux-x86_64"))
+        status, _, resp = self.get("/download")
+        self.assertEqual((status, resp.getheader("Location")), (302, "/#download"))
+
+    def test_an_unchanged_release_is_asked_about_cheaply(self):
+        self.gh.publish("v0.5.0", SOME)
+        self.mirror.sync()
+        self.assertIsNone(self.mirror.sync())
+        self.assertIsNotNone(self.gh.asked_etag[-1])
+
+    def test_a_file_that_does_not_match_its_checksum_is_refused(self):
+        self.gh.publish("v0.5.0", SOME)
+        self.mirror.sync()
+        self.gh.publish("v0.5.1", SOME)
+        self.gh.files["cpcpub-linux-x86_64"] = b"x" * len(self.gh.files["cpcpub-linux-x86_64"])
+        with self.assertRaises(downloads.MirrorError):
+            self.mirror.sync()
+        # The release served before stays served, and nothing half-made is left.
+        self.assertEqual((self.mirror.manifest() or {}).get("tag"), "v0.5.0")
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["CURRENT", "v0.5.0"])
+
+    def test_a_release_still_uploading_waits(self):
+        self.gh.publish("v0.5.0", SOME, missing={"cpcpub-linux-x86_64"})
+        with self.assertRaises(downloads.MirrorError) as cm:
+            self.mirror.sync()
+        self.assertIn("not fully uploaded", str(cm.exception))
+        self.gh.publish("v0.5.0", SOME, missing={"SHA256SUMS"})
+        with self.assertRaises(downloads.MirrorError):
+            self.mirror.sync()
+        self.assertIsNone(self.mirror.manifest())
+        # Asked in full each time, since nothing was taken.
+        self.assertEqual(self.gh.asked_etag, [None, None])
+
+    def test_a_new_release_replaces_the_old_and_leaves_the_rest(self):
+        self.gh.publish("v0.5.0", SOME)
+        self.mirror.sync()
+        stranger = self.dir / "keep-me"
+        stranger.mkdir()
+        self.gh.publish("v0.5.1", SOME)
+        self.assertEqual(self.mirror.sync(), "now serving v0.5.1: 4 files")
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()),
+                         ["CURRENT", "keep-me", "v0.5.1"])
+        self.assertEqual(self.get("/downloads/v0.5.0/cpcpub-linux-x86_64")[0], 404)
+        status, body, _ = self.get("/downloads/v0.5.1/cpcpub-linux-x86_64")
+        self.assertEqual((status, body), (200, self.gh.files["cpcpub-linux-x86_64"]))
+
+    def test_a_release_rebuilt_under_its_tag_is_taken_again(self):
+        self.gh.publish("v0.5.0", SOME)
+        self.mirror.sync()
+        self.gh.publish("v0.5.0", SOME)
+        self.gh.files["cpcpub-linux-x86_64"] = b"rebuilt"
+        self.gh.files["SHA256SUMS"] = "".join(
+            f"{hashlib.sha256(b).hexdigest()}  {n}\n"
+            for n, b in self.gh.files.items() if n != "SHA256SUMS").encode()
+        for a in self.gh.release["assets"]:
+            a["size"] = len(self.gh.files[a["name"]])
+        self.assertEqual(self.mirror.sync(), "now serving v0.5.0: 4 files")
+        self.assertEqual(self.get("/downloads/v0.5.0/cpcpub-linux-x86_64")[1], b"rebuilt")
+
+    def test_a_sync_by_the_script_shows_without_a_restart(self):
+        other = srv.Mirror(self.dir, "o/r", api_url=self.gh.api_url,
+                           asset_url=self.gh.asset_url)
+        self.assertIsNone(json.loads(self.get("/api/downloads")[1])["release"])
+        self.gh.publish("v0.5.0", SOME)
+        other.sync()
+        self.assertEqual(json.loads(self.get("/api/downloads")[1])["release"], "v0.5.0")
+
+    def test_byte_ranges(self):
+        self.assertEqual(srv.byte_range("bytes=0-0", 10), (0, 0))
+        self.assertEqual(srv.byte_range("bytes=5-", 10), (5, 9))
+        self.assertEqual(srv.byte_range("bytes=-3", 10), (7, 9))
+        self.assertEqual(srv.byte_range("bytes=-30", 10), (0, 9))
+        self.assertEqual(srv.byte_range("bytes=8-100", 10), (8, 9))
+        self.assertEqual(srv.byte_range("bytes=10-", 10), "unsatisfiable")
+        self.assertEqual(srv.byte_range("bytes=-0", 10), "unsatisfiable")
+        for whole in (None, "", "bytes=5-2", "bytes=0-1,4-5", "items=0-1", "bytes=-"):
+            self.assertIsNone(srv.byte_range(whole, 10), whole)
+
+    def test_checksum_lists_are_read_strictly(self):
+        a, b = "a" * 64, "B" * 64
+        got = downloads.parse_sums(f"{a}  one\n{b} *two\nshort  three\n{a}  ../up\n")
+        self.assertEqual(got, {"one": a, "two": b.lower()})
+
+    def test_a_bad_repository_is_refused(self):
+        with self.assertRaises(ValueError):
+            srv.Mirror(self.dir, "not a repo")
 
 
 if __name__ == "__main__":

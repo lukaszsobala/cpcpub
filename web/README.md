@@ -200,6 +200,31 @@ python3 verified.py --db runs.sqlite3 --list
 python3 verified.py --db runs.sqlite3 --forget v0.1.0
 ```
 
+## Downloads
+
+The **Download** tab offers the latest release's files from the hub itself:
+the packages, the standalone binaries, the Android app and the firmware,
+grouped as the release's notes group them, with what the visitor's own device
+most likely wants on top. The Play Store bundle, `SHA256SUMS` and
+`verified-builds.json` stay on GitHub. A hub that holds no release shows no tab.
+
+```sh
+python3 server.py --mirror lukaszsobala/cpcpub   # fetch it, and check hourly
+python3 downloads.py lukaszsobala/cpcpub downloads/   # or fetch it once, by hand
+```
+
+The files are kept in `downloads/` beside the database (`--downloads DIR`
+elsewhere), one release at a time. Each is checked against the release's
+`SHA256SUMS` before it is served, and a release is switched to only when every
+file has arrived and matched: one still being uploaded, or uploaded again under
+its tag, is retried at the next check while the previous one stays up. GitHub
+is asked conditionally, so an unchanged release costs nothing against its
+hourly allowance. A fetch by hand shows on a running hub without a restart.
+
+`/download` is a short address for the tab. A file is at
+`/downloads/TAG/NAME`, with `Range` for resumed downloads, and
+`/downloads/latest/NAME` redirects to it, for a link that outlives the release.
+
 ## API
 
 | Method | Path | Purpose |
@@ -215,6 +240,7 @@ python3 verified.py --db runs.sqlite3 --forget v0.1.0
 | `GET` | `/api/cores?group=cpu&scope=…` | the same filters, one row per CPU: the medians of its runs |
 | `GET` | `/api/cores?run=<id>` / `?ids=1,2,3` | every record of one run, each with its `type` / named records |
 | `GET` | `/api/metrics`, `/api/stats`, `/api/builds` | metric definitions; counts and what a batch may hold (`batch: {max_results, per_hour}`), including one per architecture, one per operating system and one per CPU with its core counts (`cpus`: `cpu_key`, `cpu_layout`, `n`), which is what fills the board's **Arch** and **OS** pickers and the CPUs its **Search** box suggests; recognised release digests |
+| `GET` | `/api/downloads` | the release this hub serves, grouped for the Download tab (`packages`, `binaries`, `firmware`, and every file with its size and SHA-256), or `{"release": null}` |
 | `GET` | `/api/users/<name>` | public profile: name, since, run count |
 | `GET` | `/api/auth/policy` | what registering here costs: `{open, invite_required, bits}` |
 | `GET` | `/api/auth/challenge` | the same, plus a single-use puzzle to register with |
@@ -315,7 +341,8 @@ changes no JavaScript. Ingestion is a separate list — see
 Five SQLite tables ([schema.sql](schema.sql)): `runs` (metadata plus the
 verbatim upload), `cores` (one flattened row per record, which is what the
 leaderboard sorts in SQL), `users`, `sessions`, `verified_builds`. Older
-databases gain new columns on startup. The database is one file: back it up by
+databases gain new columns on startup. The release downloads are files, not
+tables: see [Downloads](#downloads). The database is one file: back it up by
 copying it, or `sqlite3 runs.sqlite3 ".backup out.sqlite3"` while it runs.
 
 What is deliberately not here: TLS, password recovery, and any claim that an
