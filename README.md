@@ -93,10 +93,10 @@ what the numbers mean on a chip with no cache and, mostly, no FPU.
 bench/cpcpub --full --submit --token YOUR-TOKEN --label "my box"
 ```
 
-A released binary uploads to the public hub at <https://cpcpub.qd.je:30210> when `--submit` is given no address of its own. The port is needed over IPv4; over IPv6 the bare `https://cpcpub.qd.je` works too. Send it elsewhere with `--submit http://my.server:8782`.
+A released binary uploads to the public hub at <https://cpcpub.app> when `--submit` is given no address of its own. Releases before 0.5.0 upload to its old address, `https://cpcpub.qd.je:30210`, which still works. Send it elsewhere with `--submit http://my.server:8782`.
 
 The token comes from the hub's Account tab and puts the run on your name. Without one the upload is anonymous, which every hub accepts.
-`$CPCPUB_HUB` and `$CPCPUB_TOKEN` stand in for the two flags. A tree you built yourself has no default hub: pass the address, or bake one in with `make HUB_URL=https://cpcpub.qd.je:30210`.
+`$CPCPUB_HUB` and `$CPCPUB_TOKEN` stand in for the two flags. A tree you built yourself has no default hub: pass the address, or bake one in with `make HUB_URL=https://cpcpub.app`.
 
 To run one yourself:
 

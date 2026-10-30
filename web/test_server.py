@@ -2961,6 +2961,15 @@ class HardeningTest(unittest.TestCase):
                  for i in range(3)]
         self.assertEqual(codes, [401, 401, 429])
 
+    def test_the_page_links_its_script_by_content(self):
+        status, page, _ = self.send("/")
+        self.assertEqual(status, 200)
+        def digest(name):
+            return hashlib.sha256((srv.STATIC_DIR / name).read_bytes()).hexdigest()[:12]
+        self.assertIn(f'src="/app.js?v={digest("app.js")}"'.encode(), page)
+        self.assertIn(f'href="/style.css?v={digest("style.css")}"'.encode(), page)
+        self.assertEqual(self.send(f"/app.js?v={digest('app.js')}")[0], 200)
+
     def test_address_groups(self):
         self.assertEqual(srv.address_group("2001:db8::1"), "2001:db8::/64")
         self.assertEqual(srv.address_group("::ffff:192.0.2.1"), "192.0.2.1")

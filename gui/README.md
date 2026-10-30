@@ -113,6 +113,12 @@ is just that core's row.
 **Open…** in the header bar shows a result saved earlier, with its hub link
 and **Withdraw** if it was uploaded from this window.
 
+The menu at the right of the header bar starts with the version of the
+benchmark the window runs (what `cpcpub --version` says), its compiler and
+target, and where it is. Below that: **Copy Version Details**, the whole
+`--version` report for a bug report; **Open the Hub**, where a run would upload
+to; the **Privacy Policy**; and **About cpcpub**.
+
 The benchmark's warnings appear as a button beside the status line, such as a
 busy machine, or a memory test small enough to fit in the cache. The log that
 also holds them stays hidden after a run that went well. If the benchmark

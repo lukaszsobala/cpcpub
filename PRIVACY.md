@@ -1,10 +1,10 @@
 # cpcpub privacy policy
 
-Last updated 26 October 2026.
+Last updated 30 October 2026.
 
-This policy covers the cpcpub results hub, currently at
-[cpcpub.qd.je](https://cpcpub.qd.je:30210/), and the cpcpub apps that upload
-to it: the Android app, the desktop app and the command-line benchmark. They
+This policy covers the cpcpub results hub at [cpcpub.app](https://cpcpub.app/)
+(and at its earlier address, cpcpub.qd.je, which apps before version 0.5.0
+upload to), and the cpcpub apps that upload to it: the Android app, the desktop app and the command-line benchmark. They
 are run by Łukasz Sobala, who decides what is collected and why. Questions and
 requests go to [lsobala1@gmail.com](mailto:lsobala1@gmail.com).
 
@@ -16,8 +16,9 @@ requests go to [lsobala1@gmail.com](mailto:lsobala1@gmail.com).
 - There are no ads, no analytics, no tracking and no third-party code, in the
   apps or on the hub.
 - An account is optional and needs no email address.
-- Your IP address reaches the server, as it does with any website. It is used
-  to stop abuse and deleted from the logs within 14 days.
+- Your IP address reaches the server, as it does with any website, and on
+  the way it passes through Cloudflare, which delivers the site. It is used to
+  stop abuse and deleted from the hub's logs within 14 days.
 
 ## What an uploaded result contains
 
@@ -56,7 +57,9 @@ No email address is asked for.
 
 ## IP addresses and logs
 
-Every request reaches the server from an IP address. The hub uses it to limit
+Requests to cpcpub.app pass through Cloudflare first (see *Who else sees
+it*), which hands the server your IP address along with the request. Every
+request reaches the server from an IP address. The hub uses it to limit
 how often one address can upload, sign in or make accounts. For this it keeps
 the address in memory only, and forgets it within two hours of its last
 request. The hub's own request log and the web server's access log record the
@@ -100,16 +103,26 @@ nothing unless you ask them to upload.
   them to be. The basis is your consent, which you can withdraw by removing
   them.
 - Logs and IP addresses are used to keep the service working and protect it
-  from abuse. The basis is legitimate interest.
+  from abuse, by the hub and by Cloudflare in carrying its traffic. The basis
+  is legitimate interest.
 
 Nothing is sold, used for advertising, or used to build a profile of anyone.
 
 ## Who else sees it
 
 Results, with their labels, notes and account names, are public, both on the
-leaderboard and through the hub's API. Apart from that, nothing is shared. The
-hub runs on a virtual server rented from Mikrus (mikr.us), in a data centre in
-the European Union. Mikrus stores the data but does not use it.
+leaderboard and through the hub's API. Apart from that, nothing is shared.
+Two companies handle it on the hub's behalf:
+
+- **Mikrus** (mikr.us) rents out the virtual server the hub runs on, in a data
+  centre in the European Union. Mikrus stores the data but does not use it.
+- **Cloudflare, Inc.** carries traffic to cpcpub.app: every request, with
+  your IP address, passes through its network on the way to the server, and
+  what you upload passes through with it. It does this to deliver the site and
+  protect it from attacks, and may do so outside the European Union, under
+  [its privacy policy](https://www.cloudflare.com/privacypolicy/) and its
+  data processing terms. Cloudflare sets no cookies on this site. Uploads to
+  the earlier address, cpcpub.qd.je, go straight to the server.
 
 ## How long it is kept
 

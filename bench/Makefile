@@ -120,7 +120,7 @@ endif
 
 # Where `cpcpub --submit` uploads when given no URL. Empty by default, so a
 # tree built by hand asks for the address rather than quietly publishing to
-# someone else's board; `make HUB_URL=https://cpcpub.qd.je:30210` bakes
+# someone else's board; `make HUB_URL=https://cpcpub.app` bakes
 # one in, which is what the release workflow does.
 #
 # Deliberately not in CFLAGS: those are reported verbatim as build.flags in

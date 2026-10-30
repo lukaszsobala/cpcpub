@@ -36,6 +36,14 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, GObject, Gtk, Pango  # noqa: E402 # pyright: ignore
 
 APP_ID = "io.github.lukaszsobala.cpcpub.Gui"
+REPO_URL = "https://github.com/lukaszsobala/cpcpub"
+# The policy of whoever publishes these apps, kept in the repository like the
+# Android app's link to it.
+PRIVACY_URL = REPO_URL + "/blob/main/PRIVACY.md"
+# What the window's own requests call themselves. A CDN in front of a hub may
+# turn away urllib's default ("Python-urllib/3.x") as a script -- Cloudflare's
+# browser check does, with error 1010.
+USER_AGENT = f"cpcpub-gui (+{REPO_URL})"
 
 # A frozen copy is the Windows build: PyInstaller's executable, with GTK and
 # the icon unpacked beside it in sys._MEIPASS.
@@ -416,7 +424,8 @@ def read_receipt(name):
 def withdraw_upload(hub, run_id, token):
     """Take one upload off its hub with its delete token: (done, what happened)."""
     url = f"{hub.rstrip('/')}/api/runs/{urllib.parse.quote(str(run_id))}"
-    req = urllib.request.Request(url, method="DELETE", headers={"X-Delete-Token": token})
+    req = urllib.request.Request(url, method="DELETE", headers={
+        "X-Delete-Token": token, "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=30):
             return True, f"withdrawn: run {run_id} from {hub}"
@@ -539,6 +548,36 @@ def default_hub(binary):
     return found.group(1) if found else ""
 
 
+def runnable(binary):
+    """Whether the program field names something the window can start: an
+    executable file, or a name found on PATH, as a shell would take it."""
+    return bool(binary) and (os.access(binary, os.X_OK)
+                             or bool(GLib.find_program_in_path(binary)))
+
+
+def binary_version(binary):
+    """What a build says of itself under --version: {"version", "build",
+    "text"} -- the release it is, its compiler and target, and the whole
+    report -- or {} where there is no build to ask."""
+    if not runnable(binary):
+        return {}
+    try:
+        done = subprocess.run(
+            [binary, "--version"], capture_output=True, timeout=10, check=False,
+            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    text = (done.stdout + done.stderr).decode("utf-8", "replace").strip()
+    # "cpcpub v0.5.0, schema cpu-bench/1"; a build from a tree says "dev".
+    found = re.search(r"^cpcpub (\S+), schema", text, re.MULTILINE)
+    if not found:
+        return {}
+    build = re.search(r"^build: (.*)$", text, re.MULTILINE)
+    return {"version": found.group(1), "build": build.group(1) if build else "",
+            "text": text}
+
+
 def curl_hint():
     """How to install curl here, for when an upload needs it and it is missing."""
     if os.name == "nt":
@@ -562,7 +601,7 @@ def curl_hint():
 
 def list_variants(binary):
     """Ask the binary which variants it carries. Falls back to the four names."""
-    if not binary or not os.access(binary, os.X_OK):
+    if not runnable(binary):
         return FALLBACK_VARIANTS
     try:
         done = subprocess.run(
@@ -1056,6 +1095,7 @@ class Window(Gtk.ApplicationWindow):
         self.probe_timer = 0
         self.probing = False
         self.binary_hub = ""    # the hub the binary uploads to by default
+        self.binary_info = {}   # what the binary said under --version
 
         header = Gtk.HeaderBar()
         self.set_titlebar(header)
@@ -1071,6 +1111,12 @@ class Window(Gtk.ApplicationWindow):
         open_btn.set_tooltip_text("Show a result saved earlier.")
         open_btn.connect("clicked", self.on_open)
         header.pack_start(open_btn)
+        # The primary menu, rightmost as GNOME places it: which build of the
+        # benchmark this window runs, and what is not part of a run.
+        menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic")
+        menu_btn.set_tooltip_text("Benchmark version, the hub and about")
+        menu_btn.set_popover(self.build_menu())
+        header.pack_end(menu_btn)
         self.run_btn = Gtk.Button(label="Run")
         self.run_btn.add_css_class("suggested-action")
         self.run_btn.connect("clicked", self.on_run)
@@ -1102,11 +1148,105 @@ class Window(Gtk.ApplicationWindow):
         self.probe_binary(now=True)
         self.mode_group.set_checks([self.mode_threads, self.mode_percore], every=True)
         self.advanced.connect("notify::expanded", lambda *_: self.fit_form())
+        self.hub.connect("changed", lambda *_: self.update_open_hub())
         self.restore_settings()
         self.connect("close-request", self.on_close)
         # Once, after the first layout pass: until then there is nothing to
         # measure.
         self.connect("map", lambda *_: GLib.idle_add(self.fit_form))
+
+    def build_menu(self):
+        """The header bar's menu: the benchmark's version at its top, then
+        copying the version report, the hub, the privacy policy and About."""
+        for name, handler in (("copy-version", self.on_copy_version),
+                              ("open-hub", self.on_open_hub),
+                              ("privacy", self.on_privacy),
+                              ("about", self.on_about)):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", handler)
+            self.add_action(action)
+        model = Gio.Menu()
+        head = Gio.Menu()
+        item = Gio.MenuItem()
+        item.set_attribute_value("custom", GLib.Variant.new_string("version"))
+        head.append_item(item)
+        model.append_section(None, head)
+        links = Gio.Menu()
+        links.append("Copy Version Details", "win.copy-version")
+        links.append("Open the Hub", "win.open-hub")
+        links.append("Privacy Policy", "win.privacy")
+        model.append_section(None, links)
+        about = Gio.Menu()
+        about.append("About cpcpub", "win.about")
+        model.append_section(None, about)
+
+        popover = Gtk.PopoverMenu.new_from_model(model)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                      margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
+        self.version_title = Gtk.Label(xalign=0)
+        self.version_title.add_css_class("heading")
+        self.version_detail = Gtk.Label(xalign=0, wrap=True, max_width_chars=40)
+        self.version_detail.add_css_class("dim-label")
+        self.version_detail.add_css_class("caption")
+        box.append(self.version_title)
+        box.append(self.version_detail)
+        popover.add_child(box, "version")
+        self.show_version()
+        return popover
+
+    def show_version(self):
+        """Put what the binary said of itself at the top of the menu."""
+        # Called once before the form exists, from build_menu.
+        info = self.binary_info
+        binary = self.binary.get_text().strip() if hasattr(self, "binary") else ""
+        if self.probing:
+            self.version_title.set_text("Checking the benchmark…")
+            self.version_detail.set_text(binary)
+        elif info:
+            self.version_title.set_text(f"Benchmark {info['version']}")
+            self.version_detail.set_text("\n".join(x for x in (info["build"], binary) if x))
+        else:
+            self.version_title.set_text("No benchmark found")
+            self.version_detail.set_text(binary or "Set the program under Advanced.")
+        self.lookup_action("copy-version").set_enabled(bool(info))
+        self.update_open_hub()
+
+    def update_open_hub(self):
+        """Offer Open the Hub only for an address a browser can open."""
+        self.lookup_action("open-hub").set_enabled(
+            self.hub_address().startswith(("http://", "https://")))
+
+    def hub_address(self):
+        """The hub a run would upload to: the field, $CPCPUB_HUB, or the
+        build's own default."""
+        field = self.hub.get_text().strip() if hasattr(self, "hub") else ""
+        return field or os.environ.get("CPCPUB_HUB", "") or self.binary_hub
+
+    def on_copy_version(self, *_):
+        binary = self.binary.get_text().strip()
+        self.get_clipboard().set(f"{self.binary_info.get('text', '')}\nprogram: {binary}\n")
+
+    def on_open_hub(self, *_):
+        hub = self.hub_address()
+        if hub.startswith(("http://", "https://")):
+            Gtk.UriLauncher(uri=hub).launch(self, None, None)
+
+    def on_privacy(self, *_):
+        Gtk.UriLauncher(uri=PRIVACY_URL).launch(self, None, None)
+
+    def on_about(self, *_):
+        dialog = Gtk.AboutDialog(
+            transient_for=self, modal=True, program_name="cpcpub",
+            logo_icon_name=APP_ID,
+            version=self.binary_info.get("version", "(no benchmark found)"),
+            comments="Measures a CPU's integer, floating-point, memory and "
+                     "dispatch performance, and compares it on a public hub.",
+            website=REPO_URL, website_label="Source code",
+            license_type=Gtk.License.GPL_3_0,
+        )
+        if self.binary_info.get("build"):
+            dialog.add_credit_section("Benchmark build", [self.binary_info["build"]])
+        dialog.present()
 
     def do_measure(self, orientation, for_size):
         """Keep the window from widening itself when a long line arrives.
@@ -1462,7 +1602,14 @@ class Window(Gtk.ApplicationWindow):
         if self.probe_timer:
             GLib.source_remove(self.probe_timer)
             self.probe_timer = 0
+        # A new question from here on, not from when the pause ends: an answer
+        # about the path before still on its way is then turned away, and
+        # what was said of that build is not shown beside this path meanwhile.
+        self.probe_gen += 1
         self.probing = True
+        self.binary_info = {}
+        self.binary_hub = ""
+        self.show_version()
         if now:
             self.start_probe()
         else:
@@ -1470,21 +1617,22 @@ class Window(Gtk.ApplicationWindow):
 
     def start_probe(self):
         self.probe_timer = 0
-        self.probe_gen += 1
         gen, binary = self.probe_gen, self.binary.get_text().strip()
 
         def ask():
-            found = (list_variants(binary), default_hub(binary))
+            found = (list_variants(binary), default_hub(binary), binary_version(binary))
             GLib.idle_add(self.on_main, self.on_probed, gen, *found)
         threading.Thread(target=ask, daemon=True).start()
         return GLib.SOURCE_REMOVE
 
-    def on_probed(self, gen, variants, hub):
+    def on_probed(self, gen, variants, hub, info):
         if gen != self.probe_gen:
             return  # an answer about a path the field no longer holds
         self.probing = False
         self.binary_hub = hub
+        self.binary_info = info
         self.reload_variants(variants)
+        self.show_version()
 
     def reload_variants(self, variants):
         child = self.variant_list.get_first_child()
@@ -1782,7 +1930,7 @@ class Window(Gtk.ApplicationWindow):
         if self.proc is not None:
             return
         binary = self.binary.get_text().strip()
-        if not binary or not (os.access(binary, os.X_OK) or GLib.find_program_in_path(binary)):
+        if not runnable(binary):
             self.fail(f"No runnable benchmark at {binary!r} -- pick one with Browse.")
             return
         outdir = self.outdir.get_text().strip()
