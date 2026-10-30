@@ -114,11 +114,9 @@ env:
   # What is checked out: the tag being published, or for a trial run the
   # commit it was dispatched on, the tag not existing yet.
   REF: ${{ (github.event_name == 'push' || inputs.publish) && (github.event.inputs.tag || github.ref_name) || github.sha }}
-  # The hub a released binary uploads to when `--submit` is given no address.
-  # The port is not optional over IPv4: the host has no public v4 of its own and
-  # reaches the internet through two forwarded ports. Over IPv6 the bare name
-  # serves 443, but a default has to work for everyone, so the port is baked in.
-  HUB_URL: https://cpcpub.qd.je:30210
+  # The hub a released binary uploads to when `--submit` is given no address,
+  # and the Android app's default hub.
+  HUB_URL: https://cpcpub.app
 
 jobs:
   build:
