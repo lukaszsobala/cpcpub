@@ -1148,8 +1148,7 @@ class Window(Gtk.ApplicationWindow):
         self.probe_binary(now=True)
         self.mode_group.set_checks([self.mode_threads, self.mode_percore], every=True)
         self.advanced.connect("notify::expanded", lambda *_: self.fit_form())
-        self.hub.connect("changed", lambda *_: self.lookup_action("open-hub")
-                         .set_enabled(bool(self.hub_address())))
+        self.hub.connect("changed", lambda *_: self.update_open_hub())
         self.restore_settings()
         self.connect("close-request", self.on_close)
         # Once, after the first layout pass: until then there is nothing to
@@ -1200,14 +1199,22 @@ class Window(Gtk.ApplicationWindow):
         # Called once before the form exists, from build_menu.
         info = self.binary_info
         binary = self.binary.get_text().strip() if hasattr(self, "binary") else ""
-        if info:
+        if self.probing:
+            self.version_title.set_text("Checking the benchmark…")
+            self.version_detail.set_text(binary)
+        elif info:
             self.version_title.set_text(f"Benchmark {info['version']}")
             self.version_detail.set_text("\n".join(x for x in (info["build"], binary) if x))
         else:
             self.version_title.set_text("No benchmark found")
             self.version_detail.set_text(binary or "Set the program under Advanced.")
         self.lookup_action("copy-version").set_enabled(bool(info))
-        self.lookup_action("open-hub").set_enabled(bool(self.hub_address()))
+        self.update_open_hub()
+
+    def update_open_hub(self):
+        """Offer Open the Hub only for an address a browser can open."""
+        self.lookup_action("open-hub").set_enabled(
+            self.hub_address().startswith(("http://", "https://")))
 
     def hub_address(self):
         """The hub a run would upload to: the field, $CPCPUB_HUB, or the
@@ -1595,7 +1602,14 @@ class Window(Gtk.ApplicationWindow):
         if self.probe_timer:
             GLib.source_remove(self.probe_timer)
             self.probe_timer = 0
+        # A new question from here on, not from when the pause ends: an answer
+        # about the path before still on its way is then turned away, and
+        # what was said of that build is not shown beside this path meanwhile.
+        self.probe_gen += 1
         self.probing = True
+        self.binary_info = {}
+        self.binary_hub = ""
+        self.show_version()
         if now:
             self.start_probe()
         else:
@@ -1603,7 +1617,6 @@ class Window(Gtk.ApplicationWindow):
 
     def start_probe(self):
         self.probe_timer = 0
-        self.probe_gen += 1
         gen, binary = self.probe_gen, self.binary.get_text().strip()
 
         def ask():
