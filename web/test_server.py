@@ -2912,6 +2912,79 @@ class ValidateTest(unittest.TestCase):
                                  "WHERE run_id = ?", (run_id,)).fetchall()
             self.assertEqual([tuple(r) for r in got], [(4000.0, "estimated")])
 
+    @staticmethod
+    def clocks(doc):
+        """(scope, cpu, mhz, mhz_src) for every record the hub stores."""
+        return [(r["scope"], r["cpu"], r["mhz"], r["mhz_src"])
+                for r in srv.validate(doc)[1]]
+
+    def test_threads_sharing_a_cpu_estimate_no_clock(self):
+        # Two threads pinned to CPU 0 each got half of it: INT-lat measured a
+        # share, not the clock. The one-thread pass ran alone and keeps its own.
+        doc = document("full")
+        doc["threads"] = [core("thread", 0, mhz=2000.0, mhz_src="estimated",
+                               int_lat_mops=2000.0)] * 2
+        doc["cores"] = [core(cpu=0, mhz=4000.0, mhz_src="estimated")]
+        doc["total"] = dict(doc["total"], mhz=2000.0, mhz_src="estimated")
+        self.assertEqual(self.clocks(doc), [
+            ("cpu", 0, 4000.0, "estimated"),
+            ("thread", 0, None, "unknown"), ("thread", 0, None, "unknown"),
+            ("total", None, None, "unknown")])
+
+    def test_unpinned_threads_beyond_the_cpus_estimate_no_clock(self):
+        doc = document("threads")
+        doc["config"] = dict(doc["config"], pin=False, threads=16)
+        doc["threads"] = [core("thread", None, mhz=2000.0, mhz_src="estimated")] * 2
+        doc["total"] = core("total", None, threads=16, mhz=2000.0,
+                            mhz_src="estimated")
+        self.assertEqual({c[2:] for c in self.clocks(doc)}, {(None, "unknown")})
+
+    def test_a_rated_clock_meets_the_one_thread_passes_int_lat(self):
+        # All-core INT-lat of 3000 lets a 2800 rated clock stand on its own,
+        # but the same CPU ran 4000 alone: 2800 was never the ceiling.
+        doc = document("full")
+        doc["threads"] = [core("thread", c, mhz=2800.0, mhz_src="rated",
+                               int_lat_mops=3000.0) for c in (0, 1)]
+        doc["cores"] = [core(cpu=c, mhz=2800.0, mhz_src="rated") for c in (0, 1)]
+        doc["total"] = dict(doc["total"], mhz=2800.0, mhz_src="rated")
+        self.assertEqual({c[2:] for c in self.clocks(doc)},
+                         {(4000.0, "estimated"), (3000.0, "estimated")})
+        # Unpinned, a row's `cpu` is not where it ran, so no other row's
+        # INT-lat says anything about it, and the threads' clock stands.
+        doc["config"] = dict(doc["config"], pin=False)
+        got = self.clocks(doc)
+        self.assertEqual({c[2:] for c in got if c[0] == "thread"}, {(2800.0, "rated")})
+
+    def test_a_shared_thread_whose_rated_clock_falls_is_unknown(self):
+        doc = document("full")
+        doc["threads"] = [core("thread", 0, mhz=2500.0, mhz_src="rated",
+                               int_lat_mops=2400.0)] * 2
+        doc["cores"] = [core(cpu=0, mhz=2500.0, mhz_src="rated")]
+        doc["total"] = dict(doc["total"], mhz=2500.0, mhz_src="rated")
+        self.assertEqual(self.clocks(doc), [
+            ("cpu", 0, 4000.0, "estimated"),
+            ("thread", 0, None, "unknown"), ("thread", 0, None, "unknown"),
+            ("total", None, None, "unknown")])
+
+    def test_stored_shared_threads_lose_their_estimate_on_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "t.sqlite3")
+            store = srv.Store(path)
+            run, cores = srv.validate(document("full"))
+            run_id, _ = store.insert(run, cores, "{}", None, None)
+            # As a hub before 0.5.1 stored two threads on one CPU.
+            with store.connect() as db:
+                db.execute("UPDATE cores SET cpu = 0, mhz_src = 'estimated' "
+                           "WHERE scope = 'thread'")
+            srv.Store(path)
+            with store.connect() as db:
+                got = db.execute("SELECT scope, mhz, mhz_src FROM cores WHERE "
+                                 "run_id = ? AND scope != 'cpu' ORDER BY id",
+                                 (run_id,)).fetchall()
+            self.assertEqual([tuple(r) for r in got],
+                             [("thread", None, "unknown")] * 2
+                             + [("total", None, "unknown")])
+
     def test_scope_defaults_per_mode(self):
         doc = document("per-core")
         for c in doc["cores"]:

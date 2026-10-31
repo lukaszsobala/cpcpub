@@ -686,40 +686,80 @@ def check_consistency(rows: list[dict], threads: int | None) -> None:
 # such a run came out four times too good. The benchmark now drops a rated
 # clock below this floor for its INT-lat estimate (RATED_SLACK in measure.c,
 # the same 10%); the hub does the same for documents that still carry one.
+#
+# A rated clock is a ceiling, so on a pinned run every INT-lat measured on its
+# CPU is a floor under it, the one-thread pass's included -- which matters
+# where the thread's own INT-lat is low because it shared the CPU. And on a
+# shared CPU INT-lat measured a share of the clock, so it estimates nothing:
+# the benchmark reports such a thread's clock as unknown from 0.5.1, and the
+# hub does the same for documents from before.
 RATED_SLACK = 1.1
 # `mhz_src` values from most to least trusted, as measure.h orders them. The
 # total keeps the weakest of its threads', as aggregate() does.
 MHZ_TRUST = ("measured", "given", "rated", "estimated")
 
 
-def fix_rated_clocks(rows: list[dict]) -> bool:
-    """Replace each rated clock that INT-lat proves too low with the estimate.
+def fix_clocks(rows: list[dict], threads: int | None, cpus: int | None,
+               pin: object) -> bool:
+    """Bring one run's clocks to what the 0.5.1 benchmark would have written.
 
-    `rows` are one run's records under the hub's column names, changed in
-    place. A thread whose clock changes takes the total's with it: the
-    benchmark writes the total's `mhz` as the mean of its threads' and its
+    `rows` are the run's records under the hub's column names, changed in
+    place; `threads`, `cpus` and `pin` are its config.threads, system.cpus and
+    config.pin. A thread shared its CPU where two threads name it, or, with
+    nothing pinned, where there were more threads than CPUs. Then:
+
+    - a rated clock below the highest INT-lat on its CPU (on a pinned run; its
+      own INT-lat otherwise), less 10%, is dropped;
+    - an estimated clock on a shared CPU is dropped;
+    - a dropped clock becomes the row's INT-lat as an estimate, or unknown on
+      a shared CPU.
+
+    A thread whose clock changes takes the total's with it: the benchmark
+    writes the total's `mhz` as the mean of its threads' known clocks and its
     `mhz_src` as the weakest of theirs. A `total` is never tested itself, since
     its INT-lat is the sum over every thread. Returns whether anything changed.
     """
+    pinned = bool(pin)
+    named = [r.get("cpu") for r in rows if r.get("scope") == "thread"]
+    crowded = not pinned and bool(threads and cpus and threads > cpus)
+
+    def shared(row: dict) -> bool:
+        if row.get("scope") != "thread":
+            return False
+        cpu = row.get("cpu")
+        return crowded or (cpu is not None and named.count(cpu) > 1)
+
+    floor: dict[object, float] = {}
+    if pinned:
+        for r in rows:
+            if r.get("scope") != "total" and r.get("cpu") is not None:
+                floor[r["cpu"]] = max(floor.get(r["cpu"], 0.0), _f(r, "int_lat"))
+
     changed = threads_changed = False
     for row in rows:
-        if row.get("scope") == "total" or row.get("mhz_src") != "rated":
+        if row.get("scope") == "total":
             continue
-        mhz, lat = _f(row, "mhz"), _f(row, "int_lat")
-        if mhz > 0.0 and lat > mhz * RATED_SLACK:
+        src, mhz, lat = row.get("mhz_src"), _f(row, "mhz"), _f(row, "int_lat")
+        if src == "rated":
+            drop = mhz > 0.0 and max(lat, floor.get(row.get("cpu"), 0.0)) > mhz * RATED_SLACK
+        else:
+            drop = src == "estimated" and shared(row)
+        if not drop:
+            continue
+        if shared(row) or lat <= 0.0:
+            row["mhz"], row["mhz_src"] = None, "unknown"
+        else:
             row["mhz"], row["mhz_src"] = lat, "estimated"
-            changed = True
-            threads_changed = threads_changed or row.get("scope") == "thread"
+        changed = True
+        threads_changed = threads_changed or row.get("scope") == "thread"
     if threads_changed:
-        threads = [r for r in rows if r.get("scope") == "thread"]
-        clocks = [_f(r, "mhz") for r in threads if _f(r, "mhz") > 0.0]
-        trust = [MHZ_TRUST.index(r["mhz_src"]) for r in threads
-                 if r.get("mhz_src") in MHZ_TRUST]
+        ts = [r for r in rows if r.get("scope") == "thread"]
+        clocks = [_f(r, "mhz") for r in ts if _f(r, "mhz") > 0.0]
+        trust = [MHZ_TRUST.index(r["mhz_src"]) for r in ts
+                 if _f(r, "mhz") > 0.0 and r.get("mhz_src") in MHZ_TRUST]
         for total in (r for r in rows if r.get("scope") == "total"):
-            if clocks:
-                total["mhz"] = sum(clocks) / len(clocks)
-            if trust:
-                total["mhz_src"] = MHZ_TRUST[max(trust)]
+            total["mhz"] = sum(clocks) / len(clocks) if clocks else None
+            total["mhz_src"] = MHZ_TRUST[max(trust)] if trust else "unknown"
     return changed
 
 
@@ -855,7 +895,7 @@ def validate(payload: object) -> tuple[dict, list[dict]]:
     check_consistency(rows, run.get("threads"))
     # After the check, which is over the document as written; the clock is in
     # none of the numbers it recomputes. The raw document keeps what was sent.
-    fix_rated_clocks(rows)
+    fix_clocks(rows, run["threads"], run["cpus"], run["pin"])
     return run, rows
 
 
@@ -1540,7 +1580,7 @@ class Store:
                                 "WHERE doc_sha256 IS NULL").fetchall():
                 db.execute("UPDATE runs SET doc_sha256 = ? WHERE id = ?",
                            (document_digest(r["raw"]), r["id"]))
-            self._fix_rated_clocks(db)
+            self._fix_clocks(db)
             # Every run, every start: the merge list may have changed since,
             # or the rules, and a run from before either is classified the way
             # one uploaded now would be.
@@ -1560,18 +1600,20 @@ class Store:
                 self._join_upload(db, r["id"])
 
     @staticmethod
-    def _fix_rated_clocks(db: sqlite3.Connection) -> None:
-        """Runs stored with a rated clock INT-lat proves too low: see
-        fix_rated_clocks(). Every start, and a no-op once they are fixed."""
-        runs = [r["run_id"] for r in db.execute(
-            "SELECT DISTINCT run_id FROM cores WHERE mhz_src = 'rated' "
-            "AND scope != 'total' AND int_lat > mhz * ?", (RATED_SLACK,))]
-        for run_id in runs:
-            rows = [dict(r) for r in db.execute(
-                "SELECT id, scope, mhz, mhz_src, int_lat FROM cores "
-                "WHERE run_id = ?", (run_id,))]
+    def _fix_clocks(db: sqlite3.Connection) -> None:
+        """Runs stored with clocks the 0.5.1 benchmark would not have written:
+        see fix_clocks(). Every run, every start -- whether a run qualifies
+        depends on its other rows, which no one WHERE clause sees -- and a
+        no-op once they are fixed."""
+        rows_of: dict[int, list[dict]] = defaultdict(list)
+        for r in db.execute("SELECT id, run_id, scope, cpu, mhz, mhz_src, "
+                            "int_lat FROM cores ORDER BY id"):
+            rows_of[r["run_id"]].append(dict(r))
+        for run in db.execute("SELECT id, threads, cpus, pin FROM runs").fetchall():
+            rows = rows_of.get(run["id"], [])
             before = {r["id"]: (r["mhz"], r["mhz_src"]) for r in rows}
-            fix_rated_clocks(rows)
+            if not fix_clocks(rows, run["threads"], run["cpus"], run["pin"]):
+                continue
             db.executemany(
                 "UPDATE cores SET mhz = ?, mhz_src = ? WHERE id = ?",
                 [(r["mhz"], r["mhz_src"], r["id"]) for r in rows
