@@ -26,7 +26,7 @@ def chip() -> str:
     """The logo's shapes, without the svg wrapper or its comment."""
     src = (HERE / "cpcpub.svg").read_text()
     inner = src[src.index(">", src.index("<svg")) + 1:src.rindex("</svg>")]
-    return re.sub(r"<!--.*?-->", "", inner, flags=re.S)
+    return re.sub(r"<!--.*?-->", "", inner, flags=re.DOTALL)
 
 
 def render(svg: str, out: Path, width: int, height: int, flat: bool = False) -> None:

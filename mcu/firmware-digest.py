@@ -29,13 +29,14 @@ import struct
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 FLASH_BASE = 0x10000000          # RP2040 and RP2350 alike: XIP, where the image starts
 UF2_MAGIC = (0x0A324655, 0x9E5D5157, 0x0AB16F30)
 UF2_NOT_MAIN_FLASH = 0x00000001
 
 
-def fail(msg):
+def fail(msg: str) -> NoReturn:
     sys.exit(f"firmware-digest: {msg}")
 
 
@@ -151,5 +152,5 @@ def main(kind, build, asset, target, objdump):
 
 if __name__ == "__main__":
     if len(sys.argv) != 6:
-        sys.exit(__doc__.splitlines()[0] + " " + __doc__.splitlines()[1])
+        sys.exit(" ".join((__doc__ or "").splitlines()[:2]))
     main(*sys.argv[1:])

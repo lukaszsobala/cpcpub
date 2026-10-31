@@ -96,8 +96,8 @@ def notes(tag: str, base: str, names: list[str]) -> str:
     if termux:
         rows.append(("Termux", by_arch(termux, {"aarch64": "Arm64", "arm": "32-bit Arm"}), ""))
     if rows:
-        lines += ["**Install a package.** Each holds the same binaries as below, "
-                  "byte for byte.", "",
+        lines += [("**Install a package.** Each holds the same binaries as below, "
+                   "byte for byte."), "",
                   "| | benchmark | window |", "| --- | --- | --- |"]
         lines += [f"| {a} | {b} | {c} |" for a, b, c in rows]
         lines.append("")
@@ -117,9 +117,9 @@ def notes(tag: str, base: str, names: list[str]) -> str:
         if any(cells):
             table.append(f"| {row} | " + " | ".join(cells) + " |")
     if table:
-        lines += ["**Or a standalone binary**, which needs nothing installed. The `-v3`, "
-                  "`-rva23` and `-neon` builds need a newer CPU and will not start on an "
-                  "older one; the plain build runs everywhere.", "",
+        lines += [("**Or a standalone binary**, which needs nothing installed. The `-v3`, "
+                   "`-rva23` and `-neon` builds need a newer CPU and will not start on an "
+                   "older one; the plain build runs everywhere."), "",
                   "| | Linux | macOS | Windows | Android |",
                   "| --- | --- | --- | --- | --- |"] + table + [""]
 
@@ -131,8 +131,8 @@ def notes(tag: str, base: str, names: list[str]) -> str:
         if got:
             fw.append(f"| {family} | " + " · ".join(got) + " |")
     if fw:
-        lines += ["**Microcontroller firmware**: a `.uf2` is copied to the Pico's drive, "
-                  f"a `.bin` written at 0x0. See [mcu/README.md]({repo}/blob/{tag}/mcu/README.md).",
+        lines += [("**Microcontroller firmware**: a `.uf2` is copied to the Pico's drive, "
+                   f"a `.bin` written at 0x0. See [mcu/README.md]({repo}/blob/{tag}/mcu/README.md)."),
                   "", "| | chip |", "| --- | --- |"] + fw + [""]
 
     # Checksums.
@@ -150,7 +150,7 @@ def notes(tag: str, base: str, names: list[str]) -> str:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 3:
-        print(__doc__.strip(), file=sys.stderr)
+        print((__doc__ or "").strip(), file=sys.stderr)
         return 2
     tag, base, files = argv[0], argv[1].rstrip("/"), argv[2:]
     print(notes(tag, base, sorted({Path(f).name for f in files})))

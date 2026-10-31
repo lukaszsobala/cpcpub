@@ -1456,14 +1456,15 @@ def load_aliases(path: Path | None) -> dict[str, dict]:
         return {}
     entries = json.loads(path.read_text())
     if not isinstance(entries, list):
-        raise ValueError(f"{path}: a list of entries expected")
+        raise ValueError(f"{path}: a list of entries expected")  # noqa: TRY004 -- a bad file, not a bad call
     out: dict[str, dict] = {}
     for e in entries:
         if not (isinstance(e, dict) and isinstance(e.get("line"), str)
                 and isinstance(e.get("cpu"), str)
                 and isinstance(e.get("layout", ""), str)):
-            raise ValueError(f"{path}: each entry needs \"line\" and \"cpu\" "
-                             f"strings, and \"layout\" if any a string: {e!r}")
+            raise ValueError(  # noqa: TRY004 -- a bad file, not a bad call
+                f"{path}: each entry needs \"line\" and \"cpu\" "
+                f"strings, and \"layout\" if any a string: {e!r}")
         out[e["line"]] = {"cpu": e["cpu"], "layout": e.get("layout") or None}
     return out
 
@@ -3836,7 +3837,9 @@ class Handler(BaseHTTPRequestHandler):
                              "not here: this hub serves only its latest release")
         file_path, entry = found
         try:
-            f = open(file_path, "rb")
+            # Opened apart from the `with` below, so that only a failed open
+            # is a 404 and an error while sending is not.
+            f = open(file_path, "rb")  # noqa: SIM115
         except OSError:
             return self.fail(HTTPStatus.NOT_FOUND, "not found")
         with f:

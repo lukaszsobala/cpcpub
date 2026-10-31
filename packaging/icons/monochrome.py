@@ -21,7 +21,7 @@ def attrs(tag):
 
 
 def n(v):
-    return ("%.2f" % v).rstrip("0").rstrip(".")
+    return f"{v:.2f}".rstrip("0").rstrip(".")
 
 
 SCALE = 52 / 128
@@ -46,7 +46,8 @@ def circle(a):
 
 
 def main(src, out):
-    svg = open(src).read()
+    with open(src) as f:
+        svg = f.read()
     rects = [attrs(t) for t in re.findall(r"<rect ([^>]*)/>", svg)]
     circles = [attrs(t) for t in re.findall(r"<circle ([^>]*)/>", svg)]
     lines = [attrs(t) for t in re.findall(r"<line ([^>]*)/>", svg)]
@@ -61,10 +62,10 @@ def main(src, out):
     white = 'android:fillColor="#FFFFFFFF"'
     paths = [
         f'{white}\n            android:pathData="{" ".join(map(rect, pins))}"',
-        f'{white} android:fillType="evenOdd"\n'
-        f'            android:pathData="{rect(chip)} {circle(face)}"',
-        f'{white} android:fillAlpha="{wedge.get("fill-opacity", "1")}"\n'
-        f'            android:pathData="{wedge["d"]}"',
+        (f'{white} android:fillType="evenOdd"\n'
+         f'            android:pathData="{rect(chip)} {circle(face)}"'),
+        (f'{white} android:fillAlpha="{wedge.get("fill-opacity", "1")}"\n'
+         f'            android:pathData="{wedge["d"]}"'),
     ]
     for width in sorted({a["stroke-width"] for a in lines}, key=float):
         d = " ".join(f'M{a["x1"]},{a["y1"]}L{a["x2"]},{a["y2"]}'
@@ -76,7 +77,8 @@ def main(src, out):
     inset = n((108 - 52) / 2)
     scale = repr(SCALE)
     body = "\n".join(f"        <path {p}/>" for p in paths)
-    open(out, "w").write(f'''<?xml version="1.0" encoding="utf-8"?>
+    with open(out, "w") as f:
+        f.write(f'''<?xml version="1.0" encoding="utf-8"?>
 <!-- The adaptive icon's monochrome layer: packaging/icons/cpcpub.svg in one
      colour, written by make-icons.sh (monochrome.py). Edit the SVG, not this. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"

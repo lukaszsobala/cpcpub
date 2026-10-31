@@ -79,7 +79,7 @@ def main():
         work = pathlib.Path(tmp)
         release = verified_release(suite, work)
         index = "main/binary-armhf/Packages.xz"
-        want = re.search(rf"^ ([0-9a-f]{{64}}) +\d+ {re.escape(index)}$", release, re.M)
+        want = re.search(rf"^ ([0-9a-f]{{64}}) +\d+ {re.escape(index)}$", release, re.MULTILINE)
         if not want:
             sys.exit(f"{suite}'s InRelease lists no SHA256 for {index}")
         raw = fetch(f"{ARCHIVE}/dists/{suite}/{index}")

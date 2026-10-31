@@ -1705,9 +1705,8 @@ class BatchTest(unittest.TestCase):
         self.assertIn("expected ',' or ']'", str(cm.exception))
 
     def test_a_batch_has_a_ceiling(self):
-        with mock.patch.object(srv, "MAX_BATCH", 3):
-            with self.assertRaises(srv.Invalid):
-                srv.split_documents("{}" * 4)
+        with mock.patch.object(srv, "MAX_BATCH", 3), self.assertRaises(srv.Invalid):
+            srv.split_documents("{}" * 4)
 
     # -- grouping --------------------------------------------------------
     def groups(self, text):
@@ -1798,7 +1797,7 @@ class BatchTest(unittest.TestCase):
         self.assertEqual(status, 400)
 
     def test_results_already_held_are_skipped_not_refused(self):
-        b, _, token = self.account()
+        _, _, token = self.account()
         docs = self.machine("Again", self.VARIANTS[:2])
         _, out = self.send(json.dumps(docs[0]), token)
         held = out["uploads"][0]["runs"][0]["id"]
@@ -3044,6 +3043,8 @@ class HardeningTest(unittest.TestCase):
         resp = conn.getresponse()
         out = resp.read()
         conn.close()
+        # Any: a test reads it as whichever JSON shape that route returns.
+        reply: Any
         try:
             reply = json.loads(out)
         except ValueError:
@@ -3113,6 +3114,7 @@ class HardeningTest(unittest.TestCase):
             {"name": "hostonly", "password": "a good long password"}, via)
         self.assertEqual(status, 201)
         cookies = headers.get_all("Set-Cookie")
+        assert cookies, "no Set-Cookie"
         self.assertTrue(all(c.startswith("__Host-") and "Secure" in c
                             for c in cookies), cookies)
         session = next(c for c in cookies
@@ -3185,7 +3187,7 @@ cpcpub-macos-arm64 cpcpub-windows-x86_64.exe cpcpub-windows-x86_64-v3.exe
 cpcpub-windows-arm64.exe cpcpub-android-arm64 cpcpub-android-armv7 cpcpub-rp2040.uf2
 cpcpub-rp2350-arm.uf2 cpcpub-rp2350-riscv.uf2 cpcpub-esp32.bin cpcpub-esp32s2.bin
 cpcpub-esp32s3.bin cpcpub-esp32c3.bin cpcpub-esp32c6.bin cpcpub-esp32p4.bin
-""".split()
+""".split()  # noqa: SIM905 -- pasted from the release page as is
 
 
 class FakeGitHub:
