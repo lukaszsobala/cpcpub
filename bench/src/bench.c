@@ -1468,6 +1468,13 @@ static int collect_threads(suite_t *s, const run_opts_t *o, int threads, int pin
     result_t *res = (result_t *)calloc((size_t)threads, sizeof(*res));
     if (!w || !res) { perror("calloc"); free(w); free(res); return -1; }
     for (int i = 0; i < threads; ++i) w[i].cpu = pin ? cpu_list[i % n_cpus] : -1;
+    // Pinned, a CPU is shared where two workers name it; unpinned, the
+    // scheduler shares them all once there are more workers than CPUs.
+    for (int i = 0; i < threads; ++i) {
+        int same = 0;
+        for (int j = 0; pin && j < threads; ++j) same += w[j].cpu == w[i].cpu;
+        w[i].shared = pin ? same > 1 : threads > get_cpu_count();
+    }
 
     if (run_workers(w, threads, o) != 0) { free(w); free(res); return -1; }
 
@@ -1912,6 +1919,14 @@ static int run_variant(const run_cfg_t *c, run_opts_t *opts, int idx, int n_sel,
             return -1;
         }
         if (g_format == FMT_TEXT) text_per_core_footer(&s);
+    }
+
+    // The one-thread pass's INT-lat is a floor under each thread's rated
+    // clock too. Text mode printed no clock for the threads, so nothing shown
+    // so far changes.
+    if (c->pin && s.have_threads
+            && settle_rated(s.threads, s.n_threads, s.cores, s.n_cores) > 0) {
+        aggregate(s.threads, s.n_threads, &s.total);
     }
 
     if (g_format == FMT_TSV) emit_tsv(&s, opts->kernels->name, idx == 0);

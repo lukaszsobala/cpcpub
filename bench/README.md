@@ -223,7 +223,9 @@ N100 says 806 MHz and runs at 3400), and otherwise is derived from
 `INT-lat` (one dependent 1-cycle op per cycle by construction), marked `~` in
 the tables and `estimated` in the JSON. That derivation is only as good as its
 assumption: a core that does not retire one dependent op per cycle reads low by
-exactly the margin it misses. `--mhz N` states the clock outright for a board
+exactly the margin it misses. Threads that share a CPU (`--threads` above the
+CPU count, or a CPU named twice in `--cpus`) each measure a share of it, so no
+clock is derived for them and the JSON says `unknown`. `--mhz N` states the clock outright for a board
 that will not — several RISC-V and small Arm SBCs have neither a cpufreq driver
 nor a clock in their device tree, and only debugfs knows — and records it as
 `given` rather than `measured`.

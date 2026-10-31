@@ -304,6 +304,18 @@ class ContractTest(unittest.TestCase):
                 with self.subTest(name, scope=scope, cpu=r.get("cpu")):
                     self.assertLessEqual(r["int_lat_mops"], r["mhz"] * 1.1)
 
+    def test_the_hub_has_no_clock_to_correct(self):
+        """The hub brings clocks from older benchmarks to what this one writes
+        (fix_clocks in server.py, settle_rated and summarize in measure.c). On
+        a document this benchmark wrote it must change nothing; if it does,
+        the two sides apply different rules.
+        """
+        for name, doc in DOCUMENTS:
+            with self.subTest(name):
+                sent = [(r.get("mhz"), r.get("mhz_src")) for _, r in records_of(doc)]
+                kept = [(r["mhz"], r["mhz_src"]) for r in srv.validate(doc)[1]]
+                self.assertEqual(kept, sent)
+
     def test_document_survives_a_round_trip(self):
         """Every value the benchmark measured comes back out of the database."""
         for name, doc in DOCUMENTS:

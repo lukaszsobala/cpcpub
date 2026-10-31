@@ -139,6 +139,10 @@ typedef struct {
     double mhz_observed;   // sampled while the core was under load
     double dram_mhz_observed; // DRAM controller clock during the memory phases
     int    cpu_observed;   // where it actually ran, -1 where unknowable
+    // Another worker ran on the same CPU at the same time -- more threads than
+    // CPUs, or a CPU named twice in --cpus -- so each got a share of it and
+    // INT-lat measured that share, not the clock. Set before summarize().
+    int    shared;
 } worker_t;
 
 // Runs the whole suite (or, with disp_sweep, only the selector-period sweep)
@@ -168,6 +172,7 @@ typedef struct {
     double disp_thr, disp_cap, disp_gain, disp_span;
     int    disp_status;
     double score;
+    int    shared;           // the worker's `shared`: INT-lat is not a clock
 } result_t;
 
 // One worker's measurements as a result row, with `cpu` as its CPU and its
@@ -179,6 +184,12 @@ void aggregate(const result_t *rows, int n, result_t *tot);
 // measured: INT-lat is a floor under the clock, and a "rated" base clock that
 // turbo outran is below it. False also for no clock at all.
 int rated_fits(double rated, double int_lat);
+// Tests each rated clock in `rows` against every INT-lat measured on its CPU
+// in the run -- `rows` and `also` both -- not only its own: a rated clock is a
+// ceiling, so any of them is a floor under it, and the one-thread pass's is
+// the highest. Only for a pinned run, where a row's `cpu` is where it ran.
+// Returns how many clocks it dropped; the caller re-aggregates.
+int settle_rated(result_t *rows, int n, const result_t *also, int n_also);
 
 // ---------------------------------------------------------------------------
 // Supplied by the front end
