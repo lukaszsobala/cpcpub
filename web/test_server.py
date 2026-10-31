@@ -3296,6 +3296,18 @@ class DownloadsTest(unittest.TestCase):
         status, _, resp = self.get("/download")
         self.assertEqual((status, resp.getheader("Location")), (302, "/#download"))
 
+    def test_every_file_the_release_lists_is_served(self):
+        # Names of up to 34 characters, as Arch, Termux and the GUI packages
+        # have: the route once checked them against the account-name pattern,
+        # which stops at 32, and served those as not found.
+        self.gh.publish("v0.5.0", RELEASE_050)
+        self.mirror.sync()
+        files = json.loads(self.get("/api/downloads")[1])["files"]
+        self.assertTrue(any(len(f["name"]) > 32 for f in files))
+        for f in files:
+            self.assertEqual(self.get(f"/downloads/v0.5.0/{f['name']}", "HEAD")[0],
+                             200, f["name"])
+
     def test_downloads_are_counted_as_a_number_and_nothing_else(self):
         self.gh.publish("v0.5.0", SOME)
         self.mirror.sync()

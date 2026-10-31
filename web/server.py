@@ -111,7 +111,7 @@ MAX_KEYS = 100_000          # addresses a rate limiter remembers at most
 #
 # A name has to be safe to print on the board and unambiguous between accounts:
 # letters, digits and the three joiners, starting on a letter or digit.
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$")
+ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$")
 MIN_PASSWORD = 8
 MAX_PASSWORD = 256          # scrypt costs the same either way; this bounds work
 SESSION_DAYS = 30
@@ -876,7 +876,7 @@ def check_name(v) -> str:
     # Deliberately not _text(): that truncates to fit, and a name quietly cut
     # to thirty-two characters is not the name anyone asked to register.
     name = "".join(c for c in v if c >= " ").strip()
-    if not NAME_RE.match(name):
+    if not ACCOUNT_NAME_RE.match(name):
         raise Invalid("a name is 3 to 32 characters of letters, digits, "
                       "'.', '_' or '-', starting with a letter or digit")
     return name
