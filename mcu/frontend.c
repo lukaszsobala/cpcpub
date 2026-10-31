@@ -380,6 +380,8 @@ static void run_variant(const cfg_t *c, const kernel_set_t *ks, int idx,
             memset(w, 0, sizeof(w));
             run_workers(w, &c->cpus[i], 1, c, c->mem_pc, ks);
             s.cores[i] = summarize(&w[0], c->cpus[i]);
+            // Every worker here is pinned: see bench.c's collect_per_core.
+            settle_rated(&s.cores[i], 1, s.threads, s.n_threads);
             s.checksum ^= w[0].checksum;
             if (c->format == FMT_TEXT) text_per_core_row(&s.cores[i]);
         }
@@ -388,6 +390,13 @@ static void run_variant(const cfg_t *c, const kernel_set_t *ks, int idx,
         if (spread > 0.0 && c->format == FMT_TEXT) {
             printf("\nfastest/slowest core ratio: %.2fx\n", spread);
         }
+    }
+
+    // The one-thread pass's INT-lat is a floor under each thread's rated
+    // clock too, as in bench.c's run_variant.
+    if (s.have_threads
+            && settle_rated(s.threads, s.n_threads, s.cores, s.n_cores) > 0) {
+        aggregate(s.threads, s.n_threads, &s.total);
     }
 
     if (c->format == FMT_TEXT && s.have_threads) {

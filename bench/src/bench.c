@@ -1503,6 +1503,9 @@ static int collect_per_core(suite_t *s, const run_opts_t *o, const int *cpu_list
         w.cpu = pin ? cpu_list[i] : -1;
         if (run_workers(&w, 1, o) != 0) { free(res); return -1; }
         res[i] = summarize(&w, cpu_list[i]);
+        // Held to the threads' INT-lat on the same CPU too, as the hub holds
+        // every record, and before the row prints. No threads pass: no-op.
+        if (pin) settle_rated(&res[i], 1, s->threads, s->n_threads);
         note_dram(s, w.dram_mhz_observed);
         s->checksum ^= w.checksum;
         if (text_rows) text_per_core_row(&res[i]);
@@ -1922,8 +1925,8 @@ static int run_variant(const run_cfg_t *c, run_opts_t *opts, int idx, int n_sel,
     }
 
     // The one-thread pass's INT-lat is a floor under each thread's rated
-    // clock too. Text mode printed no clock for the threads, so nothing shown
-    // so far changes.
+    // clock too (each core row met the threads' as it was summarized). Text
+    // mode printed no clock for the threads, so nothing shown so far changes.
     if (c->pin && s.have_threads
             && settle_rated(s.threads, s.n_threads, s.cores, s.n_cores) > 0) {
         aggregate(s.threads, s.n_threads, &s.total);

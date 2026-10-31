@@ -225,7 +225,8 @@ the tables and `estimated` in the JSON. That derivation is only as good as its
 assumption: a core that does not retire one dependent op per cycle reads low by
 exactly the margin it misses. Threads that share a CPU (`--threads` above the
 CPU count, or a CPU named twice in `--cpus`) each measure a share of it, so no
-clock is derived for them and the JSON says `unknown`. `--mhz N` states the clock outright for a board
+clock is derived for them: a measured, given or rated clock still stands, and
+with none of those the JSON says `unknown`. `--mhz N` states the clock outright for a board
 that will not — several RISC-V and small Arm SBCs have neither a cpufreq driver
 nor a clock in their device tree, and only debugfs knows — and records it as
 `given` rather than `measured`.
