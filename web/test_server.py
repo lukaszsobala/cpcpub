@@ -2865,6 +2865,53 @@ class ValidateTest(unittest.TestCase):
                 got = db.execute("SELECT target FROM runs WHERE id = ?", (run_id,)).fetchone()[0]
             self.assertEqual(got, "armv6")
 
+    @staticmethod
+    def rated_doc(mhz):
+        """A full run whose every record carries `mhz` as a rated clock, as
+        Windows' `~MHz` did before 0.5.1 -- under an INT-lat of 4000."""
+        doc = document("full")
+        for key in ("cores", "threads"):
+            doc[key] = [dict(r, mhz=mhz, mhz_src="rated") for r in doc[key]]
+        doc["total"] = dict(doc["total"], mhz=mhz, mhz_src="rated")
+        return doc
+
+    def test_a_rated_base_clock_gives_way_to_int_lat(self):
+        _, rows = srv.validate(self.rated_doc(806.0))
+        self.assertEqual({(r["scope"], r["mhz"], r["mhz_src"]) for r in rows},
+                         {("cpu", 4000.0, "estimated"),
+                          ("thread", 4000.0, "estimated"),
+                          ("total", 4000.0, "estimated")})
+
+    def test_a_rated_clock_int_lat_allows_stands(self):
+        # 4000 is within 10% of 3700: a clock named a little low, not turbo.
+        _, rows = srv.validate(self.rated_doc(3700.0))
+        self.assertEqual({(r["mhz"], r["mhz_src"]) for r in rows},
+                         {(3700.0, "rated")})
+
+    def test_the_total_keeps_the_weakest_source_of_its_threads(self):
+        doc = document("full")
+        doc["threads"] = [dict(doc["threads"][0], mhz=806.0, mhz_src="rated"),
+                          dict(doc["threads"][1], mhz=3000.0, mhz_src="measured")]
+        doc["total"] = dict(doc["total"], mhz=1903.0, mhz_src="rated")
+        _, rows = srv.validate(doc)
+        total = next(r for r in rows if r["scope"] == "total")
+        self.assertEqual((total["mhz"], total["mhz_src"]), (3500.0, "estimated"))
+
+    def test_stored_rated_base_clocks_are_fixed_on_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "t.sqlite3")
+            store = srv.Store(path)
+            run, cores = srv.validate(document("full"))
+            run_id, _ = store.insert(run, cores, "{}", None, None)
+            # As a hub before 0.5.1 stored a Windows run.
+            with store.connect() as db:
+                db.execute("UPDATE cores SET mhz = 806, mhz_src = 'rated'")
+            srv.Store(path)
+            with store.connect() as db:
+                got = db.execute("SELECT DISTINCT mhz, mhz_src FROM cores "
+                                 "WHERE run_id = ?", (run_id,)).fetchall()
+            self.assertEqual([tuple(r) for r in got], [(4000.0, "estimated")])
+
     def test_scope_defaults_per_mode(self):
         doc = document("per-core")
         for c in doc["cores"]:
