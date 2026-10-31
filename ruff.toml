@@ -1,3 +1,9 @@
+# The oldest Python the hub, the GUI and the scripts beside them run on:
+# Ubuntu 22.04's. Without it ruff assumes a newer one and asks for its idioms
+# (`datetime.UTC` is 3.11), which would raise that floor for no gain.
+# packaging/linux/build.py runs only in CI and may use newer ones.
+target-version = "py310"
+
 # Ruff on its own defaults, plus one rule.
 #
 # E402 -- an import that is not at the top of its file -- is off by default in

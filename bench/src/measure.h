@@ -139,6 +139,10 @@ typedef struct {
     double mhz_observed;   // sampled while the core was under load
     double dram_mhz_observed; // DRAM controller clock during the memory phases
     int    cpu_observed;   // where it actually ran, -1 where unknowable
+    // Another worker ran on the same CPU at the same time -- more threads than
+    // CPUs, or a CPU named twice in --cpus -- so each got a share of it and
+    // INT-lat measured that share, not the clock. Set before summarize().
+    int    shared;
 } worker_t;
 
 // Runs the whole suite (or, with disp_sweep, only the selector-period sweep)
@@ -168,6 +172,7 @@ typedef struct {
     double disp_thr, disp_cap, disp_gain, disp_span;
     int    disp_status;
     double score;
+    int    shared;           // the worker's `shared`: INT-lat is not a clock
 } result_t;
 
 // One worker's measurements as a result row, with `cpu` as its CPU and its
@@ -175,6 +180,16 @@ typedef struct {
 result_t summarize(const worker_t *w, int cpu);
 // The whole-machine row over `n` per-thread rows.
 void aggregate(const result_t *rows, int n, result_t *tot);
+// Whether a rated clock is one the core can have run at, given the INT-lat it
+// measured: INT-lat is a floor under the clock, and a "rated" base clock that
+// turbo outran is below it. False also for no clock at all.
+int rated_fits(double rated, double int_lat);
+// Tests each rated clock in `rows` against every INT-lat measured on its CPU
+// in the run -- `rows` and `also` both -- not only its own: a rated clock is a
+// ceiling, so any of them is a floor under it, and the one-thread pass's is
+// the highest. Only for a pinned run, where a row's `cpu` is where it ran.
+// Returns how many clocks it dropped; the caller re-aggregates.
+int settle_rated(result_t *rows, int n, const result_t *also, int n_also);
 
 // ---------------------------------------------------------------------------
 // Supplied by the front end
@@ -189,7 +204,8 @@ double cpu_cur_mhz(int cpu);
 // The DRAM controller's clock now, in MHz.
 double dram_mhz(void);
 // The clock `cpu` is rated for, in MHz: a ceiling the machine declares, used
-// only when nothing was sampled under load.
+// only when nothing was sampled under load, and only if INT-lat does not prove
+// it too low (see rated_fits).
 double rated_mhz(int cpu);
 
 #endif  // CPCPUB_MEASURE_H

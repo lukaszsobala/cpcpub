@@ -20,16 +20,16 @@ import sys
 # code goes to .data; .flash.text under ESP-IDF, where it goes to .iram0.text.
 FLASH_SECTIONS = {".text", ".flash.text"}
 VARIANTS = ("scalar_nofma", "vector_nofma", "scalar_fma", "vector_fma")
-KERNEL = re.compile(r"^\w+_kernel\w*_(%s)$" % "|".join(VARIANTS))
+KERNEL = re.compile(rf"^\w+_kernel\w*_({'|'.join(VARIANTS)})$")
 OUR_WARNING = re.compile(r"(?:^|/)((?:bench/src|mcu)/[^:\s]+:\d+(?::\d+)?): warning: (.*)")
 
 
 def main(objdump, elf, log):
     failed = False
 
-    warnings = sorted({m.group(1) + ": " + m.group(2)
-                       for m in map(OUR_WARNING.search, open(log, errors="replace"))
-                       if m})
+    with open(log, errors="replace") as f:
+        warnings = sorted({m.group(1) + ": " + m.group(2)
+                           for m in map(OUR_WARNING.search, f) if m})
     for w in warnings:
         print("warning in this repository's code:", w)
         failed = True
@@ -62,5 +62,5 @@ def main(objdump, elf, log):
 
 if __name__ == "__main__":
     if len(sys.argv) != 4:
-        sys.exit(__doc__.splitlines()[0])
+        sys.exit((__doc__ or "").partition("\n")[0])
     sys.exit(main(*sys.argv[1:]))

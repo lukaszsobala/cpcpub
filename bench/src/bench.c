@@ -1468,6 +1468,13 @@ static int collect_threads(suite_t *s, const run_opts_t *o, int threads, int pin
     result_t *res = (result_t *)calloc((size_t)threads, sizeof(*res));
     if (!w || !res) { perror("calloc"); free(w); free(res); return -1; }
     for (int i = 0; i < threads; ++i) w[i].cpu = pin ? cpu_list[i % n_cpus] : -1;
+    // Pinned, a CPU is shared where two workers name it; unpinned, the
+    // scheduler shares them all once there are more workers than CPUs.
+    for (int i = 0; i < threads; ++i) {
+        int same = 0;
+        for (int j = 0; pin && j < threads; ++j) same += w[j].cpu == w[i].cpu;
+        w[i].shared = pin ? same > 1 : threads > get_cpu_count();
+    }
 
     if (run_workers(w, threads, o) != 0) { free(w); free(res); return -1; }
 
@@ -1496,10 +1503,17 @@ static int collect_per_core(suite_t *s, const run_opts_t *o, const int *cpu_list
         w.cpu = pin ? cpu_list[i] : -1;
         if (run_workers(&w, 1, o) != 0) { free(res); return -1; }
         res[i] = summarize(&w, cpu_list[i]);
+        // Held to the threads' INT-lat on the same CPU too, as the hub holds
+        // every record, and before the row prints. No threads pass: no-op.
+        if (pin) settle_rated(&res[i], 1, s->threads, s->n_threads);
         note_dram(s, w.dram_mhz_observed);
         s->checksum ^= w.checksum;
         if (text_rows) text_per_core_row(&res[i]);
     }
+    // And to each other's: `--cpus 0,0` sweeps CPU 0 twice, and the hub holds
+    // either row to the higher INT-lat of the two. Only a CPU named twice can
+    // change here, after its first row has printed.
+    if (pin) settle_rated(res, n_cpus, s->threads, s->n_threads);
     s->cores = res;
     s->n_cores = n_cpus;
     return 0;
@@ -1914,6 +1928,14 @@ static int run_variant(const run_cfg_t *c, run_opts_t *opts, int idx, int n_sel,
         if (g_format == FMT_TEXT) text_per_core_footer(&s);
     }
 
+    // The one-thread pass's INT-lat is a floor under each thread's rated
+    // clock too (each core row met the threads' as it was summarized). Text
+    // mode printed no clock for the threads, so nothing shown so far changes.
+    if (c->pin && s.have_threads
+            && settle_rated(s.threads, s.n_threads, s.cores, s.n_cores) > 0) {
+        aggregate(s.threads, s.n_threads, &s.total);
+    }
+
     if (g_format == FMT_TSV) emit_tsv(&s, opts->kernels->name, idx == 0);
     else if (g_format == FMT_TEXT && s.have_threads) {
         printf("\nchecksum: 0x%016llx\n", (unsigned long long)s.checksum);
@@ -2283,7 +2305,10 @@ int main(int argc, char **argv) {
         double mhz[1024];
         for (int i = 0; i < n_cpus; ++i) {
             double m = sw[i].mhz_observed;
-            if (m <= 0.0) m = cpu_max_mhz(cpu_list[i]);
+            if (m <= 0.0) {
+                m = cpu_max_mhz(cpu_list[i]);
+                if (!rated_fits(m, sw[i].int_lat_mops)) m = 0.0;
+            }
             if (m <= 0.0) m = sw[i].int_lat_mops;   // 1 op/cycle by construction
             mhz[i] = m;
         }

@@ -626,6 +626,7 @@ result_t summarize(const worker_t *w, int cpu) {
     r.disp_status = disp_summary(w, &r.disp_thr, &r.disp_cap, &r.disp_gain,
                                  &r.disp_span);
     r.score = core_score(w);
+    r.shared = w->shared;
 
     // INT-lat is one dependent 1-cycle op per cycle by construction, so it
     // doubles as a clock estimate where nothing on the machine will say -- but
@@ -640,16 +641,56 @@ result_t summarize(const worker_t *w, int cpu) {
         if (r.mhz <= 0.0) {
             // Nothing was sampled under load, so what is left is a rated
             // clock: cpufreq's ceiling (or the registry's on Windows, or
-            // sysctl's on an Intel Mac), then the device tree's declaration.
+            // sysctl's on an Intel Mac), then the device tree's declaration --
+            // unless INT-lat proves it a base clock that turbo outran.
             r.mhz = rated_mhz(cpu);
+            if (!rated_fits(r.mhz, r.int_lat)) r.mhz = 0.0;
             if (r.mhz > 0.0)  r.mhz_src = MHZ_RATED;
         }
-        if (r.mhz <= 0.0) {
+        // A CPU shared with another worker gave each a share of its time, and
+        // INT-lat measured the share: no estimate, and the clock is unknown.
+        if (r.mhz <= 0.0 && !w->shared) {
             r.mhz = r.int_lat;
             r.mhz_src = MHZ_ESTIMATED;
         }
     }
     return r;
+}
+
+// INT-lat is a floor under the clock: a chain of dependent 1-cycle adds cannot
+// finish more than one per cycle on any core. A rated clock far below it is
+// not the clock the core ran at. Windows' `~MHz` and an Intel Mac's
+// `hw.cpufrequency` are the *base* clock, which turbo leaves behind: an Intel
+// N100 is rated 806 MHz there and runs its INT-lat at 3370. The slack is for
+// clocks that are named a little under what they run -- an RK3566 whose
+// cpufreq says 1800 runs INT-lat at 1907 -- and is far short of what turbo
+// does.
+#define RATED_SLACK 1.1
+
+int rated_fits(double rated, double int_lat) {
+    return rated > 0.0 && int_lat <= rated * RATED_SLACK;
+}
+
+int settle_rated(result_t *rows, int n, const result_t *also, int n_also) {
+    int dropped = 0;
+    for (int i = 0; i < n; ++i) {
+        result_t *r = &rows[i];
+        if (r->mhz_src != MHZ_RATED || r->mhz <= 0.0 || r->cpu < 0) continue;
+        double floor = r->int_lat;
+        for (int j = 0; j < n; ++j) {
+            if (rows[j].cpu == r->cpu && rows[j].int_lat > floor) floor = rows[j].int_lat;
+        }
+        for (int j = 0; j < n_also; ++j) {
+            if (also[j].cpu == r->cpu && also[j].int_lat > floor) floor = also[j].int_lat;
+        }
+        if (rated_fits(r->mhz, floor)) continue;
+        // What summarize() would have said had it known: the estimate, or
+        // unknown on a shared CPU.
+        r->mhz     = r->shared ? 0.0 : r->int_lat;
+        r->mhz_src = r->shared ? MHZ_READ : MHZ_ESTIMATED;
+        dropped++;
+    }
+    return dropped;
 }
 
 void aggregate(const result_t *rows, int n, result_t *tot) {
@@ -671,7 +712,7 @@ void aggregate(const result_t *rows, int n, result_t *tot) {
         tot->disp_gain += r->disp_gain;
         tot->disp_span += r->disp_span;
         if (r->mhz > 0.0)         { tot->mhz += r->mhz; mhz_n++; }
-        if (r->mhz_src > tot->mhz_src) tot->mhz_src = r->mhz_src;
+        if (r->mhz > 0.0 && r->mhz_src > tot->mhz_src) tot->mhz_src = r->mhz_src;
         if (r->mem_lat_ns > 0.0)  { tot->mem_lat_ns += r->mem_lat_ns; lat_n++; }
         if (r->mem_lat8_ns > 0.0) { tot->mem_lat8_ns += r->mem_lat8_ns; mlp_n++; }
         if (r->disp_status == DISP_OK && r->disp_cap > 0.0) {
