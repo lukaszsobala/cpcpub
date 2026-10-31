@@ -1510,6 +1510,10 @@ static int collect_per_core(suite_t *s, const run_opts_t *o, const int *cpu_list
         s->checksum ^= w.checksum;
         if (text_rows) text_per_core_row(&res[i]);
     }
+    // And to each other's: `--cpus 0,0` sweeps CPU 0 twice, and the hub holds
+    // either row to the higher INT-lat of the two. Only a CPU named twice can
+    // change here, after its first row has printed.
+    if (pin) settle_rated(res, n_cpus, s->threads, s->n_threads);
     s->cores = res;
     s->n_cores = n_cpus;
     return 0;

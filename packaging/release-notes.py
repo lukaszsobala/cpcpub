@@ -116,7 +116,7 @@ def notes(tag: str, base: str, names: list[str]) -> str:
         if any(cells):
             table.append(f"| {row} | " + " | ".join(cells) + " |")
     if table:
-        lines += [("**Standalone binaries**, which needs nothing installed. The `-v3`, "
+        lines += [("**Standalone binaries**, which need nothing installed. The `-v3`, "
                    "`-rva23` and `-neon` builds need a newer CPU and will not start on an "
                    "older one; the plain build runs everywhere."), "",
                   "| | Linux | macOS | Windows | Android |",
