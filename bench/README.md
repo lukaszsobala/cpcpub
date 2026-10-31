@@ -215,8 +215,11 @@ approximated:
 | load-average warning | yes | yes | no such number exists |
 | `--clock raw` | yes | yes | no; falls back to `mono` and records `mono` |
 
-Where there is no governor node, `MHz` comes from the device tree's declared
-`clock-frequency` for the CPU if it has one, and otherwise is derived from
+Where there is no governor node, `MHz` comes from a clock the machine rates --
+the Windows registry's, an Intel Mac's `hw.cpufrequency`, or the device tree's
+declared `clock-frequency` for the CPU -- if it has one and `INT-lat` does not
+prove it too low (the first two are the base clock, which turbo outruns: an
+N100 says 806 MHz and runs at 3400), and otherwise is derived from
 `INT-lat` (one dependent 1-cycle op per cycle by construction), marked `~` in
 the tables and `estimated` in the JSON. That derivation is only as good as its
 assumption: a core that does not retire one dependent op per cycle reads low by

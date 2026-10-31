@@ -180,7 +180,10 @@ off the machine while the core was under load, `given` was asserted by whoever
 ran it with `--mhz`, `rated` is a ceiling the machine declares rather than a
 number anybody observed (cpufreq's max, the device tree's `clock-frequency`,
 the Windows registry's `~MHz`, or macOS's `hw.cpufrequency`) — a throttling
-core ran below it — and `estimated` was inferred from `int_lat_mops`, which
+core ran below it. A rated clock is never more than 10% below `int_lat_mops`,
+which is a floor under the clock: the Windows and macOS numbers are the base
+clock, which turbo outruns, and a rated clock below that floor is dropped for
+the estimate. `estimated` was inferred from `int_lat_mops`, which
 assumes the core retires one dependent op per cycle and reads low on one that
 does not. A machine with no cpufreq driver and no clock in its device tree has
 nothing else to offer, which is what `--mhz` is for.

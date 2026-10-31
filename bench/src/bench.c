@@ -2283,7 +2283,10 @@ int main(int argc, char **argv) {
         double mhz[1024];
         for (int i = 0; i < n_cpus; ++i) {
             double m = sw[i].mhz_observed;
-            if (m <= 0.0) m = cpu_max_mhz(cpu_list[i]);
+            if (m <= 0.0) {
+                m = cpu_max_mhz(cpu_list[i]);
+                if (!rated_fits(m, sw[i].int_lat_mops)) m = 0.0;
+            }
             if (m <= 0.0) m = sw[i].int_lat_mops;   // 1 op/cycle by construction
             mhz[i] = m;
         }

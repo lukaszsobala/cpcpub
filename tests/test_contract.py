@@ -290,6 +290,20 @@ class ContractTest(unittest.TestCase):
                     self.fail(f"{name}: the benchmark wrote a document the hub "
                               f"refuses as disagreeing with itself -- {e}")
 
+    def test_a_rated_clock_is_not_below_int_lat(self):
+        """INT-lat is a floor under the clock -- dependent 1-cycle adds cannot
+        retire faster than one per cycle -- so a `rated` clock well under it is
+        a base clock turbo outran (Windows says 806 MHz for a 3.4 GHz N100),
+        and the benchmark replaces it with the estimate. Same 10% slack as
+        RATED_SLACK in measure.c.
+        """
+        for name, doc in DOCUMENTS:
+            for scope, r in records_of(doc):
+                if scope == "total" or r.get("mhz_src") != "rated":
+                    continue
+                with self.subTest(name, scope=scope, cpu=r.get("cpu")):
+                    self.assertLessEqual(r["int_lat_mops"], r["mhz"] * 1.1)
+
     def test_document_survives_a_round_trip(self):
         """Every value the benchmark measured comes back out of the database."""
         for name, doc in DOCUMENTS:

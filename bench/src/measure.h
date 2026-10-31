@@ -175,6 +175,10 @@ typedef struct {
 result_t summarize(const worker_t *w, int cpu);
 // The whole-machine row over `n` per-thread rows.
 void aggregate(const result_t *rows, int n, result_t *tot);
+// Whether a rated clock is one the core can have run at, given the INT-lat it
+// measured: INT-lat is a floor under the clock, and a "rated" base clock that
+// turbo outran is below it. False also for no clock at all.
+int rated_fits(double rated, double int_lat);
 
 // ---------------------------------------------------------------------------
 // Supplied by the front end
@@ -189,7 +193,8 @@ double cpu_cur_mhz(int cpu);
 // The DRAM controller's clock now, in MHz.
 double dram_mhz(void);
 // The clock `cpu` is rated for, in MHz: a ceiling the machine declares, used
-// only when nothing was sampled under load.
+// only when nothing was sampled under load, and only if INT-lat does not prove
+// it too low (see rated_fits).
 double rated_mhz(int cpu);
 
 #endif  // CPCPUB_MEASURE_H
