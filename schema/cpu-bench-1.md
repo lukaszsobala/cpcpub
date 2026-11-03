@@ -47,6 +47,10 @@ before each multi-threaded run and per-core sweep after the first; the hub
 keeps it in the raw document and reads nothing from it. Each system names its own hardware and the field passes that
 through unchanged, so the same silicon reads `aarch64` on Linux, `arm64` on
 macOS and `ARM64` on Windows — `build.target` is the normalised one to key on.
+`system.sysname` is uname's too, and that is `Linux` on Android; the hub files a run
+as `Android` instead where the kernel's release says `android`, `gki` or ends in a
+Google build id, or where the compiler is the NDK's. The stored document keeps
+the `Linux` it was uploaded with.
 `config.clock` records the clock that was *used*: asking for `raw` on a host
 with no unadjusted monotonic clock (Windows) yields `mono` here.
 

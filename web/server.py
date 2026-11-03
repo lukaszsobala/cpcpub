@@ -788,6 +788,33 @@ def known_target(target: str | None, machine: str | None,
     return guess or target
 
 
+# Android's kernel is Linux and says so: uname reports "Linux" to the bionic
+# binary and to a static Linux one alike. What it leaves behind is in the
+# release -- Google's generic kernels are "5.10.43-android12-9-...", the GKI
+# builds of every vendor carry "gki", and a Google-built kernel ends in its
+# build id ("-ab7491100") -- and in the toolchain of the Android binary: the
+# NDK's clang calls itself "Android (...) clang version ...", and its driver is
+# named "...-linux-android24-clang". Vendor kernels that are none of these
+# ("4.14.117-perf+") are not guessed at.
+ANDROID_RELEASE_RE = re.compile(r"android|gki|-ab\d{6,}", re.IGNORECASE)
+ANDROID_COMPILER_RE = re.compile(r"^android\b|linux-android", re.IGNORECASE)
+
+
+def known_sysname(sysname: str | None, release: str | None,
+                  compiler_version: str | None = None,
+                  cc: str | None = None) -> str | None:
+    """A run's operating system, as it reported it or else as Android where
+    its kernel or its build says it is one. Only "Linux" is ever changed: a
+    system that named itself something else is taken at its word."""
+    if (sysname or "").lower() != "linux":
+        return sysname
+    if (ANDROID_RELEASE_RE.search(release or "")
+            or ANDROID_COMPILER_RE.search(compiler_version or "")
+            or ANDROID_COMPILER_RE.search(cc or "")):
+        return "Android"
+    return sysname
+
+
 def validate(payload: object) -> tuple[dict, list[dict]]:
     """Turn an uploaded document into (run row, core rows) or raise Invalid."""
     if not isinstance(payload, dict):
@@ -820,7 +847,11 @@ def validate(payload: object) -> tuple[dict, list[dict]]:
         "binary_sha256": _hex64(build.get("binary_sha256"), "build.binary_sha256"),
         "vectorize": _bool(build.get("vectorize"), "build.vectorize"),
         "fma": _bool(build.get("fma"), "build.fma"),
-        "sysname": _text(system.get("sysname"), 64, "system.sysname"),
+        "sysname": known_sysname(_text(system.get("sysname"), 64, "system.sysname"),
+                                 _text(system.get("release"), 64, "system.release"),
+                                 _text(build.get("compiler_version"), 200,
+                                       "build.compiler_version"),
+                                 _text(build.get("cc"), 64, "build.cc")),
         "os_release": _text(system.get("release"), 64, "system.release"),
         "machine": _text(system.get("machine"), 64, "system.machine"),
         "cpus": _int(system.get("cpus"), "system.cpus", 0, 4096),
@@ -1593,6 +1624,13 @@ class Store:
                 target = known_target(r["target"], r["machine"], r["os_release"])
                 if target != r["target"]:
                     db.execute("UPDATE runs SET target = ? WHERE id = ?", (target, r["id"]))
+            # Runs stored while an Android phone was filed under Linux.
+            for r in db.execute("SELECT id, sysname, os_release, compiler_version, cc "
+                                "FROM runs WHERE LOWER(sysname) = 'linux'").fetchall():
+                sysname = known_sysname(r["sysname"], r["os_release"],
+                                        r["compiler_version"], r["cc"])
+                if sysname != r["sysname"]:
+                    db.execute("UPDATE runs SET sysname = ? WHERE id = ?", (sysname, r["id"]))
             # Runs stored before uploads were told apart, in the order they
             # arrived, so each is joined to the upload before it exactly as it
             # would have been then.

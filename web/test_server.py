@@ -2864,6 +2864,48 @@ class ValidateTest(unittest.TestCase):
                 got = db.execute("SELECT target FROM runs WHERE id = ?", (run_id,)).fetchone()[0]
             self.assertEqual(got, "armv6")
 
+    def test_an_android_kernel_or_build_is_filed_as_android(self):
+        def sysname(release="6.12.0", sysname="Linux", compiler_version="15.2.0",
+                    cc="cc"):
+            doc = document()
+            doc["build"] = dict(doc["build"], compiler_version=compiler_version, cc=cc)
+            doc["system"] = dict(doc["system"], sysname=sysname, release=release)
+            return srv.validate(doc)[0]["sysname"]
+
+        self.assertEqual(sysname("6.12.0"), "Linux")
+        # The kernel's own release.
+        self.assertEqual(sysname("5.10.43-android12-9-00002-gb1d6e9e67cc2-ab7491100"),
+                         "Android")
+        self.assertEqual(sysname("6.1.75-android14-11-g1a2b3c4d5e6f"), "Android")
+        self.assertEqual(sysname("5.4.147-qgki-g7e1f9d3a2c10"), "Android")
+        self.assertEqual(sysname("5.15.41-g0a1b2c3d4e5f-ab8800123"), "Android")
+        # The NDK's compiler, under any kernel.
+        self.assertEqual(sysname(compiler_version="Android (11349228, +pgo, +bolt) "
+                                                  "clang version 17.0.2"), "Android")
+        self.assertEqual(sysname(cc="aarch64-linux-android24-clang"), "Android")
+        # A vendor kernel that says nothing is not guessed at, and neither is a
+        # compiler or a release that only resembles one.
+        self.assertEqual(sysname("4.14.117-perf+"), "Linux")
+        self.assertEqual(sysname(compiler_version="Debian clang version 19.1.7"), "Linux")
+        # A system that named itself something else is taken at its word.
+        self.assertEqual(sysname("10.0", sysname="Windows",
+                                 cc="aarch64-linux-android24-clang"), "Windows")
+        self.assertEqual(sysname(sysname="zephyr", release="4.1.0-android"), "zephyr")
+
+    def test_stored_android_runs_filed_as_linux_are_corrected_on_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "a.sqlite3")
+            store = srv.Store(path)
+            doc = document()
+            doc["system"] = dict(doc["system"], release="5.10.43-android12-9-00002")
+            run, cores = srv.validate(doc)
+            run_id, _ = store.insert(dict(run, sysname="Linux"), cores, "{}", None, None)
+            srv.Store(path)
+            with store.connect() as db:
+                got = db.execute("SELECT sysname FROM runs WHERE id = ?",
+                                 (run_id,)).fetchone()[0]
+            self.assertEqual(got, "Android")
+
     @staticmethod
     def rated_doc(mhz):
         """A full run whose every record carries `mhz` as a rated clock, as
