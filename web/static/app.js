@@ -3612,7 +3612,7 @@ function renderDownloads(d) {
 
   // Packages.
   if (d.packages.length) {
-    box.append(el("h2", null, "Install a package"));
+    box.append(el("h2", null, "Installers and packages"));
     const grid = el("div", "dl-grid");
     const blurb = {
       debian: "Debian 13, Ubuntu 24.04 or newer.",
@@ -3638,7 +3638,7 @@ function renderDownloads(d) {
 
   // Standalone binaries.
   if (d.binaries.rows.length) {
-    box.append(el("h2", null, "Or a standalone binary"));
+    box.append(el("h2", null, "Standalone binaries"));
     box.append(el("p", "note", "-v3, -rva23 and -neon need a newer CPU; the plain " +
       "build runs everywhere."));
     const table = el("table", "dl-table");
@@ -3675,7 +3675,8 @@ function renderDownloads(d) {
       card.append(chipRow(null, fam.chips.map((f) => fileChip(f, f.chip))));
       card.append(el("p", "note", fam.family === "Raspberry Pi"
         ? "Hold BOOTSEL, plug in, copy the .uf2 to the drive."
-        : "Flash at 0x0 with esptool."));
+        : "Flash at 0x0 with esptool." + (fam.chips.some((f) => f.chip.endsWith(", USB"))
+          ? " A USB file is for a board whose only USB port is the chip's own." : "")));
       grid.append(card);
     }
     box.append(grid);

@@ -3358,6 +3358,18 @@ class DownloadsTest(unittest.TestCase):
                           "ESP32-S2", "ESP32-S3", "ESP32-C3", "ESP32-C6", "ESP32-P4"])
         self.assertEqual(len(lay["files"]), len(files))
 
+    def test_a_usb_console_build_sits_beside_its_chip(self):
+        names = ["cpcpub-esp32c3.bin", "cpcpub-esp32s3-usb.bin", "cpcpub-esp32s3.bin",
+                 "cpcpub-esp32c3-usb.bin", "cpcpub-esp32s2-usb.bin"]
+        self.assertEqual(downloads.place("0.5.2", "cpcpub-esp32s3-usb.bin"),
+                         {"group": "firmware", "family": "ESP32", "chip": "ESP32-S3, USB"})
+        # No S2 build has the USB console, so a file claiming one is not served.
+        self.assertIsNone(downloads.place("0.5.2", "cpcpub-esp32s2-usb.bin"))
+        files = [{"name": n, "size": 1, "sha256": "0" * 64} for n in names]
+        lay = downloads.layout({"tag": "v0.5.2", "files": files})
+        self.assertEqual([c["chip"] for f in lay["firmware"] for c in f["chips"]],
+                         ["ESP32-S3", "ESP32-S3, USB", "ESP32-C3", "ESP32-C3, USB"])
+
     def test_a_hub_with_nothing_mirrored_says_so(self):
         status, body, _ = self.get("/api/downloads")
         self.assertEqual((status, json.loads(body)), (200, {"release": None}))
