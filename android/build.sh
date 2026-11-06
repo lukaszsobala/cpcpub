@@ -28,7 +28,7 @@ set -eu
 rel=$1
 version=${2#v}
 out=$3
-here=$(cd "$(dirname "$0")" && pwd)
+here=$(CDPATH= cd "$(dirname "$0")" && pwd)
 min_sdk=29        # the binary's own floor: bionic gained getloadavg() at 29
 target_sdk=37     # what Google Play asks of a new app
 platform_name=android-37.0
@@ -94,7 +94,7 @@ link "$work/proto.apk" --proto-format
 # to only gets a warning. The link's target is absolute: a relative
 # $ANDROID_HOME would otherwise be read from inside .ide/.
 ide="$here/.ide/gen/io/github/lukaszsobala/cpcpub"
-platform_abs="$(cd "$(dirname "$platform")" && pwd)/$(basename "$platform")"
+platform_abs="$(CDPATH= cd "$(dirname "$platform")" && pwd)/$(basename "$platform")"
 if ! { mkdir -p "$ide" &&
        ln -sf "$platform_abs" "$here/.ide/android.jar" &&
        cp "$work/gen/io/github/lukaszsobala/cpcpub/R.java" "$ide/"; } 2>/dev/null; then
