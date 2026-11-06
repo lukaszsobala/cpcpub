@@ -881,7 +881,7 @@ def validate(payload: object) -> tuple[dict, list[dict]]:
             raise Invalid("'cores' must be a non-empty array")
         records += [("cpu", c) for c in cores]
         if payload.get("sweep") is not None:
-            run["cpu_kinds"] = json.dumps(sweep_kinds(payload["sweep"], cores),
+            run["cpu_kinds"] = json.dumps(sweep_kinds(payload["sweep"], cores, run["cpus"]),
                                           separators=(",", ":"))
     if mode in ("threads", "full") and threads is not None:
         if not isinstance(threads, list) or not threads:
@@ -1316,13 +1316,14 @@ def _kinds(recs: list[dict], cpu_models: str | None,
     return _size_names(len(groups)), groups
 
 
-def sweep_kinds(sweep, cores: list) -> list[list[int]]:
+def sweep_kinds(sweep, cores: list, cpus: int | None = None) -> list[list[int]]:
     """A sampled sweep's kinds of CPU, checked: every CPU of each kind, as the
     benchmark's `sweep.kinds` lists them, for a sweep that measured only some.
 
     The kinds are the benchmark's own, from what the system said of each CPU,
     and each must hold at least one swept CPU, since that is what it is read
-    from; every swept CPU must be in one, and no CPU in two.
+    from; every swept CPU must be in one, and no CPU in two. Between them they
+    are every CPU the sweep was given, which is the online CPUs, `cpus`.
     """
     if not isinstance(sweep, dict) or not isinstance(sweep.get("kinds"), list):
         raise Invalid("'sweep' must be an object with a 'kinds' array")
@@ -1345,6 +1346,8 @@ def sweep_kinds(sweep, cores: list) -> list[list[int]]:
         raise Invalid("a swept CPU is in none of 'sweep.kinds'")
     if any(not swept & set(k) for k in kinds):
         raise Invalid("one of 'sweep.kinds' has none of its CPUs swept")
+    if cpus is not None and len(seen) != cpus:
+        raise Invalid("'sweep.kinds' must list every one of 'system.cpus'")
     return kinds
 
 

@@ -937,6 +937,16 @@ class HubTest(unittest.TestCase):
             self.assertEqual(status, 400, kinds)
             self.assertIn(why, out["error"])
 
+    def test_a_sweep_that_leaves_an_online_cpu_out_of_its_kinds_is_refused(self):
+        # Six online CPUs, kinds naming five: the sixth would be in no kind.
+        doc = document("per-core")
+        doc["system"]["cpus"] = 6
+        doc["cores"] = [core(cpu=0), core(cpu=3)]
+        doc["sweep"] = {"per_kind": 1, "kinds": [[0, 1, 2], [3, 4]]}
+        status, out = self.expect_error("/api/runs", "POST", doc)
+        self.assertEqual(status, 400)
+        self.assertIn("every one of 'system.cpus'", out["error"])
+
     def test_a_sampled_sweep_with_a_cpu_that_is_no_number_is_refused(self):
         # Refused as a bad upload, not a server error from an unhashable cpu.
         for cpu in ([0], {"n": 0}):
