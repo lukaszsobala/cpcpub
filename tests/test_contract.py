@@ -120,8 +120,14 @@ def mcu_document(binary):
     return json.loads("\n".join(lines[begin + 1:end]))
 
 
+# The SAMPLED_ARGS run's document, whether it left CPUs out or not; None
+# without a live binary. See test_a_sweep_says_whether_it_left_cpus_out.
+SAMPLED_RUN = None
+
+
 def documents():
     """Every cpcpub document this run can test, as (name, doc)."""
+    global SAMPLED_RUN
     out = []
     if SAMPLE.exists():
         out.append(("testdata/full-run.json", json.loads(SAMPLE.read_text())))
@@ -132,7 +138,7 @@ def documents():
         out.append((f"live: {Path(binary).name}", json.loads(proc.stdout)))
         proc = subprocess.run([binary] + SAMPLED_ARGS, check=True,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        sampled = json.loads(proc.stdout)
+        sampled = SAMPLED_RUN = json.loads(proc.stdout)
         if "sweep" in sampled:
             out.append((f"sampled: {Path(binary).name}", sampled))
     mcu = os.environ.get("CPCPUB_MCU_HOST_BIN")
@@ -165,6 +171,24 @@ class ContractTest(unittest.TestCase):
         for name, doc in DOCUMENTS:
             with self.subTest(name):
                 self.assertEqual(doc.get("schema"), srv.SCHEMA_ID)
+
+    def test_a_sweep_says_whether_it_left_cpus_out(self):
+        # The sampled run is held to the contract only when it carries "sweep",
+        # so a sweep that left CPUs out without saying so would slip past that:
+        # with no --cpus it is given every online CPU, and measures them all
+        # unless "sweep" says otherwise.
+        doc = SAMPLED_RUN
+        if doc is None:
+            self.skipTest("no live binary (CPCPUB_BIN)")
+        measured = {c["cpu"] for c in doc["cores"]}
+        online = doc["system"]["cpus"]
+        if "sweep" not in doc:
+            self.assertEqual(len(measured), online,
+                             "a sweep that left CPUs out carries no 'sweep'")
+            return
+        every = {c for kind in doc["sweep"]["kinds"] for c in kind}
+        self.assertEqual(len(every), online, "'sweep.kinds' is not every online CPU")
+        self.assertLess(measured, every, "a 'sweep' for a sweep that left nothing out")
 
     def test_mode_is_accepted(self):
         for name, doc in DOCUMENTS:
