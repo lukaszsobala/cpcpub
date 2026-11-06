@@ -30,10 +30,10 @@ Or install a package from the same release. Each one carries those same binaries
 
 | | |
 | --- | --- |
-| Debian, Ubuntu | `cpcpub_*.deb`, and `cpcpub-gui_*_all.deb` for the window |
+| Debian, Ubuntu | `cpcpub_*.deb`, and `cpcpub-gui_*_all.deb` for the GUI |
 | Fedora, openSUSE | `cpcpub-*.rpm`, `cpcpub-gui-*.noarch.rpm` |
 | Arch Linux | `cpcpub-*.pkg.tar.zst`, `cpcpub-gui-*-any.pkg.tar.zst` |
-| Windows | `cpcpub-*-windows-setup.exe`, for x64 and Arm64 alike: the benchmark on PATH, the window in the Start menu |
+| Windows | `cpcpub-*-windows-setup.exe`, for x64 and Arm64 alike: the benchmark on PATH, the GUI in the Start menu |
 | Android | `cpcpub-*-android.apk`, an app for 64- and 32-bit Arm alike; or `cpcpub-termux_*.deb` for Termux |
 
 [packaging/README.md](packaging/README.md) has the details, including why the Linux packages need glibc 2.38 or newer.
@@ -53,16 +53,19 @@ other targets; see [bench/README.md](bench/README.md).
 ## Run it
 
 ```sh
-bench/cpcpub --full                 # one core, every core, and the machine at once
-bench/cpcpub --full --variants=all  # run all variants for a full picture
-bench/cpcpub --full -v              # every metric explained
+bench/cpcpub                        # the machine at once, then each kind of core alone
+bench/cpcpub --variants all         # once per build variant, compared
+bench/cpcpub -v                     # every metric explained
+bench/cpcpub --mode threads         # only the machine at once; --mode per-core, only the cores
 bench/cpcpub --version              # which build this is, and what it is running on
 bench/cpcpub --help
 ```
 
-One binary carries four compilations of the kernels — auto-vectorization off/on crossed with FMA contraction off/on — and `--variants` runs each one the host ISA can tell apart, then compares them. The default is the scalar, unfused build that cross-ISA comparisons need.
+One binary carries four compilations of the kernels — auto-vectorization off/on crossed with FMA contraction off/on — and `--variants all` runs each one the host ISA can tell apart, then compares them. The default is the scalar, unfused build that cross-ISA comparisons need.
 
-On a desktop, [gui/](gui/) is the same flags in a window — the variants to
+The per-core half measures up to four CPUs of each kind of core — CPUs the system reports nothing different about — rather than every one, so a 64-core server sweeps four of them and a phone all of its few. `--per-kind 0` sweeps every CPU, and so does naming them with `--cpus`.
+
+On a desktop, [gui/](gui/) is the same flags in a GUI — the variants to
 run, per-core or not, where to put the result, the hub fields, and a live
 estimate of how long the settings will take. It comes with the `cpcpub-gui`
 package on Linux and in the setup on Windows; on Android the app is
@@ -90,7 +93,7 @@ what the numbers mean on a chip with no cache and, mostly, no FPU.
 [web/](web/) is an optional addition: a Python-stdlib service that collects results and puts them side by side. The benchmark uploads its own, straight after measuring:
 
 ```sh
-bench/cpcpub --full --submit --token YOUR-TOKEN --label "my box"
+bench/cpcpub --submit --token YOUR-TOKEN --label "my box"
 ```
 
 A released binary uploads to the public hub at <https://cpcpub.app> when `--submit` is given no address of its own. Releases before 0.5.0 upload to its old address, `https://cpcpub.qd.je:30210`, which still works. Send it elsewhere with `--submit http://my.server:8782`.

@@ -148,7 +148,7 @@
       <h2>Or upload a result file</h2>
       <p class="note">
         If the machine can't reach this site, run
-        <code>cpcpub --full --json &gt; run.json</code> on it, then bring the
+        <code>cpcpub --json &gt; run.json</code> on it, then bring the
         file here. From a microcontroller, <code>mcu/cpcpub-serial.py</code>
         saves the file to bring.
       </p>
@@ -184,8 +184,8 @@
       </p>
       <ol class="note batch-howto">
         <li>On each machine, run
-          <code>cpcpub --full --variants --json &gt; NAME.json</code>, one
-          file per machine. <code>--variants</code> measures every build the
+          <code>cpcpub --variants all --json &gt; NAME.json</code>, one
+          file per machine. <code>--variants all</code> measures every build the
           machine can run; leave it out for the default build alone.</li>
         <li>Bring the files together and join them:
           <code>cat *.json &gt; batch.json</code>. Don't edit them: a result

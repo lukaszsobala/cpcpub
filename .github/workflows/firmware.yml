@@ -222,7 +222,7 @@ jobs:
           retention-days: 7
 
   esp32:
-    name: ${{ matrix.chip }}
+    name: ${{ matrix.chip }}${{ matrix.suffix }}
     runs-on: ubuntu-24.04
     # Four minutes in practice, the image pull included; see the Pico job.
     timeout-minutes: 30
@@ -235,14 +235,22 @@ jobs:
         shell: bash
     strategy:
       fail-fast: false
+      # A -usb build puts the console on the chip's own USB Serial/JTAG port
+      # instead of UART0, for a board whose only USB port is that one -- many
+      # S3, C3 and C6 boards. The ESP32 has no such port, and the S2's USB is
+      # OTG, which port.c does not drive.
       matrix:
         include:
-          - { chip: esp32,   target: xtensa }
-          - { chip: esp32s2, target: xtensa }
-          - { chip: esp32s3, target: xtensa }
-          - { chip: esp32c3, target: riscv32 }
-          - { chip: esp32c6, target: riscv32 }
-          - { chip: esp32p4, target: riscv32 }
+          - { chip: esp32,   target: xtensa,  suffix: "" }
+          - { chip: esp32s2, target: xtensa,  suffix: "" }
+          - { chip: esp32s3, target: xtensa,  suffix: "" }
+          - { chip: esp32c3, target: riscv32, suffix: "" }
+          - { chip: esp32c6, target: riscv32, suffix: "" }
+          - { chip: esp32p4, target: riscv32, suffix: "" }
+          - { chip: esp32s3, target: xtensa,  suffix: -usb }
+          - { chip: esp32c3, target: riscv32, suffix: -usb }
+          - { chip: esp32c6, target: riscv32, suffix: -usb }
+          - { chip: esp32p4, target: riscv32, suffix: -usb }
     steps:
       - uses: actions/checkout@v7
         with:
@@ -252,12 +260,19 @@ jobs:
       - name: Build
         env:
           CHIP: ${{ matrix.chip }}
+          SUFFIX: ${{ matrix.suffix }}
         run: |
           set -euo pipefail
           . "$IDF_PATH/export.sh" >/dev/null
           set -x
-          idf.py -C mcu/esp32 -B build set-target "$CHIP"
-          idf.py -C mcu/esp32 -B build -DCPCPUB_VERSION="$VERSION" build 2>&1 | tee build.log
+          # Naming the defaults replaces ESP-IDF's own choice of them, but it
+          # still reads each named file's .<chip> companion, so the per-chip
+          # clocks in sdkconfig.defaults.<chip> hold for both consoles.
+          defaults=sdkconfig.defaults
+          if [ "$SUFFIX" = -usb ]; then defaults="$defaults;sdkconfig.usb"; fi
+          idf.py -C mcu/esp32 -B build -DSDKCONFIG_DEFAULTS="$defaults" set-target "$CHIP"
+          idf.py -C mcu/esp32 -B build -DSDKCONFIG_DEFAULTS="$defaults" \
+            -DCPCPUB_VERSION="$VERSION" build 2>&1 | tee build.log
 
       # One image from offset 0 -- bootloader, partition table and the
       # application, each at its own offset inside it -- so flashing it is one
@@ -266,24 +281,31 @@ jobs:
       - name: Check and stage
         env:
           CHIP: ${{ matrix.chip }}
+          SUFFIX: ${{ matrix.suffix }}
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           . "$IDF_PATH/export.sh" >/dev/null
           set -x
+          # The console asked for is the one built: a defaults file that
+          # silently failed to apply would ship a -usb file talking on UART0.
+          if [ "$SUFFIX" = -usb ]; then want=y; else want=; fi
+          got=$(sed -n 's/^CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=//p' mcu/esp32/sdkconfig)
+          [ "$got" = "$want" ] || { echo "USB Serial/JTAG console: '$got', want '$want'"; exit 1; }
+          name="$CHIP$SUFFIX"
           objdump=$(sed -n 's/^CMAKE_OBJDUMP:FILEPATH=//p' build/CMakeCache.txt)
           python3 mcu/check-firmware.py "$objdump" build/cpcpub.elf build.log
           mkdir dist
           (cd build && python -m esptool --chip "$CHIP" merge-bin \
-             -o "../dist/cpcpub-$CHIP.bin" @flash_args)
-          python3 mcu/firmware-digest.py esp build "dist/cpcpub-$CHIP.bin" \
-            "$TARGET" "$objdump" > "dist/digest-$CHIP.json"
-          cat "dist/digest-$CHIP.json"
+             -o "../dist/cpcpub-$name.bin" @flash_args)
+          python3 mcu/firmware-digest.py esp build "dist/cpcpub-$name.bin" \
+            "$TARGET" "$objdump" > "dist/digest-$name.json"
+          cat "dist/digest-$name.json"
           ls -l dist
 
       - uses: actions/upload-artifact@v7
         with:
-          name: firmware-${{ matrix.chip }}
+          name: firmware-${{ matrix.chip }}${{ matrix.suffix }}
           path: dist/
           if-no-files-found: error
           retention-days: 7

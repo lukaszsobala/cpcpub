@@ -15,6 +15,9 @@ bench/.build-flags
 /mcu/esp32/sdkconfig.old
 /mcu/esp32/dependencies.lock
 /mcu/zephyr/build*/
+# What android/build.sh leaves for an editor: the SDK's android.jar and the
+# generated R.java (see .vscode/settings.json).
+/android/.ide/
 
 # The hub's database, wherever it is put -- `make serve` writes
 # web/runs.sqlite3, `web/verified.py --db ...` writes whatever you name. The
@@ -34,7 +37,7 @@ bench/.build-flags
 /SHA256SUMS
 /verified-builds.json
 
-# A measurement. `cpcpub --full --json > run.json` is the first half of
+# A measurement. `cpcpub --json > run.json` is the first half of
 # every upload, and the result is this machine on this day, not source.
 /run.json
 /upload.json

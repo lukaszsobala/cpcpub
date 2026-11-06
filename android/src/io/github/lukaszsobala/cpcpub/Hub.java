@@ -71,6 +71,17 @@ final class Hub {
         return new String(bytes, 0, n, StandardCharsets.UTF_8);
     }
 
+    /**
+     * A connection to `url`, through new URL(String): a desktop JDK has
+     * deprecated it since 20, Android has not. URI.toURL(), its replacement,
+     * throws an unchecked exception on a hub address typed with a space in it,
+     * where this throws the IOException every caller here already handles.
+     */
+    @SuppressWarnings("deprecation")
+    private static HttpURLConnection open(String url) throws IOException {
+        return (HttpURLConnection) new URL(url).openConnection();
+    }
+
     /** Percent-encoding of everything but the unreserved set, as url_encode(). */
     static String encode(String s) {
         StringBuilder out = new StringBuilder();
@@ -137,7 +148,7 @@ final class Hub {
         log.append("submitting ").append(body.length).append(" bytes to ").append(base).append(" ...\n");
         HttpURLConnection conn = null;
         try {
-            conn = (HttpURLConnection) new URL(url.toString()).openConnection();
+            conn = open(url.toString());
             // Not followed: an upload carrying a token goes where it was
             // addressed, and nowhere a reply points it.
             conn.setInstanceFollowRedirects(false);
@@ -186,7 +197,7 @@ final class Hub {
             .append(base).append(" ...\n");
         HttpURLConnection conn = null;
         try {
-            conn = (HttpURLConnection) new URL(base + "/api/runs/" + encode(id)).openConnection();
+            conn = open(base + "/api/runs/" + encode(id));
             conn.setInstanceFollowRedirects(false);
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(60000);
@@ -218,7 +229,7 @@ final class Hub {
     static JSONObject getJson(String hub, String path) {
         HttpURLConnection conn = null;
         try {
-            conn = (HttpURLConnection) new URL(hub.replaceAll("/+$", "") + path).openConnection();
+            conn = open(hub.replaceAll("/+$", "") + path);
             conn.setInstanceFollowRedirects(false);
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(30000);

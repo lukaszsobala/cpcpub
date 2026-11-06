@@ -316,10 +316,14 @@ function meanRow(members) {
 }
 
 // How a kind of core is named in a table: "large cores ×4", "all 8 threads".
-function kindName(kind, scope, n) {
+// `of` is every CPU a sampled sweep's records stand for, where there are more
+// of those than records.
+function kindName(kind, scope, n, of) {
   const noun = scope === "thread" ? "threads" : "cores";
-  if (kind.startsWith("all ")) return `all ${n} ${noun}`;
-  return `${kind} ${noun} ×${n}`;
+  const all = of && of.length > n ? of.length : n;
+  const sampled = all > n ? `, ${n} measured` : "";
+  if (kind.startsWith("all ")) return `all ${all} ${noun}${sampled}`;
+  return `${kind} ${noun} ×${all}${sampled}`;
 }
 
 // Where a run stands among the runs it is compared with, from a standing
@@ -1265,7 +1269,7 @@ async function representative(runId, scope) {
 // therefore carries the selection across rather than dropping it: the same
 // machines stay ticked, as their record in the scope now being ranked, and the
 // rows they were ticked on lose their tick. A run with nothing in the new scope
-// (a --per-core upload has no whole-machine total) has to leave, and says so.
+// (a per-core upload has no whole-machine total) has to leave, and says so.
 async function retargetSelection(scope) {
   const rows = [...state.selected.values()];
   if (!scope || !rows.length || rows.every((r) => r.scope === scope)) return;
@@ -1694,8 +1698,9 @@ function recordsTable(run) {
   for (const scope of ["cpu", "thread"]) {
     for (const t of (run.types || []).filter((k) => k.scope === scope)) {
       const members = t.ids.map((i) => byId.get(i)).filter(Boolean);
-      // A kind of one -- a phone's prime core -- is its own record, named.
-      if (members.length === 1) {
+      // A kind of one -- a phone's prime core -- is its own record, named;
+      // not one record measured for several CPUs of a sampled sweep.
+      if (members.length === 1 && !(t.of && t.of.length > 1)) {
         const one = members[0];
         line(el("td", null, `${t.name} ${scope === "thread" ? "thread" : "core"}`),
              one.cpu ?? "—", raw(one), "");
@@ -1708,8 +1713,8 @@ function recordsTable(run) {
       ex.type = "button";
       ex.title = "show each of these";
       ex.setAttribute("aria-expanded", "false");
-      name.append(ex, kindName(t.name, scope, members.length));
-      line(name, cpuList(t.cpus) || "—", avg, "kind-row");
+      name.append(ex, kindName(t.name, scope, members.length, t.of));
+      line(name, cpuList(t.of || t.cpus) || "—", avg, "kind-row");
       const rows = members.map((r) =>
         line(el("td", "childname", recordName(r)), r.cpu ?? "—", raw(r), "child-row"));
       for (const r of rows) r.hidden = true;
@@ -2237,7 +2242,7 @@ function renderBatchLimits(b) {
 function renderCommands() {
   const token = state.user && state.user.api_token;
   $("#cmd-submit").textContent =
-    `cpcpub --full --submit ${location.origin}` +
+    `cpcpub --submit ${location.origin}` +
     (token ? ` --token ${token}` : "") + " --label \"my box\"";
 
   $("#shell-note").textContent = token
@@ -2248,7 +2253,7 @@ function renderCommands() {
 
   $("#cmd-batch").textContent =
     "# on each machine, one file each\n" +
-    "cpcpub --full --variants --json > \"$(hostname).json\"\n\n" +
+    "cpcpub --variants all --json > \"$(hostname).json\"\n\n" +
     "# then, with the files together in one directory\n" +
     "cat *.json > batch.json\n" +
     `curl -fsS -X POST "${location.origin}/api/batch?label=first+machine&label=second" \\\n` +
@@ -3521,7 +3526,7 @@ function findBinary(d, os, variant) {
 
 function runCommand(file) {
   return `curl -fLo cpcpub ${location.origin}${file.href}\n` +
-         "chmod +x cpcpub\n./cpcpub --full";
+         "chmod +x cpcpub\n./cpcpub";
 }
 
 function renderDownloadHero(d) {

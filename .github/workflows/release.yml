@@ -147,7 +147,7 @@ jobs:
             vars: MARCH=x86-64 MTUNE=generic
             target: x86_64
           # x86-64-v3 (AVX2 + FMA): the x86 build where all four variants
-          # differ, so `--variants` has something to say on this ISA.
+          # differ, so `--variants all` has something to say on this ISA.
           - name: x86_64-v3
             runs-on: ubuntu-24.04
             asset: cpcpub-linux-x86_64-v3
@@ -264,7 +264,7 @@ jobs:
           # which would refuse to start on an older Mac for no reason. 11.0 is
           # where Apple Silicon began, so that is the floor worth publishing.
           - name: macos-arm64
-            runs-on: macos-14
+            runs-on: macos-15
             asset: cpcpub-macos-arm64
             target: aarch64
             deployment-target: "11.0"
@@ -722,7 +722,7 @@ jobs:
             RUN="qemu-$QEMU ${QCPU:+-cpu $QCPU} ${root:+-L $root}"
           fi
           $RUN "./$BIN" --list-variants
-          $RUN "./$BIN" --full --cpus 0 --threads 1 \
+          $RUN "./$BIN" --mode full --cpus 0 --threads 1 \
               --time 0.05 --reps 1 --warmup 0.02 --json > run.json
 
       # The verification chain in one step: what the binary says it is has to be

@@ -1,7 +1,7 @@
 # Install cpcpub's Windows setup on this machine and check it the way
 # test-inside.sh checks a Linux package: the installed benchmark is the
 # release's build for this machine, to the byte; it is on PATH, it runs and
-# names itself; the Start-menu window finds the fastest build of it this
+# names itself; the Start-menu GUI finds the fastest build of it this
 # processor runs, runs it and reads the result back; installing again over it
 # changes nothing; and uninstalling takes all of it away again.
 #
@@ -80,13 +80,13 @@ $doc = Get-Content -Raw $run | ConvertFrom-Json
 if ($doc.build.binary_sha256 -ne (Digest $exe)) { throw "the run says $($doc.build.binary_sha256)" }
 Write-Host "binary_sha256 matches the installed file"
 
-Say "the window runs the benchmark"
-# This machine's own window, not one Windows would run under emulation.
+Say "the GUI runs the benchmark"
+# This machine's own GUI, not one Windows would run under emulation.
 $guiExe = Join-Path $dir "gui\cpcpub-gui.exe"
 $bytes = [IO.File]::ReadAllBytes($guiExe)
 $pe = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
 $want = if ($Machine -eq "x64") { 0x8664 } else { 0xAA64 }
-if ($pe -ne $want) { throw ("the window is for machine 0x{0:X4}, not 0x{1:X4}" -f $pe, $want) }
+if ($pe -ne $want) { throw ("the GUI is for machine 0x{0:X4}, not 0x{1:X4}" -f $pe, $want) }
 $smoke = Join-Path $work "smoke"
 New-Item -ItemType Directory -Force $smoke | Out-Null
 $report = Join-Path $smoke "report.json"
@@ -94,21 +94,21 @@ $env:CPCPUB_GUI_SMOKE = $report
 # Cairo: a runner has no GPU for GTK's default renderer to find.
 $env:GSK_RENDERER = "cairo"
 $gui = Start-Process (Join-Path $dir "gui\cpcpub-gui.exe") -PassThru
-if (-not $gui.WaitForExit(240000)) { $gui.Kill(); throw "the window was still open after four minutes" }
+if (-not $gui.WaitForExit(240000)) { $gui.Kill(); throw "the GUI was still open after four minutes" }
 Remove-Item Env:CPCPUB_GUI_SMOKE, Env:GSK_RENDERER
 if (-not (Test-Path $report)) {
     if (Test-Path "$report.log") { Get-Content "$report.log" }
-    throw "the window wrote no report (exit code $($gui.ExitCode))"
+    throw "the GUI wrote no report (exit code $($gui.ExitCode))"
 }
 $r = Get-Content -Raw $report | ConvertFrom-Json
 Write-Host "binary=$($r.binary) gtk=$($r.gtk) exit=$($r.exit) docs=$($r.docs) saved=$($r.saved)"
 # The fastest build installed that this processor runs. .NET asks the
-# processor itself, the window asks Windows: two answers that should agree.
+# processor itself, the GUI asks Windows: two answers that should agree.
 $pick = $exe
 if ($Machine -eq "x64" -and [System.Runtime.Intrinsics.X86.Avx2]::IsSupported) { $pick = Join-Path $dir "cpcpub-v3.exe" }
-if ($r.binary -ne $pick) { throw "the window picked $($r.binary), not $pick" }
-if ($r.exit -ne 0 -or $r.docs -ne 1) { Write-Host $r.log; throw "the window's run failed" }
-if (-not $r.saved) { throw "the window saved no result" }
+if ($r.binary -ne $pick) { throw "the GUI picked $($r.binary), not $pick" }
+if ($r.exit -ne 0 -or $r.docs -ne 1) { Write-Host $r.log; throw "the GUI's run failed" }
+if (-not $r.saved) { throw "the GUI saved no result" }
 Write-Host "GTK $($r.gtk): picked $pick, ran it, saved the result"
 
 Say "install again over it"

@@ -105,6 +105,8 @@ CREATE TABLE IF NOT EXISTS runs (
     cpu_layout_guess TEXT,            -- the same, as the hub has it, where not reported
     cpu_key       TEXT,               -- the CPU it is compared as; set by the hub
     cpus_offline  INTEGER,            -- CPUs present but switched off; such a run is compared with none
+    cpu_kinds     TEXT,               -- a sampled sweep's kinds of CPU, each kind's CPUs as JSON
+                                      -- lists; NULL where the sweep measured every CPU
 
     threads       INTEGER,
     seconds       REAL,

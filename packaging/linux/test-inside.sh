@@ -2,7 +2,7 @@
 # Run inside a distribution's container by test.sh, with the packages at /pkgs
 # and the release binaries they were built from at /rel. Installs cpcpub and
 # cpcpub-gui the way a user would, then checks that what landed is the release
-# itself and that the window can find it, run it and read the result back.
+# itself and that the GUI can find it, run it and read the result back.
 set -eu
 
 # Each format's name for this machine, and what the cpcpub package for it
@@ -85,7 +85,7 @@ if command -v appstreamcli >/dev/null; then
         /usr/share/metainfo/io.github.lukaszsobala.cpcpub.Gui.metainfo.xml
 fi
 
-say "the window runs the benchmark"
+say "the GUI runs the benchmark"
 Xvfb :99 -screen 0 1280x1024x24 >/dev/null 2>&1 &
 xvfb=$!
 sleep 1
@@ -101,7 +101,7 @@ try:
     report = json.load(open("/tmp/smoke/report.json"))
 except OSError:
     print(open("/tmp/smoke/stderr").read())
-    sys.exit("the window wrote no report")
+    sys.exit("the GUI wrote no report")
 print({k: v for k, v in report.items() if k != "log"})
 # The fastest build installed that this processor runs: the x86-64-v3 one
 # where the processor has all of x86-64-v3, the NEON one where it has NEON,

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Run cpcpub on a microcontroller over its serial console and save the result.
 
-    python3 mcu/cpcpub-serial.py                     # --full --json, saved to a file
+    python3 mcu/cpcpub-serial.py                     # a full run, saved to a file
     python3 mcu/cpcpub-serial.py -o run.json -- --time 1 --reps 5
-    python3 mcu/cpcpub-serial.py --port /dev/ttyACM0 -- --per-core
+    python3 mcu/cpcpub-serial.py --port /dev/ttyACM0 -- --mode per-core
 
 Finds the board -- the one USB serial port there is, or --port -- types the
 options after `--` at its prompt (always with --json added, since the document
 is what this is for), shows everything the board prints as it prints it, and
 writes the document it printed between its -----BEGIN CPCPUB JSON----- and
------END CPCPUB JSON----- lines. A --variants run prints one document per
-variant, and they are written as a JSON array, the same as
-`cpcpub --variants --json` writes on a desktop.
+-----END CPCPUB JSON----- lines. A run of several variants prints one
+document per variant, and they are written as a JSON array, the same as
+`cpcpub --variants all --json` writes on a desktop.
 
 Standard library only on Linux and macOS. Windows has no termios, so there it
 needs pyserial (`pip install pyserial`).
@@ -140,24 +140,63 @@ def type_line(port, line: str) -> str:
     return seen
 
 
-def run(port, command: str, silence: float, show) -> list[dict]:
-    """Type `command`, follow the output to the next prompt, return the documents."""
-    # Whatever the board printed before now is shown and dropped, so it cannot
-    # be mistaken for a reply. A board that is quiet for a second is sitting at
-    # its prompt already. One that is talking may be booting -- opening the port
-    # resets many ESP32 boards -- and anything typed before its console driver
-    # is up is lost, so then the wait is for the prompt itself.
-    seen = ""
-    quiet_until = time.monotonic() + 1.0
-    boot_until = time.monotonic() + 15.0
-    while time.monotonic() < (boot_until if seen else quiet_until):
+def settle(port, show) -> None:
+    """Wait until the board is at its prompt, showing what it prints meanwhile.
+
+    Whatever the board printed before now is shown and dropped, so it cannot
+    be mistaken for a reply. A board that is quiet for a second is sitting at
+    its prompt already. One that is talking may be booting -- opening the port
+    resets many ESP32 boards -- and anything typed before its console driver
+    is up is lost, so then the wait is for the prompt itself. Once the prompt
+    has gone by, half a second of quiet will do: what follows it is stray
+    input the board took and echoed (see clear_line).
+    """
+    tail = ""
+    talked = prompted = False
+    last = time.monotonic()
+    boot_until = last + 15.0
+    while True:
         data = port.read(0.2)
+        now = time.monotonic()
         if data:
             text = data.decode("utf-8", "replace")
             show(text)
-            seen = (seen + text)[-len(PROMPT):]
-            if seen.endswith(PROMPT):
-                break
+            talked = True
+            last = now
+            tail = (tail + text)[-64:]
+            prompted = prompted or PROMPT in tail
+            if tail.endswith(PROMPT):
+                return
+        elif (not talked and now - last >= 1.0) or (prompted and now - last >= 0.5) \
+                or now >= boot_until:
+            return
+
+
+def clear_line(port) -> None:
+    """Erase whatever is already on the board's input line.
+
+    A serial device that has just appeared -- a USB board after every reset or
+    flash -- starts with the system's echo on, and between this script opening
+    it and setting it raw the system echoes the board's own output back to it:
+    the board then holds the end of its prompt as typed input, and the command
+    would arrive as `cpcpu--version`. The board answers each backspace that
+    erases a character with "\\b \\b" and an empty line's with nothing, so one
+    at a time until nothing comes back clears the line, whatever firmware it is.
+    """
+    for _ in range(256):            # the board's line holds 255 characters
+        port.write(b"\x7f")
+        got = ""
+        deadline = time.monotonic() + 0.3
+        while time.monotonic() < deadline and "\b" not in got:
+            got += port.read(0.05).decode("utf-8", "replace")
+        if "\b" not in got:
+            return
+
+
+def run(port, command: str, silence: float, show) -> list[dict]:
+    """Type `command`, follow the output to the next prompt, return the documents."""
+    settle(port, show)
+    clear_line(port)
     buf = type_line(port, command).replace("\r", "")
 
     docs: list[dict] = []
@@ -198,7 +237,7 @@ def run(port, command: str, silence: float, show) -> list[dict]:
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Run cpcpub on a microcontroller and save its result.",
-        epilog="Options after -- go to the board; the default is --full.")
+        epilog="Options after -- go to the board; with none it runs --mode full.")
     ap.add_argument("--port", help="serial device (default: the only one there is)")
     ap.add_argument("--baud", type=int, default=115200,
                     help="for a UART console; USB ignores it (default 115200)")
@@ -210,7 +249,7 @@ def main() -> int:
     ap.add_argument("board_args", nargs=argparse.REMAINDER)
     a = ap.parse_args()
 
-    args = [x for x in a.board_args if x != "--"] or ["--full"]
+    args = [x for x in a.board_args if x != "--"]
     if "--json" not in args:
         args.append("--json")
     command = " ".join(args)

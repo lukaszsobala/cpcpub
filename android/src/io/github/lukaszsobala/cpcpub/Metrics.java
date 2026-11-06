@@ -12,7 +12,7 @@ import org.json.JSONObject;
 
 /**
  * What a result document's columns are and what they mean: the desktop
- * window's tables (gui/cpcpub-gui.py), in Java. The two should say the same
+ * GUI's tables (gui/cpcpub-gui.py), in Java. The two should say the same
  * thing about the same number.
  */
 final class Metrics {
@@ -47,7 +47,7 @@ final class Metrics {
         "disp_thr_mcall_s", "disp_cap_calls");
 
     /** The columns shown unless Detailed is on: the clock and the hub's and the
-     *  desktop window's headline set. Seventeen columns is more than a phone's
+     *  desktop GUI's headline set. Seventeen columns is more than a phone's
      *  width, and most of them matter only to someone looking for something. */
     static final Set<String> HEADLINE = Set.of("mhz", "score", "int_thr_mops", "mem_gbps");
 
@@ -139,7 +139,7 @@ final class Metrics {
         return String.valueOf(value);
     }
 
-    /** The variant a document came from, spelled the way --variant takes it. */
+    /** The variant a document came from, spelled the way --variants takes it. */
     static String variantOf(JSONObject doc) {
         JSONObject build = doc.optJSONObject("build");
         if (build == null) return "?";

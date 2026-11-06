@@ -108,13 +108,13 @@ static void cool_down(void) {
 //
 // Auto-vectorization and FMA contraction cannot be switched per function, so
 // the binary carries four compilations of kernels.c and picks one at runtime.
-// The order is the order --variants runs them: the cross-ISA fairness baseline
-// first, then one toggle at a time, then both.
+// The order is the order `--variants all` runs them: the cross-ISA fairness
+// baseline first, then one toggle at a time, then both.
 //
 // `distinct` is whether the toggles can change code generation for the -march
 // this binary was built for (see TARGET_HAS_SIMD / TARGET_HAS_FMA). A variant
-// that is not distinct is still present and still runnable -- it is simply the
-// same machine code as the baseline, so a default --variants run skips it
+// that is not distinct is still present and still runnable by name -- it is
+// simply the same machine code as the baseline, so `--variants all` skips it
 // rather than measuring one build twice.
 typedef struct {
     const kernel_set_t *k;
@@ -399,6 +399,122 @@ static void warn_if_cpus_offline(void) {
                    "hub keeps it out of its comparisons. Bring them online "
                    "(/sys/devices/system/cpu/cpuN/online) and run again.\n");
 }
+
+// ---------------------------------------------------------------------------
+// Kinds of CPU, for the per-core sweep
+// ---------------------------------------------------------------------------
+//
+// Most of a large machine's CPUs repeat -- 64 of one design, or 8 big and 16
+// small -- and measuring each of them one at a time says the same thing many
+// times over. So the sweep measures up to --per-kind CPUs of each kind (4
+// unless told otherwise), and the document lists every kind's CPUs under
+// "sweep", which is how a hub reads the rows it has for the CPUs it does not.
+//
+// Two CPUs are one kind only when the system says nothing that tells them
+// apart: the design (MIDR, on Arm), the capacity the scheduler gives each, the
+// clock it rates each at, the rank the firmware gives each among preferred
+// cores (acpi_cppc: what marks a Ryzen's or an Intel chip's favoured cores),
+// and the size of every cache. Any difference splits a kind, so a wrong guess
+// costs time rather than a missing core; and a system that says none of it
+// is swept whole.
+
+#define DEFAULT_PER_KIND 4
+
+// What the system says of one CPU that could set it apart from another, as
+// one string. Returns 0 where it says none of it.
+static int cpu_kind_key(int cpu, char *out, size_t outsz) {
+    out[0] = '\0';
+#if defined(__linux__)
+    static const char *const files[] = {
+        "regs/identification/midr_el1", "cpu_capacity",
+        "cpufreq/cpuinfo_max_freq", "acpi_cppc/highest_perf",
+        "cache/index0/size", "cache/index1/size", "cache/index2/size",
+        "cache/index3/size", "cache/index4/size",
+    };
+    int said = 0;
+    size_t used = 0;
+    for (int k = 0; k < ARRAY_LEN(files); ++k) {
+        char path[160], v[64] = "";
+        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/%s", cpu, files[k]);
+        FILE *f = fopen(path, "r");
+        if (f) {
+            if (fgets(v, (int)sizeof(v), f)) said = 1;
+            else v[0] = '\0';
+            fclose(f);
+            v[strcspn(v, "\r\n")] = '\0';
+        }
+        const int w = snprintf(out + used, outsz - used, "%s|", v);
+        if (w < 0 || (size_t)w >= outsz - used) return 0;   // too long to trust
+        used += (size_t)w;
+    }
+    return said;
+#else
+    (void)cpu; (void)outsz;
+    return 0;
+#endif
+}
+
+// The per-core sweep's CPUs out of `list`: all of it, or up to `per_kind` of
+// each kind spread evenly over the kind's CPUs, its first and last included,
+// so that a sample reaches each cluster or chiplet the kind is spread over.
+// kind_of[i] gets list[i]'s kind, numbered in order of each kind's first CPU.
+// Returns the number of kinds, or 0 where every CPU is swept: no per_kind, a
+// system that tells its CPUs apart in no way, or no kind with more than
+// per_kind CPUs in it.
+static int sample_kinds(const int *list, int n, int per_kind, int *out, int *n_out,
+                        int *kind_of) {
+    *n_out = n;
+    memcpy(out, list, (size_t)n * sizeof(*out));
+    if (per_kind <= 0 || n <= per_kind) return 0;
+    enum { KEY = 512 };
+    char *keys = (char *)malloc((size_t)n * KEY);
+    int *members = (int *)malloc((size_t)n * sizeof(*members));
+    char *chosen = (char *)calloc((size_t)n, 1);
+    int n_kinds = 0;
+    if (!keys || !members || !chosen) goto whole;
+    for (int i = 0; i < n; ++i) {
+        if (!cpu_kind_key(list[i], keys + (size_t)i * KEY, KEY)) goto whole;
+        kind_of[i] = -1;
+        for (int j = 0; j < i && kind_of[i] < 0; ++j) {
+            if (!strcmp(keys + (size_t)i * KEY, keys + (size_t)j * KEY)) kind_of[i] = kind_of[j];
+        }
+        if (kind_of[i] < 0) kind_of[i] = n_kinds++;
+    }
+    int skipped = 0;
+    for (int k = 0; k < n_kinds; ++k) {
+        int m = 0;
+        for (int i = 0; i < n; ++i) if (kind_of[i] == k) members[m++] = i;
+        if (m <= per_kind) {
+            for (int i = 0; i < m; ++i) chosen[members[i]] = 1;
+            continue;
+        }
+        // Rounded to the nearest member: 4 of 16 are the 1st, 6th, 11th, 16th.
+        for (int s = 0; s < per_kind; ++s) {
+            const int at = per_kind == 1 ? 0
+                         : (s * (m - 1) + (per_kind - 1) / 2) / (per_kind - 1);
+            chosen[members[at]] = 1;
+        }
+        skipped += m - per_kind;
+    }
+    if (skipped == 0) goto whole;
+    *n_out = 0;
+    for (int i = 0; i < n; ++i) if (chosen[i]) out[(*n_out)++] = list[i];
+    free(keys); free(members); free(chosen);
+    return n_kinds;
+whole:
+    free(keys); free(members); free(chosen);
+    return 0;
+}
+
+// What the document says of a sampled sweep: set by main() when the sweep
+// left CPUs out, and written by emit_json(). n_kinds 0: it swept every CPU.
+static struct {
+    int        per_kind;
+    int        n_kinds;
+    int        n;              // every CPU the kinds cover
+    const int *cpus;           // the online list main() built
+    const int *kind_of;        // parallel to cpus
+} g_sweep;
 
 static const char *arch_string(void) {
 #if defined(__x86_64__) || defined(_M_X64)
@@ -1144,47 +1260,69 @@ static void print_version(void) {
 static void usage(const char *prog) {
     fprintf(stderr,
         "Usage: %s [options]\n"
-        "  --variant NAME     build variant to measure: scalar-nofma (default),\n"
-        "                     vector-nofma, scalar-fma, vector-fma\n"
-        "  --variants         run every variant the toggles change on this\n"
-        "                     target, in turn, and compare them. --variants=all\n"
-        "                     forces all four, --variants=A,B picks a list\n"
+        "Measures this machine's cores and memory with small timed kernels and\n"
+        "prints a table of rates; -v explains each column.\n"
+        "\n"
+        "What to run:\n"
+        "  --mode M           full (default): every CPU at once, then the per-core\n"
+        "                     sweep, in one report -- the run to upload;\n"
+        "                     threads: only every CPU at once; per-core: only\n"
+        "                     the sweep, which measures each kind of core alone\n"
+        "  --per-kind N       the sweep measures up to N CPUs of each kind of\n"
+        "                     core -- CPUs the system reports alike in design,\n"
+        "                     capacity, clock and caches -- spread over the\n"
+        "                     kind (default 4; 0 measures every CPU)\n"
+        "  --threads N        threads in the multi-threaded run (default: one\n"
+        "                     per online CPU)\n"
+        "  --cpus LIST        the CPUs to use, e.g. 0-3,6: threads are pinned\n"
+        "                     to them in turn, and the sweep measures every one\n"
+        "                     (default: the online CPUs, sampled by --per-kind)\n"
+        "  --variants WHICH   build variants to measure in turn, and compare:\n"
+        "                     a name (scalar-nofma is the default and the\n"
+        "                     cross-ISA baseline; vector-nofma, scalar-fma,\n"
+        "                     vector-fma), a list A,B, or all -- every one\n"
+        "                     whose code differs on this target\n"
         "  --list-variants    show the variants this binary carries and exit\n"
-        "  --threads N        threads to run (default: online CPUs)\n"
-        "  --cpus LIST        pin to these CPUs, e.g. 0-3,6 (default: 0..threads-1)\n"
-        "  --per-core         run the suite single-threaded on each CPU in turn\n"
-        "  --full             both: the multi-threaded run and the per-core\n"
-        "                     sweep in one report. Use this for uploads\n"
-        "  --disp-sweep       diagnostic: sweep the indirect-dispatch selector\n"
-        "                     period on each CPU and print calls/cycle vs period\n"
+        "\n"
+        "How long and how much:\n"
         "  --time SEC         measured seconds per phase (default 0.5)\n"
         "  --reps N           repetitions per phase, best is kept (default 3)\n"
         "  --warmup SEC       warm-up seconds before each phase (default 0.15)\n"
         "  --cooldown SEC     idle this long before each multi-threaded run and\n"
         "                     each per-core sweep after the first, for a phone or\n"
         "                     fanless board to stop throttling (default 0)\n"
-        "  --mem-per-thread B per-thread buffer for the memory phases (default 16 MiB)\n"
-        "  --mem BYTES        total memory across all threads (overrides the above)\n"
+        "  --mem-per-thread B bytes of buffer per thread for the memory phases\n"
+        "                     (default: 16 MiB, or 4x the last-level cache --\n"
+        "                     shared out among the threads -- if that is more)\n"
+        "  --mem BYTES        total across all threads (overrides the above)\n"
         "  --no-mem           skip the memory bandwidth and latency phases\n"
+        "\n"
+        "Less often:\n"
         "  --no-pin           do not set thread affinity\n"
-        "  --clock mono|raw   clock source (default raw)\n"
+        "  --clock mono|raw   clock to time with: raw (default) is not slewed by\n"
+        "                     NTP, and is mono on a system without one\n"
         "  --seed N           PRNG seed for setup (default 1)\n"
-        "  --mhz N            the core clock, for a machine that will not say:\n"
-        "                     no cpufreq node and no device-tree clock leaves\n"
-        "                     only the INT-lat estimate, which assumes one\n"
+        "  --mhz N            the core clock in MHz, for a machine that will not\n"
+        "                     say: no cpufreq node and no device-tree clock\n"
+        "                     leaves only the INT-lat estimate, which assumes one\n"
         "                     dependent op per cycle and reads low on a core\n"
         "                     that does not manage it. Recorded as given, not\n"
         "                     measured, and changes no other number\n"
-        "  --format F         output as text (default), json or tsv;\n"
-        "                     --json and --tsv are shorthands. In json/tsv the\n"
-        "                     results go to stdout and all prose to stderr\n"
+        "  --disp-sweep       diagnostic: sweep the indirect-dispatch selector\n"
+        "                     period on each CPU and print calls/cycle vs period\n"
+        "\n"
+        "Output:\n"
+        "  --format F         text (default), json or tsv; --json and --tsv are\n"
+        "                     shorthands. In json/tsv the results go to stdout\n"
+        "                     and all prose to stderr\n"
         "  -v, --verbose      explain every metric after the results\n"
         "  --version          print the version, the build and this machine,\n"
         "                     then exit\n"
         "\n"
         "Uploading (the results hub):\n"
         "  --submit [URL]     after measuring, upload the result to the hub at\n"
-        "                     URL, e.g. http://my.server:8782%s\n"
+        "                     URL, e.g. http://my.server:8782\n"
+        "%s"
         "  --token TOKEN      upload token, so the run lands on your account\n"
         "                     rather than anonymously. Get one from the hub's\n"
         "                     Account tab. $CPCPUB_TOKEN is read when this is\n"
@@ -1192,11 +1330,18 @@ static void usage(const char *prog) {
         "  --label TEXT       short label for the run, e.g. the machine's name\n"
         "  --notes TEXT       longer notes: cooling, governor, anything that\n"
         "                     explains the numbers\n"
-        "The URL may also come from $CPCPUB_HUB. https needs curl on PATH.\n",
+        "The URL may also come from $CPCPUB_HUB. https needs curl on PATH.\n"
+        "\n"
+        "Examples:\n"
+        "  cpcpub                     the full run, as a table\n"
+        "  cpcpub -v                  the same, with every metric explained\n"
+        "  cpcpub --json > run.json   the result as a document, to upload later\n"
+        "  cpcpub --variants all      once per build variant, compared\n",
         prog,
-        CPCPUB_HUB_URL[0] ? " (default: " CPCPUB_HUB_URL ")"
-                          : ". This build has no default hub, so the URL is "
-                            "required");
+        // Its own line, after a space: the desktop GUI and the Android
+        // build read the default hub out of " (default: URL)".
+        CPCPUB_HUB_URL[0] ? "                     (default: " CPCPUB_HUB_URL ")\n"
+                          : "                     This build has no default hub: URL is required\n");
 }
 
 // Largest cache size the system reports, in bytes (0 if unknown).
@@ -1414,7 +1559,7 @@ static void json_open(const char *mode, const run_opts_t *o, int threads,
     jout(",\n  \"config\": { \"threads\": %d, \"seconds_per_phase\": %g,"
          " \"reps\": %d, \"warmup_seconds\": %g, \"mem_bytes_per_thread\": %zu",
          threads, o->seconds, o->reps, o->warmup, o->mem_per_thread);
-    // --full measures with two buffer sizes -- N threads share the cache, one
+    // --mode full measures with two buffer sizes -- N threads share the cache, one
     // core has it to itself -- so the sweep's size is its own key rather than
     // whichever of the two happened to be set last.
     if (mem_sweep > 0) jout(", \"mem_bytes_per_core_sweep\": %zu", mem_sweep);
@@ -1431,7 +1576,7 @@ static void json_close(void) { jout("\n}\n"); }
 // Phases
 // ---------------------------------------------------------------------------
 
-// Everything one invocation measured. --full carries both halves: the
+// Everything one invocation measured. --mode full carries both halves: the
 // multi-threaded run says what the machine does at once, the per-core sweep says
 // what each core type does on its own, and only the pair is worth comparing
 // against another machine.
@@ -1492,7 +1637,7 @@ static int collect_threads(suite_t *s, const run_opts_t *o, int threads, int pin
 }
 
 // One CPU at a time, so a heterogeneous machine reports each core type. In text
-// mode rows print as they finish: the sweep is the long part of a --full run.
+// mode rows print as they finish: the sweep is the long part of a full run.
 static int collect_per_core(suite_t *s, const run_opts_t *o, const int *cpu_list,
                             int n_cpus, int pin, int text_rows) {
     result_t *res = (result_t *)calloc((size_t)n_cpus, sizeof(*res));
@@ -1581,6 +1726,20 @@ static void emit_json(const suite_t *s, const char *mode, const run_opts_t *o,
         jout("  ]");
         const double spread = core_spread(s);
         if (spread > 0.0) jout(",\n  \"core_spread\": %.6g", spread);
+        // The CPUs each swept row stands for, as one list per kind.
+        if (g_sweep.n_kinds > 0) {
+            jout(",\n  \"sweep\": { \"per_kind\": %d, \"kinds\": [", g_sweep.per_kind);
+            for (int k = 0; k < g_sweep.n_kinds; ++k) {
+                jout("%s[", k ? ", " : "");
+                for (int i = 0, first = 1; i < g_sweep.n; ++i) {
+                    if (g_sweep.kind_of[i] != k) continue;
+                    jout("%s%d", first ? "" : ", ", g_sweep.cpus[i]);
+                    first = 0;
+                }
+                jout("]");
+            }
+            jout("] }");
+        }
     }
     jout(",\n  \"checksum\": \"0x%016llx\"", (unsigned long long)s->checksum);
     json_close();
@@ -1706,7 +1865,7 @@ static int reply_page(const char *body, const char *hub, size_t hub_len,
 static int submit_document(const char *doc, size_t len, const char *variant) {
     // Not msg(): an upload is a side effect, not part of the report, and its
     // outcome has to be visible when the report itself is being redirected --
-    // `cpcpub --full --submit ... > run.txt` must not hide that nothing landed.
+    // `cpcpub --submit ... > run.txt` must not hide that nothing landed.
     // It also keeps the delete token out of a file that gets shared: it is the
     // credential that withdraws the run.
     FILE *o = stderr;
@@ -1812,7 +1971,7 @@ static const variant_t *find_variant(const char *name) {
 }
 
 static void list_variants(FILE *o) {
-    fprintf(o, "build variants carried by this binary (--variant NAME):\n");
+    fprintf(o, "build variants carried by this binary (--variants NAME):\n");
     for (int i = 0; i < N_VARIANTS; ++i) {
         const variant_t *v = &g_variants[i];
         fprintf(o, "  %-14s %-38s %s\n", v->k->name, v->k->flags,
@@ -1828,26 +1987,23 @@ static void list_variants(FILE *o) {
                    " fused multiply-add, so\n   -ffp-contract=fast has nothing"
                    " to contract)\n");
     }
-    fprintf(o, "--variants runs every distinct one in turn; --variants=all "
-               "runs all %d.\n", N_VARIANTS);
+    fprintf(o, "--variants all runs every distinct one in turn; one named runs "
+               "whether distinct or not.\n");
 }
 
-// Fill `sel` from a --variants list. NULL or "distinct" selects every variant
-// the toggles can actually change on this target; "all" selects all four;
-// otherwise a comma-separated list of names, in the order given. Returns the
-// count, or -1 on an unknown name.
+// Fill `sel` from a --variants value: "all" selects every variant the toggles
+// can actually change on this target, and anything else is a comma-separated
+// list of names, run in the order given, distinct or not -- naming one is
+// asking for it. Returns the count, or -1 on an unknown name or an empty list.
 static int select_variants(const char *spec, const variant_t **sel) {
     int n = 0;
-    if (!spec || !strcmp(spec, "distinct")) {
+    if (!strcmp(spec, "all")) {
         for (int i = 0; i < N_VARIANTS; ++i) {
             if (g_variants[i].distinct) sel[n++] = &g_variants[i];
         }
         return n;
     }
-    if (!strcmp(spec, "all")) {
-        for (int i = 0; i < N_VARIANTS; ++i) sel[n++] = &g_variants[i];
-        return n;
-    }
+    if (!*spec) return -1;
     const char *p = spec;
     while (*p) {
         char name[32];
@@ -1874,6 +2030,8 @@ typedef struct {
     int    pin;
     const int *cpu_list;
     int    n_cpus;
+    const int *sweep_list;  // the per-core sweep's CPUs: cpu_list, or a sample of it
+    int    n_sweep;
     size_t mem_mt;          // per thread, multi-threaded phase
     size_t mem_pc;          // per thread, per-core sweep
     int    want_threads;
@@ -1915,12 +2073,19 @@ static int run_variant(const run_cfg_t *c, run_opts_t *opts, int idx, int n_sel,
     if (c->want_cores) {
         cool_down();
         fprintf(msg(), "%smode: per-core sweep over %d CPUs, %.2fs/phase x %d reps "
-                       "(best kept),\n      warmup %.2fs, mem %zu MiB/thread\n\n",
-                c->want_threads ? "\n" : "", c->n_cpus, c->duration, c->reps,
+                       "(best kept),\n      warmup %.2fs, mem %zu MiB/thread\n",
+                c->want_threads ? "\n" : "", c->n_sweep, c->duration, c->reps,
                 c->warmup, c->mem_pc >> 20);
+        if (g_sweep.n_kinds > 0) {
+            fprintf(msg(), "      %d of the %d, up to %d of each of %d kind%s "
+                           "(--per-kind 0 sweeps every one)\n",
+                    c->n_sweep, g_sweep.n, g_sweep.per_kind, g_sweep.n_kinds,
+                    g_sweep.n_kinds > 1 ? "s" : "");
+        }
+        fprintf(msg(), "\n");
         opts->mem_per_thread = c->mem_pc;
         if (g_format == FMT_TEXT) text_per_core_header();
-        if (collect_per_core(&s, opts, c->cpu_list, c->n_cpus, c->pin,
+        if (collect_per_core(&s, opts, c->sweep_list, c->n_sweep, c->pin,
                              g_format == FMT_TEXT) != 0) {
             suite_free(&s);
             return -1;
@@ -2031,8 +2196,9 @@ int main(int argc, char **argv) {
     int threads = get_cpu_count();
     int cpu_list[1024];
     int n_cpus = 0;
+    // --mode: full is both of these off but `full` on; threads is all three off.
     int per_core = 0;
-    int full = 0;
+    int full = 1;
     int disp_sweep = 0;
     int pin = 1;
     int use_clock_raw = 1;
@@ -2045,27 +2211,35 @@ int main(int argc, char **argv) {
     uint64_t seed = 1;
     const variant_t *sel[N_VARIANTS] = { &g_variants[VARIANT_DEFAULT] };
     int n_sel = 1;
+    int variants_all = 0;
+    int per_kind = DEFAULT_PER_KIND;
 
     for (int i = 1; i < argc; ++i) {
         const char *a = argv[i];
-        if (!strcmp(a, "--variant") && i + 1 < argc) {
-            const variant_t *v = find_variant(argv[++i]);
-            if (!v) {
-                fprintf(stderr, "unknown --variant '%s'\n\n", argv[i]);
-                list_variants(stderr);
+        // --mode and --variants take their value after a space or an =.
+        if (!strcmp(a, "--mode") || !strncmp(a, "--mode=", 7)) {
+            const char *m = a[6] == '=' ? a + 7 : i + 1 < argc ? argv[++i] : "";
+            if (!strcmp(m, "full"))          { full = 1; per_core = 0; }
+            else if (!strcmp(m, "threads"))  { full = 0; per_core = 0; }
+            else if (!strcmp(m, "per-core")) { full = 0; per_core = 1; }
+            else {
+                fprintf(stderr, "--mode takes full, threads or per-core%s%s\n",
+                        *m ? ", not " : "", m);
                 return 2;
             }
-            sel[0] = v;
-            n_sel = 1;
-        } else if (!strcmp(a, "--variants")) {
-            n_sel = select_variants(NULL, sel);
-        } else if (!strncmp(a, "--variants=", 11)) {
-            n_sel = select_variants(a + 11, sel);
+        } else if (!strcmp(a, "--variants") || !strncmp(a, "--variants=", 11)) {
+            // A following option is not a value: `--variants --json` is a
+            // --variants with none, said so, not a variant called --json.
+            const char *spec = a[10] == '=' ? a + 11
+                             : i + 1 < argc && argv[i + 1][0] != '-' ? argv[++i] : "";
+            n_sel = select_variants(spec, sel);
             if (n_sel <= 0) {
-                fprintf(stderr, "bad --variants list '%s'\n\n", a + 11);
+                fprintf(stderr, "--variants takes all, a name, or a list of names "
+                                "A,B%s%s\n\n", *spec ? ", not " : "", spec);
                 list_variants(stderr);
                 return 2;
             }
+            variants_all = !strcmp(spec, "all");
         } else if (!strcmp(a, "--list-variants")) {
             list_variants(stdout);
             return 0;
@@ -2074,10 +2248,14 @@ int main(int argc, char **argv) {
         } else if (!strcmp(a, "--cpus") && i + 1 < argc) {
             n_cpus = parse_cpu_list(argv[++i], cpu_list, ARRAY_LEN(cpu_list));
             if (n_cpus <= 0) { fprintf(stderr, "bad --cpus list\n"); return 2; }
-        } else if (!strcmp(a, "--per-core")) {
-            per_core = 1;
-        } else if (!strcmp(a, "--full")) {
-            full = 1;
+        } else if (!strcmp(a, "--per-kind") && i + 1 < argc) {
+            char *end = NULL;
+            const long v = strtol(argv[++i], &end, 10);
+            if (end == argv[i] || *end || v < 0 || v > 1024) {
+                fprintf(stderr, "--per-kind takes a number of CPUs, 0 for every one\n");
+                return 2;
+            }
+            per_kind = (int)v;
         } else if (!strcmp(a, "--disp-sweep")) {
             disp_sweep = 1;
         } else if (!strcmp(a, "--time") && i + 1 < argc) {
@@ -2216,13 +2394,14 @@ int main(int argc, char **argv) {
     // --disp-sweep prints a curve per CPU, not a summary row, so there is
     // nothing to stack variants into; ask for one explicitly instead.
     if (disp_sweep && n_sel > 1) {
-        fprintf(stderr, "--disp-sweep measures one variant; use --variant NAME\n");
+        fprintf(stderr, "--disp-sweep measures one variant; use --variants NAME\n");
         return 2;
     }
 
     // Default CPU list: the first `threads` online CPUs, or every online CPU
-    // in --per-core mode. From the kernel's online list where it has one: with
+    // for a per-core sweep. From the kernel's online list where it has one: with
     // a CPU switched off, 0..n-1 would name it and leave out the last one.
+    const int cpus_given = n_cpus > 0;
     if (n_cpus == 0) {
         const int online = get_cpu_count();
         const int want = (per_core || full || disp_sweep) ? online : threads;
@@ -2232,6 +2411,21 @@ int main(int argc, char **argv) {
             cpu_list[i] = have > 0 ? ids[i % have] : i;
         }
         n_cpus = want < ARRAY_LEN(cpu_list) ? want : ARRAY_LEN(cpu_list);
+    }
+
+    // The per-core sweep's own list: a sample of each kind of CPU, unless the
+    // CPUs were named -- a --cpus list is what to measure, every one of it --
+    // or there is no pinning, under which a CPU number names nothing.
+    static int sweep_list[1024], kind_of[1024];
+    int n_sweep = n_cpus;
+    memcpy(sweep_list, cpu_list, (size_t)n_cpus * sizeof(*sweep_list));
+    if ((per_core || full) && pin && !cpus_given && !disp_sweep) {
+        g_sweep.n_kinds = sample_kinds(cpu_list, n_cpus, per_kind, sweep_list,
+                                       &n_sweep, kind_of);
+        g_sweep.per_kind = per_kind;
+        g_sweep.n = n_cpus;
+        g_sweep.cpus = cpu_list;
+        g_sweep.kind_of = kind_of;
     }
     set_clock_mode(use_clock_raw);
     find_dram_devfreq();
@@ -2244,11 +2438,20 @@ int main(int argc, char **argv) {
         }
         fprintf(msg(), "\n");
     }
+    if (variants_all && n_sel < N_VARIANTS) {
+        fprintf(msg(), "variants: skipped, as the same code as the baseline here:");
+        for (int i = 0, k = 0; i < N_VARIANTS; ++i) {
+            if (!g_variants[i].distinct) {
+                fprintf(msg(), "%s %s", k++ ? "," : "", g_variants[i].k->name);
+            }
+        }
+        fprintf(msg(), " (--variants NAME runs one anyway)\n");
+    }
 
     // Size the default working set from the cache the machine actually has: a
     // fixed default silently measures cache rather than DRAM on anything with a
     // large last-level cache. The two phases need different sizes -- N threads
-    // share the cache, one core has it to itself -- so --full sizes each of
+    // share the cache, one core has it to itself -- so --mode full sizes each of
     // them separately rather than running one of the two mis-sized.
     size_t mem_mt = mem_per_thread;    // multi-threaded run, per thread
     size_t mem_pc = mem_per_thread;    // per-core sweep, single thread
@@ -2381,9 +2584,11 @@ int main(int argc, char **argv) {
         .pin          = pin,
         .cpu_list     = cpu_list,
         .n_cpus       = n_cpus,
+        .sweep_list   = sweep_list,
+        .n_sweep      = n_sweep,
         .mem_mt       = mem_mt,
         .mem_pc       = mem_pc,
-        .want_threads = !per_core,             // --full implies both
+        .want_threads = !per_core,             // --mode full is both
         .want_cores   = per_core || full,
         .mode         = full ? "full" : (per_core ? "per-core" : "threads"),
         .duration     = duration,

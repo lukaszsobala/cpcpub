@@ -906,6 +906,57 @@ class HubTest(unittest.TestCase):
         self.assertEqual(by_cpu[("thread", 7)], "large")
         self.assertIsNone(by_cpu[("total", None)])
 
+    def test_a_sampled_sweep_stands_for_every_cpu_of_its_kinds(self):
+        # 4 large and 12 small CPUs; the sweep measured 2 of each, as
+        # --per-kind 2 does, and listed every CPU of both kinds.
+        doc = document("full")
+        doc["system"].update(cpu_models="Sampled Hybrid", cpus=16)
+        doc["config"]["threads"] = 16
+        big, small = list(range(4)), list(range(4, 16))
+        doc["cores"] = [core(cpu=c, score=s) for c, s in
+                        ((0, 10500), (3, 10600), (4, 8000), (15, 8100))]
+        doc["threads"] = [core("thread", c, score=5000.0) for c in range(16)]
+        doc["total"] = core("total", None, threads=16)
+        doc["sweep"] = {"per_kind": 2, "kinds": [big, small]}
+        out = self.upload(doc)
+        _, run = self.req(f"/api/runs/{out['id']}")
+        self.assertEqual([(t["scope"], t["name"], t["cpus"], t.get("of"))
+                          for t in run["types"]],
+                         [("cpu", "large", [0, 3], big), ("cpu", "small", [4, 15], small),
+                          ("thread", "large", big, None), ("thread", "small", small, None)])
+        self.assertNotIn("cpu_kinds", run)
+
+    def test_a_sweep_that_does_not_cover_its_rows_is_refused(self):
+        for kinds, why in (([[0, 1]], "in none"), ([[0, 1, 2, 3], [4, 5]], "none of its"),
+                           ([[0, 1], [1, 2, 3]], "more than one"), ([[0, "x"]], "CPU numbers")):
+            doc = document("per-core")
+            doc["system"]["cpus"] = 6
+            doc["cores"] = [core(cpu=0), core(cpu=3)]
+            doc["sweep"] = {"per_kind": 1, "kinds": kinds}
+            status, out = self.expect_error("/api/runs", "POST", doc)
+            self.assertEqual(status, 400, kinds)
+            self.assertIn(why, out["error"])
+
+    def test_a_sweep_that_leaves_an_online_cpu_out_of_its_kinds_is_refused(self):
+        # Six online CPUs, kinds naming five: the sixth would be in no kind.
+        doc = document("per-core")
+        doc["system"]["cpus"] = 6
+        doc["cores"] = [core(cpu=0), core(cpu=3)]
+        doc["sweep"] = {"per_kind": 1, "kinds": [[0, 1, 2], [3, 4]]}
+        status, out = self.expect_error("/api/runs", "POST", doc)
+        self.assertEqual(status, 400)
+        self.assertIn("every one of 'system.cpus'", out["error"])
+
+    def test_a_sampled_sweep_with_a_cpu_that_is_no_number_is_refused(self):
+        # Refused as a bad upload, not a server error from an unhashable cpu.
+        for cpu in ([0], {"n": 0}):
+            doc = document("per-core")
+            doc["cores"] = [core(cpu=cpu), core(cpu=3)]
+            doc["sweep"] = {"per_kind": 1, "kinds": [[0, 1], [2, 3]]}
+            status, out = self.expect_error("/api/runs", "POST", doc)
+            self.assertEqual(status, 400, cpu)
+            self.assertIn("cpu", out["error"])
+
     def test_the_expanded_row_carries_the_kinds_too(self):
         out = self.hybrid("Hybrid Kinds 2", [8000, 8000, 10500, 10500], mode="full")
         _, page = self.req(f"/api/cores?run={out['id']}&scope=thread")
@@ -1171,6 +1222,37 @@ class CoreTypesTest(unittest.TestCase):
 
     def test_a_single_core_is_not_grouped(self):
         self.assertEqual(self.kinds([10000]), [])
+
+    def test_an_unswept_cpu_follows_its_kind_by_vote(self):
+        # Kind [0, 1, 2] had CPUs 0 and 1 swept, which came out small and
+        # large: a tie, so its unswept CPU 2 goes with CPU 0's.
+        recs = [{"id": 0, "scope": "cpu", "cpu": 0, "score": 1000},
+                {"id": 1, "scope": "cpu", "cpu": 1, "score": 2000}]
+        recs += [{"id": 10 + c, "scope": "thread", "cpu": c, "score": 1.0} for c in range(3)]
+        got = srv.core_types(recs, "", [[0, 1, 2]])
+        self.assertEqual([(t["scope"], t["name"], t["cpus"]) for t in got],
+                         [("cpu", "large", [1]), ("cpu", "small", [0]),
+                          ("thread", "large", [1]), ("thread", "small", [0, 2])])
+        # The per-core groups split the kind the same way, rather than each
+        # claiming all three of its CPUs.
+        self.assertEqual([t.get("of") for t in got if t["scope"] == "cpu"], [[1], [0, 2]])
+
+    def test_a_kind_whose_swept_cpus_scored_apart_is_counted_once(self):
+        # One system kind of four, its two swept CPUs a step apart: the layout
+        # still adds up to the four, not to four in each group.
+        recs = [{"id": 0, "scope": "cpu", "cpu": 0, "score": 2000},
+                {"id": 1, "scope": "cpu", "cpu": 3, "score": 6000}]
+        layout = srv.guess_layout(recs, "Cortex-A55 + Cortex-A76", 4, [[0, 1, 2, 3]])
+        counts = [int(part.split("x")[0]) for part in (layout or "").split(" + ")]
+        self.assertEqual(sum(counts), 4, layout)
+
+    def test_a_sampled_sweep_counts_its_layout_from_the_kinds(self):
+        recs = [{"id": c, "scope": "cpu", "cpu": c, "score": s}
+                for c, s in ((0, 2000), (3, 2010), (4, 6000), (7, 6100))]
+        line = "Cortex-A55 + Cortex-A76 (Some Board)"
+        self.assertEqual(srv.guess_layout(recs, line, 8, [[0, 1, 2, 3], [4, 5, 6, 7]]),
+                         "4x Cortex-A55 + 4x Cortex-A76")
+        self.assertIsNone(srv.guess_layout(recs, line, 8))   # four rows, eight CPUs
 
     def test_unpinned_threads_are_one_group(self):
         self.assertEqual(self.kinds([8000, 10500], threads=(-1, -1)),

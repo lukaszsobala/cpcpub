@@ -875,10 +875,14 @@ def validate(payload: object) -> tuple[dict, list[dict]]:
     records: list[tuple[str, object]] = []
     cores = payload.get("cores")
     threads = payload.get("threads")
+    run["cpu_kinds"] = None
     if mode in ("per-core", "full") and cores is not None:
         if not isinstance(cores, list) or not cores:
             raise Invalid("'cores' must be a non-empty array")
         records += [("cpu", c) for c in cores]
+        if payload.get("sweep") is not None:
+            run["cpu_kinds"] = json.dumps(sweep_kinds(payload["sweep"], cores, run["cpus"]),
+                                          separators=(",", ":"))
     if mode in ("threads", "full") and threads is not None:
         if not isinstance(threads, list) or not threads:
             raise Invalid("'threads' must be a non-empty array")
@@ -1312,7 +1316,49 @@ def _kinds(recs: list[dict], cpu_models: str | None,
     return _size_names(len(groups)), groups
 
 
-def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
+def sweep_kinds(sweep, cores: list, cpus: int | None = None) -> list[list[int]]:
+    """A sampled sweep's kinds of CPU, checked: every CPU of each kind, as the
+    benchmark's `sweep.kinds` lists them, for a sweep that measured only some.
+
+    The kinds are the benchmark's own, from what the system said of each CPU,
+    and each must hold at least one swept CPU, since that is what it is read
+    from; every swept CPU must be in one, and no CPU in two. Between them they
+    are every CPU the sweep was given, which is the online CPUs, `cpus`.
+    """
+    if not isinstance(sweep, dict) or not isinstance(sweep.get("kinds"), list):
+        raise Invalid("'sweep' must be an object with a 'kinds' array")
+    kinds, seen = [], set()
+    for k in sweep["kinds"]:
+        if (not isinstance(k, list) or not k
+                or any(not isinstance(c, int) or isinstance(c, bool) or not 0 <= c < 4096
+                       for c in k)):
+            raise Invalid("each of 'sweep.kinds' must be a non-empty array of CPU numbers")
+        if seen & set(k) or len(set(k)) != len(k):
+            raise Invalid("a CPU is in more than one of 'sweep.kinds'")
+        seen |= set(k)
+        kinds.append(sorted(k))
+    if len(seen) > 4096:
+        raise Invalid("too many CPUs in 'sweep.kinds'")
+    # Checked as the records' own cpu is, so a list or an object there is a
+    # refusal and not an unhashable set member.
+    swept = {_int(c.get("cpu"), "cpu", -1, 1 << 20) for c in cores if isinstance(c, dict)}
+    if not swept <= seen:
+        raise Invalid("a swept CPU is in none of 'sweep.kinds'")
+    if any(not swept & set(k) for k in kinds):
+        raise Invalid("one of 'sweep.kinds' has none of its CPUs swept")
+    if cpus is not None and len(seen) != cpus:
+        raise Invalid("'sweep.kinds' must list every one of 'system.cpus'")
+    return kinds
+
+
+def stored_kinds(text: str | None) -> list[list[int]] | None:
+    """runs.cpu_kinds back as the lists sweep_kinds() checked; None for a run
+    that swept every CPU it named."""
+    return json.loads(text) if text else None
+
+
+def core_types(records: list[dict], cpu_models: str | None,
+               kinds: list[list[int]] | None = None) -> list[dict]:
     """The kinds of core in one run, fastest first.
 
     Each is {"scope", "name", "ids", "cpus"}. Per-core records are grouped by
@@ -1321,6 +1367,10 @@ def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
     their own scores instead, as a phone's prime pair stands out from the rest
     while all eight run at once. Threads are otherwise one group. A scope with
     fewer than two records is not grouped.
+
+    `kinds` is a sampled sweep's (sweep_kinds()): a per-core kind then also
+    carries "of", every CPU its records stand for, and a thread on a CPU the
+    sweep left out follows the kind its own CPUs' records were put in.
     """
     def cpu_of(r):
         c = r.get("cpu")
@@ -1331,9 +1381,23 @@ def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
     out = []
     if len(cores) > 1:
         labels, groups = _kinds(cores, cpu_models, "all cores")
-        for label, g in zip(labels, groups):
+        # Which group each CPU a sampled sweep left out stands with: the one
+        # most of its system kind's swept CPUs came out in, the lowest-numbered
+        # one's on a tie -- as its thread is filed below. A kind whose swept
+        # CPUs scored apart is then split, not claimed whole by each group.
+        owner = {c: i for i, g in enumerate(groups) for c in map(cpu_of, g) if c is not None}
+        for k in kinds or []:
+            votes = [owner[c] for c in k if c in owner]
+            if votes:
+                pick = max(dict.fromkeys(votes), key=votes.count)
+                for c in k:
+                    owner.setdefault(c, pick)
+        for i, (label, g) in enumerate(zip(labels, groups)):
+            swept = sorted(c for c in map(cpu_of, g) if c is not None)
             out.append({"scope": "cpu", "name": label, "ids": [r["id"] for r in g],
-                        "cpus": sorted(c for c in map(cpu_of, g) if c is not None)})
+                        "cpus": swept})
+            if kinds:
+                out[-1]["of"] = sorted(c for c, o in owner.items() if o == i)
     elif (len(threads) > 1
           and all(t.get("score") and cpu_of(t) is not None for t in threads)):
         labels, groups = _kinds(threads, cpu_models, "all threads")
@@ -1343,6 +1407,16 @@ def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
     if len(threads) > 1:
         kind = {cpu_of(r): label for label, g in zip(labels, groups) for r in g
                 if cpu_of(r) is not None}
+        # The CPUs a sampled sweep left out, each as the kind most of its
+        # system kind's swept CPUs came out as -- the lowest-numbered one's on
+        # a tie. They are one kind by every measure the system gives, and
+        # their scores would have put them together.
+        for k in kinds or []:
+            votes = [kind[c] for c in k if c in kind]
+            if votes:
+                pick = max(dict.fromkeys(votes), key=votes.count)
+                for c in k:
+                    kind.setdefault(c, pick)
         if all(cpu_of(t) in kind for t in threads):
             for label in labels:
                 mine = [t for t in threads if kind[cpu_of(t)] == label]
@@ -1368,7 +1442,7 @@ def core_types(records: list[dict], cpu_models: str | None) -> list[dict]:
 # threads, since a run on half the cores is a different measurement.
 
 def guess_layout(records: list[dict], cpu_models: str | None,
-                 cpus: int | None) -> str | None:
+                 cpus: int | None, kinds: list[list[int]] | None = None) -> str | None:
     """A run's core counts worked out from what else it reported.
 
     The fallback for a run that did not report `system.cpu_layout`: the same
@@ -1392,11 +1466,14 @@ def guess_layout(records: list[dict], cpu_models: str | None,
         bare = bare_line(cpu_models)
         return f"{cpus}x {bare}" if ARM_DESIGN_RE.match(bare) else None
     swept = [r for r in records if r.get("scope") == "cpu"]
-    if (len(swept) != cpus
-            or any(not r.get("score") or not isinstance(r.get("cpu"), int) for r in swept)):
+    if any(not r.get("score") or not isinstance(r.get("cpu"), int) for r in swept):
         return None
-    count = {t["name"]: len(t["ids"]) for t in core_types(records, cpu_models)
-             if t["scope"] == "cpu"}
+    # A sampled sweep counts each kind's CPUs from `kinds`, every one of them.
+    covered = len({c for k in kinds for c in k}) if kinds else len(swept)
+    if covered != cpus:
+        return None
+    count = {t["name"]: len(t.get("of", t["ids"]))
+             for t in core_types(records, cpu_models, kinds) if t["scope"] == "cpu"}
     if sorted(count) != sorted(names):
         return None
     return " + ".join(f"{count[n]}x {n}" for n in names)
@@ -1502,7 +1579,8 @@ def load_aliases(path: Path | None) -> dict[str, dict]:
 
 def classify(cpu_models: str | None, cpus: int | None, cpus_offline: int | None,
              records: list[dict], aliases: dict[str, dict],
-             machine: str | None = None) -> tuple[str | None, str | None]:
+             machine: str | None = None,
+             kinds: list[list[int]] | None = None) -> tuple[str | None, str | None]:
     """(cpu_key, layout) for one run: what it is compared as, and its core
     counts as the hub has them where the run did not report its own."""
     if not cpu_models:
@@ -1512,7 +1590,7 @@ def classify(cpu_models: str | None, cpus: int | None, cpus_offline: int | None,
         return alias["cpu"], alias["layout"]
     # A sweep of only the CPUs that were up describes a smaller machine than
     # the one named, so nothing is counted from it.
-    layout = None if cpus_offline else guess_layout(records, cpu_models, cpus)
+    layout = None if cpus_offline else guess_layout(records, cpu_models, cpus, kinds)
     return cpu_family(cpu_models, machine), layout
 
 
@@ -1570,7 +1648,8 @@ class Store:
                      ("attest_run_url", "TEXT"), ("attest_at", "TEXT"),
                      ("cpu_layout", "TEXT"), ("cpu_layout_guess", "TEXT"), ("cpu_key", "TEXT"),
                      ("cpus_offline", "INTEGER"), ("upload_id", "INTEGER"),
-                     ("doc_sha256", "TEXT"), ("hidden_at", "TEXT"))
+                     ("doc_sha256", "TEXT"), ("hidden_at", "TEXT"),
+                     ("cpu_kinds", "TEXT"))
     # The same for `cores`, which schema.sql cannot widen either: CREATE TABLE
     # IF NOT EXISTS leaves an existing table as it was, so without this a new
     # metric's column never reaches an old database and every upload after it
@@ -1951,7 +2030,7 @@ class Store:
         """Store what a run is compared as, and its core counts where it did
         not report them; see classify()."""
         run = dict(db.execute("SELECT cpu_models, cpus, cpus_offline, cpu_layout, cpu_key, "
-                              "cpu_layout_guess, machine FROM runs WHERE id = ?",
+                              "cpu_layout_guess, machine, cpu_kinds FROM runs WHERE id = ?",
                               (run_id,)).fetchone())
         # Stored before the hub tidied lines; the raw document keeps the original.
         tidy = tidy_line(run["cpu_models"])
@@ -1964,7 +2043,8 @@ class Store:
                 if run["cpu_models"] and not run["cpu_layout"]
                 and named_designs(run["cpu_models"]) else [])
         key, layout = classify(run["cpu_models"], run["cpus"], run["cpus_offline"],
-                               [dict(r) for r in rows], self.aliases, run["machine"])
+                               [dict(r) for r in rows], self.aliases, run["machine"],
+                               stored_kinds(run["cpu_kinds"]))
         if run["cpu_layout"]:
             layout = None
         if (key, layout) != (run["cpu_key"], run["cpu_layout_guess"]):
@@ -1987,7 +2067,7 @@ class Store:
     def run(self, run_id: int) -> dict | None:
         with self.connect() as db:
             row = db.execute(
-                f"SELECT {run_columns_sql()}, {SUBMITTER}, {RELEASE_BUILD} "
+                f"SELECT {run_columns_sql()}, r.cpu_kinds, {SUBMITTER}, {RELEASE_BUILD} "
                 f"FROM runs r WHERE id = ?", (run_id,)).fetchone()
             if row is None:
                 return None
@@ -1996,7 +2076,8 @@ class Store:
                 f"WHERE run_id = ? ORDER BY id", (run_id,)).fetchall()
         out = dict(row)
         out["cores"] = [dict(c) for c in cores]
-        out["types"] = core_types(out["cores"], design_line(out))
+        out["types"] = core_types(out["cores"], design_line(out),
+                                  stored_kinds(out.pop("cpu_kinds", None)))
         kind = {i: t["name"] for t in out["types"] for i in t["ids"]}
         for c in out["cores"]:
             c["type"] = kind.get(c["id"])
@@ -2005,13 +2086,14 @@ class Store:
     def types_of_run(self, run_id: int) -> list[dict]:
         """core_types() for one stored run, whatever a listing narrowed it to."""
         with self.connect() as db:
-            run = db.execute("SELECT cpu_models, cpu_key FROM runs WHERE id = ?",
+            run = db.execute("SELECT cpu_models, cpu_key, cpu_kinds FROM runs WHERE id = ?",
                              (run_id,)).fetchone()
             if run is None:
                 return []
             rows = db.execute("SELECT id, scope, cpu, score FROM cores "
                               "WHERE run_id = ?", (run_id,)).fetchall()
-        return core_types([dict(r) for r in rows], design_line(dict(run)))
+        return core_types([dict(r) for r in rows], design_line(dict(run)),
+                          stored_kinds(run["cpu_kinds"]))
 
     def run_bests(self, cpu_keys: list[str], scope: str,
                   exprs: list[tuple[str, str, str]]) -> list[dict]:

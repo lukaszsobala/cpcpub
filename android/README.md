@@ -1,13 +1,14 @@
 # cpcpub for Android
 
-An app for the release's static Android binary. Like the desktop window, it
+An app for the release's static Android binary. Like the desktop GUI, it
 measures nothing itself. It builds the command line, runs the benchmark, and
 reads back what it prints. The command itself is not shown, only written at
 the top of the log. You choose:
 
 - the run: multi-threaded, per-core, or Both, which ticks the two;
-- the builds: the baseline only, or all four -- with and without SIMD and
-  FMA -- each explained under the choice;
+- the builds: the baseline only, or every one that differs (`--variants
+  all`) -- with and without SIMD and FMA, all four on arm64, which the app
+  asks the binary -- each explained under the choice;
 - a cool-down between runs, 30 s unless you pick otherwise;
 - the upload fields, with the label set to the phone's own name until you
   change it (`Build.MANUFACTURER`, `Build.MODEL`, and the chip,
@@ -57,7 +58,7 @@ makes the same request `submit_document()` in
 [bench.c](../bench/src/bench.c) makes, and in the same way:
 
 - the same trimming of the label and notes;
-- the variant appended to the label when all four run;
+- the variant appended to the label when several run;
 - the same percent-encoding;
 - redirects are not followed;
 - each document is uploaded exactly as the benchmark printed it.
@@ -134,6 +135,20 @@ It makes two things: `cpcpub-VERSION-android.apk`, to install directly, and
 [bundletool](https://github.com/google/bundletool/releases). Without a
 keystore in the environment both are signed with a throwaway key; see
 [packaging/README.md](../packaging/README.md#the-android-signing-key).
+
+The build also leaves `android/.ide/` (ignored by git): a link to the
+platform's `android.jar` and the `R.java` it generated, which
+[.vscode/settings.json](../.vscode/settings.json) points VS Code's Java
+extension at -- without them every `android.*` and `org.json` name in the
+editor is an error. With no SDK, the jar alone is one download:
+
+```sh
+curl -fLO https://dl.google.com/android/repository/platform-37.0_r02.zip
+echo "ed8ebf7f8822a4de5686d427f237d2fa30ff7410  platform-37.0_r02.zip" | sha1sum -c
+mkdir -p android/.ide && unzip -j platform-37.0_r02.zip android-37.0/android.jar -d android/.ide
+```
+
+and `R` stays unresolved, in four places, until a build writes it.
 
 - **Target API 37**, which Google Play asks of a new app. Nothing the app uses
   changed between 35 and 37: it draws edge to edge already, handles no back

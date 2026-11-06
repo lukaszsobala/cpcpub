@@ -1,2 +1,9 @@
 # The ESP32-S3 at its rated 240 MHz rather than the 160 ESP-IDF defaults to.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# The whole of SRAM0 to the instruction cache, so instruction RAM -- and the
+# kernels in it -- starts in SRAM1. With the default 16 KiB cache the kernels
+# land in SRAM0's other half, and two cores running code from SRAM0 at once
+# each slow to about two thirds, which the both-cores pass then measures as the
+# chip's own; check-firmware.py fails a build that puts a kernel there.
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y

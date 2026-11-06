@@ -24,7 +24,7 @@ What gets built, per architecture the release has a Linux binary for:
               x86-64, cpcpub-rva23 on RISC-V), as .deb, .rpm and an Arch
               package. It depends on nothing but the glibc it was linked
               against, read out of the binary rather than assumed.
-  cpcpub-gui  the GTK window, once for every architecture (it is a Python
+  cpcpub-gui  the GTK GUI, once for every architecture (it is a Python
               script), at exactly the same version of cpcpub.
 
 And one .deb for Termux, holding the static Android binary under Termux's
@@ -73,8 +73,8 @@ the rate: integer and floating-point latency and throughput, integer multiply,
 memory bandwidth and random-access latency, and indirect-call throughput and
 branch-predictor capacity -- with every thread at once and each core on its
 own. It can upload a result to a hub that compares it with other machines."""
-GUI_DESCRIPTION = """window for the cpcpub CPU benchmark
-A GTK window that builds a cpcpub command line, runs it, saves the result and
+GUI_DESCRIPTION = """GUI for the cpcpub CPU benchmark
+A GTK GUI that builds a cpcpub command line, runs it, saves the result and
 lays the numbers out in a table with every column explained. It measures
 nothing itself: the benchmark does the work and the upload."""
 
@@ -167,12 +167,12 @@ def gui_config(version, metainfo):
         {"src": str(TOP / "packaging" / "icons" / "cpcpub.svg"),
          "dst": f"/usr/share/icons/hicolor/scalable/apps/{APP_ID}.svg"},
     ] + docs("cpcpub-gui", TOP / "gui" / "README.md")
-    # The window builds the benchmark's command line, so the two are only
+    # The GUI builds the benchmark's command line, so the two are only
     # right together: exactly the same version, not merely a newer one. GTK
     # 4.10 for Gtk.FileDialog.
     #
     # The two rpm families package GTK's introspection data differently, and
-    # a missing typelib is only found out when the window starts. openSUSE
+    # a missing typelib is only found out when the GUI starts. openSUSE
     # splits Gtk's into a typelib package that provides typelib(Gtk) and pulls
     # in the cairo typelib Gtk's refers to -- and its libgtk-4-1 provides
     # "gtk4", so asking for gtk4 there installs a GTK Python cannot see.

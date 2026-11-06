@@ -40,7 +40,7 @@ REPO_URL = "https://github.com/lukaszsobala/cpcpub"
 # The policy of whoever publishes these apps, kept in the repository like the
 # Android app's link to it.
 PRIVACY_URL = REPO_URL + "/blob/main/PRIVACY.md"
-# What the window's own requests call themselves. A CDN in front of a hub may
+# What the GUI's own requests call themselves. A CDN in front of a hub may
 # turn away urllib's default ("Python-urllib/3.x") as a script -- Cloudflare's
 # browser check does, with error 1010.
 USER_AGENT = f"cpcpub-gui (+{REPO_URL})"
@@ -55,18 +55,18 @@ EXE = ".exe" if os.name == "nt" else ""
 # in one: its output comes here. Zero, and so no flag, everywhere else.
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-# Set by the packaging tests to a file path: the window then makes one short
+# Set by the packaging tests to a file path: the GUI then makes one short
 # run by itself, writes what happened to that file as JSON, and quits. It is
 # how a machine with no one at it checks that an installed copy can find the
 # benchmark, start it, read both of its streams and show a result.
 SMOKE = os.environ.get("CPCPUB_GUI_SMOKE", "")
 
-# Where the window keeps the upload fields between runs. The token in it is a
+# Where the GUI keeps the upload fields between runs. The token in it is a
 # credential, so the file is the user's alone; see save_settings.
 SETTINGS = os.path.join(GLib.get_user_config_dir(), "cpcpub", "gui.json")
 
 # What is kept there besides the notes, the upload tick and where results go:
-# the window's text fields, each with the variable that wins over it. Those
+# the GUI's text fields, each with the variable that wins over it. Those
 # win for one session and are not written back in what was kept.
 KEPT_TEXT = (("hub", "CPCPUB_HUB"), ("token", "CPCPUB_TOKEN"), ("run_label", None))
 
@@ -145,6 +145,8 @@ FALLBACK_VARIANTS = [
     ("scalar-fma", "-fno-tree-vectorize -ffp-contract=fast", True),
     ("vector-fma", "-ftree-vectorize -ffp-contract=fast", True),
 ]
+# What the benchmark runs when given no --variants.
+BASELINE = "scalar-nofma"
 
 # (json key, printed name, unit) in the order bench/README.md's table lists
 # them, so a result read here and a result read there say the same thing --
@@ -322,6 +324,47 @@ def count_cpus(cpu_list):
                 return 0
             total += 1
     return total
+
+
+# What sample_kinds() in bench/src/bench.c reads of each CPU to tell kinds of
+# core apart, and how many of each kind its per-core sweep measures.
+KIND_FILES = ("regs/identification/midr_el1", "cpu_capacity",
+              "cpufreq/cpuinfo_max_freq", "acpi_cppc/highest_perf",
+              "cache/index0/size", "cache/index1/size", "cache/index2/size",
+              "cache/index3/size", "cache/index4/size")
+PER_KIND = 4
+
+
+def sampled_sweep():
+    """How many CPUs the per-core sweep measures by default, grouped as the
+    benchmark groups them; None where it sweeps every one -- a system with no
+    sysfs to read, or one that says nothing of its CPUs there."""
+    base = "/sys/devices/system/cpu"
+    try:
+        with open(f"{base}/online") as f:
+            spec = f.read().strip()
+    except OSError:
+        return None
+    cpus = []
+    for part in spec.split(","):
+        lo, _, hi = part.partition("-")
+        try:
+            cpus += range(int(lo), int(hi or lo) + 1)
+        except ValueError:
+            return None
+    kinds = {}
+    for c in cpus:
+        key = []
+        for name in KIND_FILES:
+            try:
+                with open(f"{base}/cpu{c}/{name}") as f:
+                    key.append(f.readline().strip())
+            except OSError:
+                key.append(None)
+        if all(v is None for v in key):
+            return None
+        kinds[tuple(key)] = kinds.get(tuple(key), 0) + 1
+    return sum(min(n, PER_KIND) for n in kinds.values()) or None
 
 
 def human_duration(seconds):
@@ -531,10 +574,8 @@ def quote_command(argv):
     return " ".join(shlex.quote(a) for a in argv)
 
 
-def default_hub(binary):
-    """The hub a build uploads to when told none: the address its help text
-    gives as the default, which a release bakes in and a tree you built has
-    not."""
+def help_text(binary):
+    """What a build prints under --help, or "" where there is none to ask."""
     try:
         done = subprocess.run(
             [binary, "--help"], capture_output=True, timeout=10, check=False,
@@ -543,13 +584,27 @@ def default_hub(binary):
     except (OSError, subprocess.SubprocessError):
         return ""
     # The usage text goes to stderr.
-    found = re.search(r" \(default: (https?://[^)\s]+)\)",
-                      (done.stdout + done.stderr).decode("utf-8", "replace"))
+    return (done.stdout + done.stderr).decode("utf-8", "replace")
+
+
+def default_hub(text):
+    """The hub a build uploads to when told none, from its help text: the
+    address it gives as the default, which a release bakes in and a tree you
+    built has not."""
+    found = re.search(r" \(default: (https?://[^)\s]+)\)", text)
     return found.group(1) if found else ""
 
 
+def too_old(text):
+    """Whether a build's help text is from before 0.6.0, whose options this
+    GUI passes: --mode, and --variants with a value. Such a build refuses
+    them, and with neither given runs only the multi-threaded half, not the
+    whole run it now defaults to. Unknown where there is no help text."""
+    return bool(text) and "--mode" not in text
+
+
 def runnable(binary):
-    """Whether the program field names something the window can start: an
+    """Whether the program field names something the GUI can start: an
     executable file, or a name found on PATH, as a shell would take it."""
     return bool(binary) and (os.access(binary, os.X_OK)
                              or bool(GLib.find_program_in_path(binary)))
@@ -644,7 +699,7 @@ def fmt(value):
 
 
 def label_of(doc):
-    """The variant a document came from, spelled the way --variant takes it."""
+    """The variant a document came from, spelled the way --variants takes it."""
     b = doc.get("build", {})
     vec = "vector" if b.get("vectorize") else "scalar"
     fma = "fma" if b.get("fma") else "nofma"
@@ -654,7 +709,7 @@ def label_of(doc):
 def scopes_of(doc):
     """(name, record) for each measured scope in a document, in its order.
 
-    `total` and `cores` are both present in a --full document, and one of the
+    `total` and `cores` are both present in a full-mode document, and one of the
     two in the narrower modes; `threads` is the per-thread detail behind a
     total, worth a row only when there is no total to show.
     """
@@ -774,17 +829,43 @@ class Scope(GObject.Object):
         self.children = children or []
 
 
+def sampled_kinds(doc):
+    """A sampled sweep's kinds, every CPU of each, from its `sweep` block; []
+    for a sweep that measured every CPU."""
+    kinds = (doc.get("sweep") or {}).get("kinds") or []
+    return [k for k in kinds if isinstance(k, list)]
+
+
+def stand_ins(groups, kinds):
+    """For each group of measured CPUs, every CPU it stands for: its own, and
+    those of a sampled kind the sweep left out, each with the group most of
+    its kind's measured CPUs are in -- the lowest-numbered one's on a tie, as
+    the hub files them. A kind whose measured CPUs scored apart is split
+    between their groups rather than counted whole in each."""
+    owner = {c: i for i, g in enumerate(groups) for c in g}
+    for k in kinds:
+        votes = [owner[c] for c in k if c in owner]
+        if votes:
+            pick = max(dict.fromkeys(votes), key=votes.count)
+            for c in k:
+                owner.setdefault(c, pick)
+    return [sorted(c for c, o in owner.items() if o == i) for i in range(len(groups))]
+
+
 def table_rows(doc):
     """A document's rows for the table: the total, then each kind of core as
-    one averaged row over its cores; a kind of one is just that core."""
+    one averaged row over its cores; a kind of one is just that core. A
+    sampled sweep's kind is named for every CPU of it, measured or not."""
     scopes = scopes_of(doc)
     sweep = [rec for name, rec in scopes if name.startswith("cpu")]
-    if len(sweep) < 2:
+    sampled = sampled_kinds(doc)
+    if len(sweep) < 2 and not sampled:
         return [Scope(name, rec) for name, rec in scopes]
     rows = [Scope(name, rec) for name, rec in scopes if not name.startswith("cpu")]
     kinds = core_kinds(sweep, doc.get("system", {}).get("cpu_models"))
+    stands = stand_ins([[r.get("cpu") or 0 for r in recs] for _, recs in kinds], sampled)
     kinded = set()
-    for label, recs in kinds:
+    for (label, recs), every in zip(kinds, stands):
         kinded.update(id(r) for r in recs)
         cores = []
         for r in sorted(recs, key=lambda r: r.get("cpu") or 0):
@@ -793,14 +874,22 @@ def table_rows(doc):
             if label != "all":
                 tip += f" One of the {label} cores."
             cores.append(Scope(name, r, tip=tip))
-        if len(recs) == 1:
+        measured = sorted(r.get("cpu") or 0 for r in recs)
+        if len(every) == 1:
             rows += cores
             continue
-        where = cpu_list(r.get("cpu") or 0 for r in recs)
-        name = f"all {len(recs)} cores" if label == "all" else f"{label} ×{len(recs)}"
+        n, total = len(measured), len(every)
+        name = f"all {total} cores" if label == "all" else f"{label} ×{total}"
+        tip = f"The mean of {n} cores of one kind: CPUs {cpu_list(measured)}."
+        if total > n:
+            name += f", {n} measured"
+            what = (f"CPU {measured[0]}" if n == 1
+                    else f"the mean of CPUs {cpu_list(measured)}")
+            tip = (f"{what[0].upper()}{what[1:]}, standing for all {total} cores of "
+                   f"its kind, CPUs {cpu_list(every)}: the per-core run measures up "
+                   f"to {doc['sweep'].get('per_kind')} of each kind.")
         rows.append(Scope(name, mean_record(recs), children=cores,
-                          tip=f"The mean of {len(recs)} cores of one kind: CPUs {where}. "
-                              f"Expand the row for each."))
+                          tip=tip + " Expand the row for each."))
     rows += [Scope(f"cpu{r.get('cpu')}", r) for r in sweep if id(r) not in kinded]
     return rows
 
@@ -1095,6 +1184,7 @@ class Window(Gtk.ApplicationWindow):
         self.probe_timer = 0
         self.probing = False
         self.binary_hub = ""    # the hub the binary uploads to by default
+        self.binary_old = False  # it predates the options the GUI passes
         self.binary_info = {}   # what the binary said under --version
 
         header = Gtk.HeaderBar()
@@ -1112,7 +1202,7 @@ class Window(Gtk.ApplicationWindow):
         open_btn.connect("clicked", self.on_open)
         header.pack_start(open_btn)
         # The primary menu, rightmost as GNOME places it: which build of the
-        # benchmark this window runs, and what is not part of a run.
+        # benchmark this GUI runs, and what is not part of a run.
         menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic")
         menu_btn.set_tooltip_text("Benchmark version, the hub and about")
         menu_btn.set_popover(self.build_menu())
@@ -1204,7 +1294,8 @@ class Window(Gtk.ApplicationWindow):
             self.version_detail.set_text(binary)
         elif info:
             self.version_title.set_text(f"Benchmark {info['version']}")
-            self.version_detail.set_text("\n".join(x for x in (info["build"], binary) if x))
+            old = "Older than 0.6.0: the GUI cannot run it." if self.binary_old else ""
+            self.version_detail.set_text("\n".join(x for x in (info["build"], binary, old) if x))
         else:
             self.version_title.set_text("No benchmark found")
             self.version_detail.set_text(binary or "Set the program under Advanced.")
@@ -1320,7 +1411,8 @@ class Window(Gtk.ApplicationWindow):
             "Every thread at once: what the whole machine does."
         )
         self.mode_percore.set_tooltip_text(
-            "Each CPU on its own, one after another: what each kind of core does."
+            "Each CPU on its own, one after another, up to 4 of each kind of core: "
+            "what each kind does."
         )
         modes.append(self.mode_full)
         mode_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_start=16)
@@ -1421,8 +1513,11 @@ class Window(Gtk.ApplicationWindow):
             spin.set_width_chars(5)
 
         tips = {
-            "Threads": "How many threads to run at once. Blank: one per CPU.",
-            "CPUs": "Use only these CPUs: 0-3,6 means CPUs 0 to 3 and CPU 6.",
+            "Threads": "How many threads the multi-threaded run starts at once. "
+                       "Blank: one per CPU.",
+            "CPUs": "Use only these CPUs: 0-3,6 means CPUs 0 to 3 and CPU 6. "
+                    "The per-core run then measures every one of them; blank, "
+                    "it measures up to four of each kind of core.",
             "Seconds/phase":
                 "How long each measurement lasts. Longer is steadier, and slower.",
             "Repetitions": "How often each measurement is taken. The best is kept: "
@@ -1454,7 +1549,7 @@ class Window(Gtk.ApplicationWindow):
                 signal = "changed" if isinstance(widget, Gtk.Entry) else "value-changed"
                 widget.connect(signal, lambda *_: self.update_command())
 
-        # The benchmark itself, last: the window finds it, and picks the
+        # The benchmark itself, last: the GUI finds it, and picks the
         # fastest build of it this processor runs, so there is seldom a reason
         # to look. A row of its own, so its width does not spread the short
         # fields above across the window.
@@ -1581,7 +1676,7 @@ class Window(Gtk.ApplicationWindow):
     # -- form behaviour ----------------------------------------------------
 
     def update_binary_tip(self):
-        tip = ("The benchmark this window runs. It starts as the fastest build "
+        tip = ("The benchmark this GUI runs. It starts as the fastest build "
                "installed that this processor runs.")
         folder = os.path.dirname(self.binary.get_text().strip())
         others = other_builds(os.path.join(folder, "cpcpub" + EXE))
@@ -1597,7 +1692,7 @@ class Window(Gtk.ApplicationWindow):
     def probe_binary(self, now=False):
         """Ask the binary which variants it carries and where it uploads, on a
         thread: each question starts it, which can take seconds on a Windows
-        that scans a program the first time it runs, and the window must not
+        that scans a program the first time it runs, and the GUI must not
         stop for it. A path being typed is asked about once typing pauses."""
         if self.probe_timer:
             GLib.source_remove(self.probe_timer)
@@ -1609,6 +1704,7 @@ class Window(Gtk.ApplicationWindow):
         self.probing = True
         self.binary_info = {}
         self.binary_hub = ""
+        self.binary_old = False
         self.show_version()
         if now:
             self.start_probe()
@@ -1620,16 +1716,19 @@ class Window(Gtk.ApplicationWindow):
         gen, binary = self.probe_gen, self.binary.get_text().strip()
 
         def ask():
-            found = (list_variants(binary), default_hub(binary), binary_version(binary))
+            text = help_text(binary)
+            found = (list_variants(binary), default_hub(text), too_old(text),
+                     binary_version(binary))
             GLib.idle_add(self.on_main, self.on_probed, gen, *found)
         threading.Thread(target=ask, daemon=True).start()
         return GLib.SOURCE_REMOVE
 
-    def on_probed(self, gen, variants, hub, info):
+    def on_probed(self, gen, variants, hub, old, info):
         if gen != self.probe_gen:
             return  # an answer about a path the field no longer holds
         self.probing = False
         self.binary_hub = hub
+        self.binary_old = old
         self.binary_info = info
         self.reload_variants(variants)
         self.show_version()
@@ -1719,11 +1818,11 @@ class Window(Gtk.ApplicationWindow):
 
     def on_close(self, *_):
         if self.proc is not None and not self.closing:
-            # The benchmark goes with the window, and what it measured so far
+            # The benchmark goes with the GUI, and what it measured so far
             # with it: one click should not cost a ten-minute run.
             dialog = Gtk.AlertDialog(
                 message="A run is still going",
-                detail="Closing the window stops it, and what it has measured so "
+                detail="Closing the GUI stops it, and what it has measured so "
                        "far is lost.",
                 buttons=["Keep running", "Stop and close"],
                 cancel_button=0, default_button=0)
@@ -1755,18 +1854,16 @@ class Window(Gtk.ApplicationWindow):
         if self.all_variants.get_active():
             # Every distinct one: the ones that are the baseline's code again
             # are greyed out in the form, and would only repeat it.
-            argv.append("--variants")
+            argv += ["--variants", "all"]
         else:
+            # The baseline alone is the benchmark's default, as Full is.
             chosen = self.selected_variants()
-            if len(chosen) == 1:
-                argv += ["--variant", chosen[0]]
-            elif len(chosen) > 1:
-                argv.append("--variants=" + ",".join(chosen))
+            if chosen and chosen != [BASELINE]:
+                argv += ["--variants", ",".join(chosen)]
 
-        if self.mode_full.get_active():
-            argv.append("--full")
-        elif self.mode_percore.get_active():
-            argv.append("--per-core")
+        # Full is the benchmark's own default, so only the halves are spelled out.
+        if not self.mode_full.get_active():
+            argv += ["--mode", "per-core" if self.mode_percore.get_active() else "threads"]
 
         threads = self.threads.get_text().strip()
         if threads:
@@ -1780,7 +1877,7 @@ class Window(Gtk.ApplicationWindow):
         if self.cooldown.get_sensitive() and self.cooldown.get_value_as_int() > 0:
             argv += ["--cooldown", f"{self.cooldown.get_value_as_int()}"]
         if SMOKE:
-            # The packaging tests ask whether the window runs the benchmark,
+            # The packaging tests ask whether the GUI runs the benchmark,
             # not what it measures: left to size itself from the last-level
             # cache, the memory buffer on a large server part is gigabytes,
             # and under emulation filling it outlasts the test.
@@ -1831,7 +1928,8 @@ class Window(Gtk.ApplicationWindow):
     def estimate_seconds(self):
         """How long the current settings should take, and what drives it.
 
-        The per-core sweep runs the suite once per CPU, in turn, so the CPU
+        The per-core sweep runs the suite once per CPU it measures, in turn --
+        every one of a --cpus list, else up to four of each kind -- so that
         count is most of the answer on anything with many of them.
         """
         per_pass = (
@@ -1841,15 +1939,12 @@ class Window(Gtk.ApplicationWindow):
         )
 
         # Which CPUs the sweep would walk: the --cpus list if there is one,
-        # otherwise 0..threads-1, otherwise every online CPU.
+        # otherwise the sample of each kind of the online CPUs -- or every one,
+        # where the system tells them apart in no way. --threads sizes only the
+        # threaded pass, whose length does not depend on it.
         cpus = count_cpus(self.cpus.get_text())
-        if not cpus:
-            try:
-                cpus = int(self.threads.get_text().strip())
-            except ValueError:
-                cpus = 0
         if cpus <= 0:
-            cpus = os.cpu_count() or 1
+            cpus = sampled_sweep() or os.cpu_count() or 1
 
         if self.mode_full.get_active():
             passes, batches, what = 1 + cpus, 2, f"1 threaded pass + {cpus} cores"
@@ -1933,6 +2028,13 @@ class Window(Gtk.ApplicationWindow):
         if not runnable(binary):
             self.fail(f"No runnable benchmark at {binary!r} -- pick one with Browse.")
             return
+        text = help_text(binary) if self.probing else ""
+        if too_old(text) if self.probing else self.binary_old:
+            version = self.binary_info.get("version") or "this build"
+            self.fail(f"The benchmark at {binary!r} ({version}) is older than 0.6.0 "
+                      f"and does not take the options this GUI passes -- pick a "
+                      f"newer one under Advanced.")
+            return
         outdir = self.outdir.get_text().strip()
         if not os.path.isdir(outdir):
             self.fail(f"Output directory {outdir!r} does not exist.")
@@ -1942,7 +2044,7 @@ class Window(Gtk.ApplicationWindow):
             # Where the upload will go: the field, the environment, then the
             # binary's own default, the order the binary itself takes them in.
             hub = (self.hub.get_text().strip() or os.environ.get("CPCPUB_HUB", "")
-                   or (default_hub(binary) if self.probing else self.binary_hub))
+                   or (default_hub(text) if self.probing else self.binary_hub))
             if not hub:
                 # A released build has a hub baked in; one built from the source
                 # tree has none, and would only find out after measuring.
@@ -1965,7 +2067,7 @@ class Window(Gtk.ApplicationWindow):
                 return
             # The benchmark hands an https upload to curl, which the packages
             # only recommend. A newer benchmark refuses before measuring when
-            # it is missing; this says so for any of them, and in a window
+            # it is missing; this says so for any of them, and in a dialog
             # rather than at the end of a log.
             if hub.startswith("https://") and not shutil.which("curl"):
                 detail = (f"{hub} is an https address, and the benchmark uploads "
@@ -2282,7 +2384,7 @@ class Window(Gtk.ApplicationWindow):
 
     def open_result(self, path):
         """Show a result saved earlier, with its link and Withdraw if it was
-        uploaded from this window."""
+        uploaded from this GUI."""
         name = os.path.basename(path)
         try:
             with open(path, encoding="utf-8") as fh:

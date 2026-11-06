@@ -56,7 +56,7 @@ static int core_count(void) {
 // ---------------------------------------------------------------------------
 //
 // As in bench.c: four compilations of the kernels, of which the ones this
-// target cannot tell apart are skipped by a plain --variants.
+// target cannot tell apart are skipped by --variants all.
 
 typedef struct {
     const kernel_set_t *k;
@@ -70,6 +70,9 @@ static const variant_t g_variants[] = {
     { &kernels_vector_fma,   TARGET_HAS_SIMD && TARGET_HAS_FMA },
 };
 #define N_VARIANTS ARRAY_LEN(g_variants)
+
+// Whether the line asked for --variants all, so the run can say what it left out.
+static int g_variants_all;
 
 static const variant_t *find_variant(const char *name) {
     for (int i = 0; i < N_VARIANTS; ++i) {
@@ -87,15 +90,16 @@ static void list_variants(void) {
     }
 }
 
-// NULL spec: the distinct ones. "all": all four. Otherwise a comma list.
+// "all": the distinct ones. Otherwise a comma list, run distinct or not.
 static int select_variants(const char *spec, const variant_t **sel) {
     int n = 0;
-    if (!spec || !strcmp(spec, "all")) {
+    if (!strcmp(spec, "all")) {
         for (int i = 0; i < N_VARIANTS; ++i) {
-            if (spec || g_variants[i].distinct) sel[n++] = &g_variants[i];
+            if (g_variants[i].distinct) sel[n++] = &g_variants[i];
         }
         return n;
     }
+    if (!*spec) return -1;
     const char *p = spec;
     while (*p) {
         char name[32];
@@ -515,15 +519,15 @@ static size_t size_buffers(int n) {
 static void usage(void) {
     printf(
         "options, typed as one line:\n"
-        "  --variant NAME     build variant to measure: scalar-nofma (default),\n"
-        "                     vector-nofma, scalar-fma, vector-fma\n"
-        "  --variants         every variant this target can tell apart, in turn;\n"
-        "                     --variants=all for all four, --variants=A,B a list\n"
+        "  --mode M           full (default): all cores at once, then each\n"
+        "                     alone; threads: only at once; per-core: only alone\n"
+        "  --variants WHICH   build variants to measure, in turn: a name\n"
+        "                     (scalar-nofma, the default; vector-nofma,\n"
+        "                     scalar-fma, vector-fma), a list A,B, or all --\n"
+        "                     every one whose code differs on this chip\n"
         "  --list-variants    show the variants this build carries\n"
         "  --threads N        cores to run on at once (default: all %d)\n"
         "  --cpus LIST        which cores, e.g. 1 or 0,1 (default: 0..threads-1)\n"
-        "  --per-core         run the suite on each core alone, in turn\n"
-        "  --full             both: all cores at once, then each alone\n"
         "  --time SEC         measured seconds per phase (default 0.5)\n"
         "  --reps N           repetitions per phase, best is kept (default 3)\n"
         "  --warmup SEC       warm-up seconds before each phase (default 0.15)\n"
@@ -532,7 +536,7 @@ static void usage(void) {
         "  --mem BYTES        the same, as a total across the cores\n"
         "  --no-mem           skip the memory phases\n"
         "  --seed N           PRNG seed for setup (default 1)\n"
-        "  --mhz N            the core clock, recorded as given\n"
+        "  --mhz N            the core clock in MHz, recorded as given\n"
         "  --json, --tsv      the result as a cpu-bench/1 document or TSV rows,\n"
         "                     between -----BEGIN CPCPUB ...----- marker lines\n"
         "  --version          the version, the build and this machine\n",
@@ -544,7 +548,7 @@ static void usage(void) {
 static int parse(int argc, char **argv, cfg_t *c, const variant_t **sel,
                  int *n_sel, const port_info_t *pi) {
     const int cores = core_count();
-    int per_core = 0, full = 0;
+    int per_core = 0, full = 1;          // --mode full, the default
     size_t mem_per_thread = 0, mem_total = 0;
     int mem_explicit = 0, threads_explicit = 0;
 
@@ -558,22 +562,34 @@ static int parse(int argc, char **argv, cfg_t *c, const variant_t **sel,
     sel[0] = &g_variants[0];
     *n_sel = 1;
     g_mhz_given = 0.0;
+    g_variants_all = 0;
 
     // Typing the program's name first is a habit worth allowing.
     int i0 = argc > 0 && !strcmp(argv[0], "cpcpub") ? 1 : 0;
     for (int i = i0; i < argc; ++i) {
         const char *a = argv[i];
         const int more = i + 1 < argc;
-        if (!strcmp(a, "--variant") && more) {
-            const variant_t *v = find_variant(argv[++i]);
-            if (!v) { printf("unknown --variant '%s'\n", argv[i]); list_variants(); return -1; }
-            sel[0] = v;
-            *n_sel = 1;
-        } else if (!strcmp(a, "--variants")) {
-            *n_sel = select_variants(NULL, sel);
-        } else if (!strncmp(a, "--variants=", 11)) {
-            *n_sel = select_variants(a + 11, sel);
-            if (*n_sel <= 0) { printf("bad --variants list '%s'\n", a + 11); list_variants(); return -1; }
+        // --mode and --variants take their value after a space or an =.
+        if (!strcmp(a, "--mode") || !strncmp(a, "--mode=", 7)) {
+            const char *m = a[6] == '=' ? a + 7 : more ? argv[++i] : "";
+            if (!strcmp(m, "full"))          { full = 1; per_core = 0; }
+            else if (!strcmp(m, "threads"))  { full = 0; per_core = 0; }
+            else if (!strcmp(m, "per-core")) { full = 0; per_core = 1; }
+            else {
+                printf("--mode takes full, threads or per-core%s%s\n", *m ? ", not " : "", m);
+                return -1;
+            }
+        } else if (!strcmp(a, "--variants") || !strncmp(a, "--variants=", 11)) {
+            const char *spec = a[10] == '=' ? a + 11
+                             : more && argv[i + 1][0] != '-' ? argv[++i] : "";
+            *n_sel = select_variants(spec, sel);
+            g_variants_all = !strcmp(spec, "all");
+            if (*n_sel <= 0) {
+                printf("--variants takes all, a name, or a list of names A,B%s%s\n",
+                       *spec ? ", not " : "", spec);
+                list_variants();
+                return -1;
+            }
         } else if (!strcmp(a, "--list-variants")) {
             list_variants();
             return 1;
@@ -605,10 +621,6 @@ static int parse(int argc, char **argv, cfg_t *c, const variant_t **sel,
                 printf("bad --cpus list: distinct cores from 0 to %d\n", cores - 1);
                 return -1;
             }
-        } else if (!strcmp(a, "--per-core")) {
-            per_core = 1;
-        } else if (!strcmp(a, "--full")) {
-            full = 1;
         } else if (!strcmp(a, "--time") && more) {
             c->seconds = atof(argv[++i]);
         } else if (!strcmp(a, "--reps") && more) {
@@ -734,6 +746,13 @@ void frontend_run(void) {
             printf("variants: %d in turn, so the run takes %dx as long:", n_sel, n_sel);
             for (int i = 0; i < n_sel; ++i) printf("%s %s", i ? "," : "", sel[i]->k->name);
             printf("\n");
+        }
+        if (g_variants_all && n_sel < N_VARIANTS) {
+            printf("variants: skipped, as the same code as the baseline here:");
+            for (int i = 0, k = 0; i < N_VARIANTS; ++i) {
+                if (!g_variants[i].distinct) printf("%s %s", k++ ? "," : "", g_variants[i].k->name);
+            }
+            printf(" (--variants NAME runs one anyway)\n");
         }
         result_t headline[N_VARIANTS];
         for (int i = 0; i < n_sel; ++i) {

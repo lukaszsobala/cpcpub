@@ -11,8 +11,8 @@
 #   make native / make loongarch / make sg2000 / make MARCH=x86-64-v3
 #
 # The vectorization and FMA toggles are no longer build-time: one binary carries
-# all four combinations. Pick one with `cpcpub --variant NAME`, or run them
-# all with `cpcpub --variants`.
+# all four combinations. Pick one with `cpcpub --variants NAME`, or run every
+# one this target tells apart with `cpcpub --variants all`.
 
 PYTHON ?= python3
 # .exe when this tree was built for Windows. Deferred (`=`, not `:=`) so it is
@@ -56,11 +56,11 @@ test:
 # The numbers in it are whichever machine ran it, so regenerate deliberately --
 # no build target depends on this.
 testdata: bench
-	@./$(BENCH) --full --time 0.05 --reps 1 --warmup 0.02 --json \
+	@./$(BENCH) --mode full --time 0.05 --reps 1 --warmup 0.02 --json \
 	    > testdata/full-run.json
 	@echo "wrote testdata/full-run.json"
 
-# A GTK 4 window over the same flags, for a machine with a desktop on it. It
+# A GTK 4 GUI over the same flags, for a machine with a desktop on it. It
 # runs the binary this tree builds, so build first. See gui/README.md.
 gui: bench
 	@$(PYTHON) gui/cpcpub-gui.py
@@ -76,7 +76,7 @@ serve:
 #   make submit HUB=http://my.server:8782 TOKEN=... LABEL="sbc"
 HUB ?= http://127.0.0.1:8080
 submit: bench
-	@./$(BENCH) --full --submit '$(HUB)' \
+	@./$(BENCH) --submit '$(HUB)' \
 	    $(if $(TOKEN),--token '$(TOKEN)') \
 	    $(if $(LABEL),--label '$(LABEL)') $(if $(NOTES),--notes '$(NOTES)')
 

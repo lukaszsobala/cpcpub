@@ -42,7 +42,7 @@ SAMPLE = ROOT / "testdata" / "full-run.json"
 
 # Top-level keys the benchmark may emit, split by whether the hub reads them.
 CONSUMED_TOP = {"schema", "mode", "build", "system", "config", "dram",
-                "cores", "threads", "total", "checksum"}
+                "cores", "threads", "total", "sweep", "checksum"}
 # Emitted and deliberately dropped on ingest. `core_spread` is a summary of the
 # per-core array, recomputable from the records the hub already stores.
 UNCONSUMED_TOP = {"core_spread"}
@@ -90,17 +90,22 @@ SECTION_COLUMNS = {
     ("dram", "mhz_max"):              "dram_mhz_max",
 }
 
-# A short but complete run: both halves of --full, one CPU, so `make check`
-# costs a second or two rather than sweeping every core on the machine. A
-# token cool-down between the halves, so the document carries that key too.
-LIVE_ARGS = ["--full", "--cpus", "0", "--threads", "1", "--cooldown", "0.01",
+# A short but complete run: both halves of --mode full, one CPU, so `make
+# check` costs a second or two rather than sweeping every core on the machine.
+# A token cool-down between the halves, so the document carries that key too.
+LIVE_ARGS = ["--mode", "full", "--cpus", "0", "--threads", "1", "--cooldown", "0.01",
              "--time", "0.05", "--reps", "1", "--warmup", "0.02", "--json"]
+# And a sampled sweep, one CPU of each kind, so a document with "sweep" is held
+# to the contract too -- on a machine whose kinds have more than one CPU in
+# them; a sweep that left nothing out carries no "sweep" and is the run above.
+SAMPLED_ARGS = ["--mode", "per-core", "--per-kind", "1", "--no-mem",
+                "--time", "0.05", "--reps", "1", "--warmup", "0", "--json"]
 
 # The microcontroller front end (mcu/frontend.c) writes the same document from
 # its own code, so it is held to the same contract -- through its test port,
 # mcu/host, which runs it on this machine. Two cores, so the multi-core half
 # has a barrier to cross; a heap large enough that the memory phases run.
-MCU_LINE = "--full --cpus 0,1 --time 0.05 --reps 1 --warmup 0.02 --json\n"
+MCU_LINE = "--mode full --cpus 0,1 --time 0.05 --reps 1 --warmup 0.02 --json\n"
 MCU_HEAP = str(8 << 20)
 
 
@@ -115,8 +120,14 @@ def mcu_document(binary):
     return json.loads("\n".join(lines[begin + 1:end]))
 
 
+# The SAMPLED_ARGS run's document, whether it left CPUs out or not; None
+# without a live binary. See test_a_sweep_says_whether_it_left_cpus_out.
+SAMPLED_RUN = None
+
+
 def documents():
     """Every cpcpub document this run can test, as (name, doc)."""
+    global SAMPLED_RUN
     out = []
     if SAMPLE.exists():
         out.append(("testdata/full-run.json", json.loads(SAMPLE.read_text())))
@@ -125,6 +136,11 @@ def documents():
         proc = subprocess.run([binary] + LIVE_ARGS, check=True,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         out.append((f"live: {Path(binary).name}", json.loads(proc.stdout)))
+        proc = subprocess.run([binary] + SAMPLED_ARGS, check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        sampled = SAMPLED_RUN = json.loads(proc.stdout)
+        if "sweep" in sampled:
+            out.append((f"sampled: {Path(binary).name}", sampled))
     mcu = os.environ.get("CPCPUB_MCU_HOST_BIN")
     if mcu:
         out.append((f"mcu: {Path(mcu).name}", mcu_document(mcu)))
@@ -155,6 +171,24 @@ class ContractTest(unittest.TestCase):
         for name, doc in DOCUMENTS:
             with self.subTest(name):
                 self.assertEqual(doc.get("schema"), srv.SCHEMA_ID)
+
+    def test_a_sweep_says_whether_it_left_cpus_out(self):
+        # The sampled run is held to the contract only when it carries "sweep",
+        # so a sweep that left CPUs out without saying so would slip past that:
+        # with no --cpus it is given every online CPU, and measures them all
+        # unless "sweep" says otherwise.
+        doc = SAMPLED_RUN
+        if doc is None:
+            self.skipTest("no live binary (CPCPUB_BIN)")
+        measured = {c["cpu"] for c in doc["cores"]}
+        online = doc["system"]["cpus"]
+        if "sweep" not in doc:
+            self.assertEqual(len(measured), online,
+                             "a sweep that left CPUs out carries no 'sweep'")
+            return
+        every = {c for kind in doc["sweep"]["kinds"] for c in kind}
+        self.assertEqual(len(every), online, "'sweep.kinds' is not every online CPU")
+        self.assertLess(measured, every, "a 'sweep' for a sweep that left nothing out")
 
     def test_mode_is_accepted(self):
         for name, doc in DOCUMENTS:
@@ -393,7 +427,7 @@ class SubmitTest(unittest.TestCase):
         cls.tmp.cleanup()
 
     def submit(self, *extra):
-        args = [self.binary, "--full", "--cpus", "0", "--threads", "1",
+        args = [self.binary, "--mode", "full", "--cpus", "0", "--threads", "1",
                 "--time", "0.05", "--reps", "1", "--warmup", "0.02",
                 "--submit", self.base, *extra]
         # `check=False` throughout this class: what the binary exits with is
@@ -451,7 +485,8 @@ class SubmitTest(unittest.TestCase):
         The hub cuts a label from the end, which is where the tag is, so the
         benchmark takes the tag's room out of the label first.
         """
-        args = [self.binary, "--variants", "--threads", "1", "--time", "0.05",
+        args = [self.binary, "--variants", "all", "--mode", "threads",
+                "--threads", "1", "--time", "0.05",
                 "--reps", "1", "--warmup", "0.02", "--submit", self.base,
                 "--label", "K" * 205]
         proc = subprocess.run(args, capture_output=True, text=True, check=False)
