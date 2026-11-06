@@ -156,6 +156,12 @@ public final class MainActivity extends Activity {
     private float batteryAtStart;
     private String lastRaw;
     private String lastName;
+    // What the binary and the system say, asked once at start (see probe()):
+    // how many variants `--variants all` runs, and how many CPUs the per-core
+    // sweep measures by default. Until the answer comes, the arm64 build's
+    // four and every CPU.
+    private volatile int distinctVariants = 4;
+    private volatile int sweepCpus = Runtime.getRuntime().availableProcessors();
 
     // -- the screen ------------------------------------------------------
 
@@ -206,13 +212,13 @@ public final class MainActivity extends Activity {
 
         page.addView(heading("Variants"));
         // Two choices, not the desktop's three: which variants differ is fixed by
-        // the -march a binary was built for, not by the processor it runs on, and
-        // the Android build's armv8-a has both a vector unit and FMA, so all four
-        // of its variants are distinct and --variants would run the same four as
-        // --variants=all.
+        // the -march a binary was built for, not by the processor it runs on.
+        // The arm64 build's armv8-a has a vector unit and FMA, so all four
+        // differ; the armv7 build may have fewer, which `--variants all` skips
+        // and probe() counts.
         variants = radios(page, new String[] {
             "Baseline build only",
-            "All four builds: with and without SIMD and FMA"},
+            "Every build that differs: with and without SIMD and FMA"},
             prefs.getInt("variants", 0));
         page.addView(note("SIMD and FMA are processor shortcuts that do more "
             + "work in each step. The baseline uses neither and compares with any "
@@ -358,6 +364,85 @@ public final class MainActivity extends Activity {
         variants.setOnCheckedChangeListener((g, id) -> updateCommand());
         cooldown.setOnCheckedChangeListener((g, id) -> updateCommand());
         updateCommand();
+        new Thread(this::probe).start();
+    }
+
+    /** On a thread of its own: ask the binary which variants differ on this
+     *  build, and the system how many CPUs the default sweep measures, for the
+     *  estimate; then draw it again. */
+    private void probe() {
+        int distinct = 0;
+        try {
+            Process p = new ProcessBuilder(binary(), "--list-variants")
+                .redirectErrorStream(true).start();
+            p.getOutputStream().close();
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                for (String line; (line = r.readLine()) != null; ) {
+                    if (line.startsWith("  ") && line.contains("distinct")) distinct++;
+                }
+            }
+            p.waitFor();
+        } catch (IOException e) {
+            distinct = 0;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (distinct > 0) distinctVariants = distinct;
+        int sampled = sampledSweep();
+        if (sampled > 0) sweepCpus = sampled;
+        main.post(this::updateCommand);
+    }
+
+    // The files the benchmark tells kinds of CPU apart by, read the same way:
+    // CPUs that give the same answer for each are one kind, and the sweep
+    // measures up to PER_KIND of each. Where a CPU says nothing, every one.
+    private static final String[] KIND_FILES = {
+        "regs/identification/midr_el1", "cpu_capacity", "cpufreq/cpuinfo_max_freq",
+        "acpi_cppc/highest_perf", "cache/index0/size", "cache/index1/size",
+        "cache/index2/size", "cache/index3/size", "cache/index4/size"};
+    private static final int PER_KIND = 4;
+
+    /** How many CPUs the per-core sweep measures by default; 0 for every one. */
+    private static int sampledSweep() {
+        String base = "/sys/devices/system/cpu/";
+        String online = firstLine(base + "online");
+        if (online == null) return 0;
+        Map<String, Integer> kinds = new HashMap<>();
+        for (String part : online.split(",")) {
+            String[] ends = part.trim().split("-");
+            int lo, hi;
+            try {
+                lo = Integer.parseInt(ends[0]);
+                hi = ends.length > 1 ? Integer.parseInt(ends[1]) : lo;
+            } catch (NumberFormatException e) {
+                return 0;
+            }
+            for (int c = lo; c <= hi; c++) {
+                StringBuilder key = new StringBuilder();
+                boolean said = false;
+                for (String f : KIND_FILES) {
+                    String v = firstLine(base + "cpu" + c + "/" + f);
+                    if (v != null) said = true;
+                    key.append(v == null ? "" : v).append('|');
+                }
+                if (!said) return 0;
+                kinds.merge(key.toString(), 1, Integer::sum);
+            }
+        }
+        int n = 0;
+        for (int members : kinds.values()) n += Math.min(members, PER_KIND);
+        return n;
+    }
+
+    private static String firstLine(String path) {
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                new FileInputStream(path), StandardCharsets.UTF_8))) {
+            String line = r.readLine();
+            return line == null ? null : line.trim();
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     @Override
@@ -398,10 +483,11 @@ public final class MainActivity extends Activity {
         List<String> argv = new ArrayList<>();
         argv.add(binary());
         int v = choice(variants);
-        if (v == 1) argv.add("--variants=all");
+        if (v == 1) { argv.add("--variants"); argv.add("all"); }
+        // Full is the benchmark's own default, so only the halves are spelled out.
         int m = mode();
-        if (m == 0) argv.add("--full");
-        else if (m == 2) argv.add("--per-core");
+        if (m == 1) { argv.add("--mode"); argv.add("threads"); }
+        else if (m == 2) { argv.add("--mode"); argv.add("per-core"); }
         String t = threads.getText().toString().trim();
         if (!t.isEmpty()) { argv.add("--threads"); argv.add(t); }
         String c = cpus.getText().toString().trim();
@@ -434,13 +520,15 @@ public final class MainActivity extends Activity {
         double perPass = WARMUPS_PER_PASS * parse(number(warmup, "0.15"), 0.15)
             + PHASES_PER_PASS * parse(number(reps, "3"), 3) * parse(number(seconds, "0.5"), 0.5)
             + SETUP_SECONDS_PER_PASS;
+        // The CPUs the sweep walks: every one of a --cpus list, else the
+        // default sample. --threads sizes only the multi-threaded run, whose
+        // length does not depend on it.
         int n = countCpus(cpus.getText().toString());
-        if (n <= 0) n = (int) parse(threads.getText().toString().trim(), 0);
-        if (n <= 0) n = Runtime.getRuntime().availableProcessors();
+        if (n <= 0) n = sweepCpus;
         int m = mode();
         int passes = m == 0 ? 1 + n : m == 2 ? n : 1;
         // Every variant runs the whole thing again.
-        int times = choice(variants) == 0 ? 1 : 4;
+        int times = choice(variants) == 0 ? 1 : distinctVariants;
         return perPass * passes * times + rests() * cooldownSeconds();
     }
 
@@ -452,7 +540,7 @@ public final class MainActivity extends Activity {
     /** How many rests --cooldown takes: one before each batch but the first, a
      *  batch being a multi-threaded run or a whole per-core sweep. */
     private int rests() {
-        int batches = (mode() == 0 ? 2 : 1) * (choice(variants) == 0 ? 1 : 4);
+        int batches = (mode() == 0 ? 2 : 1) * (choice(variants) == 0 ? 1 : distinctVariants);
         return batches - 1;
     }
 
@@ -482,7 +570,8 @@ public final class MainActivity extends Activity {
         }
         cooldownNote.setText(applies
             ? "A rest between runs, so each starts on a cool phone."
-            : "Needs Both or all four builds.");
+            : distinctVariants > 1 ? "Needs Both, or every build that differs."
+            : "Needs Both.");
         double s = estimateSeconds();
         estimate.setText("Estimated run time: " + (s < 90 ? Math.round(s) + " s"
             : String.format(Locale.getDefault(), "%.1f min", s / 60)));
@@ -1222,6 +1311,20 @@ public final class MainActivity extends Activity {
         wide.setScrollBarStyle(View.SCROLLBARS_OUTSIDE_INSET);
         wide.addView(table);
         results.addView(wide);
+        // A sampled sweep's rows are some of each kind, standing for the rest.
+        JSONObject sweep = doc.optJSONObject("sweep");
+        JSONArray kinds = sweep == null ? null : sweep.optJSONArray("kinds");
+        JSONArray measured = doc.optJSONArray("cores");
+        if (kinds != null && measured != null) {
+            int every = 0;
+            for (int i = 0; i < kinds.length(); i++) {
+                JSONArray k = kinds.optJSONArray(i);
+                if (k != null) every += k.length();
+            }
+            results.addView(note("The cpu rows are " + measured.length() + " of the "
+                + every + " cores: up to " + sweep.optInt("per_kind") + " of each kind "
+                + "of core, each standing for the rest of its kind."));
+        }
         results.addView(note(all
             ? "Tap a heading for details. Score is the geometric mean of the bold columns."
             : "Tap a heading for details."));
@@ -1497,8 +1600,12 @@ public final class MainActivity extends Activity {
         parent.addView(t);
         EditText e = new EditText(this);
         e.setHint(hint);
-        e.setInputType(type);
+        // Single-line first: setSingleLine swaps in a transformation of its
+        // own, which would undo the dots a password type sets up -- a token
+        // field would then show what is pasted into it until Show and Hide
+        // set the type again.
         e.setSingleLine((type & InputType.TYPE_TEXT_FLAG_MULTI_LINE) == 0);
+        e.setInputType(type);
         if (pref != null) e.setText(prefs.getString(pref, ""));
         parent.addView(e);
         return e;

@@ -31,7 +31,7 @@ by its /64.
 From the machine that measured, which is the usual way:
 
 ```sh
-cpcpub --full --submit http://my.server:8782 --token YOUR-TOKEN --label "my box"
+cpcpub --submit http://my.server:8782 --token YOUR-TOKEN --label "my box"
 ```
 
 The token is optional — without one the upload is anonymous and the reply
@@ -52,7 +52,7 @@ write one file, then put the files together — dropped on the Submit tab all
 at once, or joined with `cat` first:
 
 ```sh
-cpcpub --full --variants --json > "$(hostname).json"     # on each machine
+cpcpub --variants all --json > "$(hostname).json"       # on each machine
 cat *.json > batch.json
 curl -fsS -X POST 'http://my.server:8782/api/batch?label=box+one&label=box+two' \
     -H 'Authorization: Bearer YOUR-TOKEN' --data-binary @batch.json
@@ -62,10 +62,10 @@ A batch file is JSON values one after another, each a result or a
 `--variants` array of them. The hub groups them into uploads, one per machine:
 up to one result per build variant, next to each other in the file, with the
 same machine, binary and settings — what a `--variants` run prints, and what
-separate `--variant` runs of one machine catted in a row are. An array never
+separate one-variant runs of one machine catted in a row are. An array never
 joins its neighbours, and a build seen twice starts the machine's next upload.
 `label=` names the uploads in file order (each run gets the label plus its
-variant tag, as `--variants --submit` gives it); `notes=` goes on every run.
+variant tag, as `--variants all --submit` gives it); `notes=` goes on every run.
 The Submit tab asks the hub first (`?dry=1`, which stores nothing), lists the
 machines it found, and takes a label for each.
 
@@ -75,7 +75,9 @@ sent again after adding to it stores only what is new. Up to 400 results a
 batch, and batches have their own allowance — `--batch-limit` results per
 account per hour, default 1000 — apart from single uploads' `--rate-limit`.
 
-Submit `--full` runs where you can: only the pair of halves is interpretable.
+Submit full runs (the default, `--mode full`) where you can: only the pair of
+halves is interpretable. A sweep that measured some CPUs of each kind lists
+them all under `sweep`, and the hub counts and groups the run by every CPU.
 A `--variants` run uploads as one run per build variant, since results only
 compare between matching builds. On an account, the hub ties them back into one upload as they
 arrive (same account, machine, binary and settings, labels that differ only in

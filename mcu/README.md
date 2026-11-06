@@ -32,8 +32,10 @@ whose FPU does double precision in hardware.
 Each [release](https://github.com/lukaszsobala/cross-platform-benchmark/releases/latest)
 carries a file for every chip in the table, so nothing needs building: `cpcpub-rp2040.uf2`,
 `cpcpub-rp2350-arm.uf2` and `cpcpub-rp2350-riscv.uf2`, and `cpcpub-esp32.bin`,
-`-esp32s2`, `-esp32s3`, `-esp32c3`, `-esp32c6` and `-esp32p4`. Check what you
-downloaded against the release's `SHA256SUMS`, as for the desktop binaries.
+`-esp32s2`, `-esp32s3`, `-esp32c3`, `-esp32c6` and `-esp32p4` -- plus, for the
+chips with a USB port of their own, `cpcpub-esp32s3-usb.bin`, `-esp32c3-usb`,
+`-esp32c6-usb` and `-esp32p4-usb`. Check what you downloaded against the
+release's `SHA256SUMS`, as for the desktop binaries.
 
 - **Pico, Pico 2**: hold BOOTSEL while plugging the board in and copy the
   `.uf2` to the drive that appears.
@@ -46,9 +48,20 @@ downloaded against the release's `SHA256SUMS`, as for the desktop binaries.
 
   or from Chrome or Edge, with nothing installed, through Espressif's
   [browser flasher](https://espressif.github.io/esptool-js/) at address 0x0.
-  These files use the chip's UART0 as the console, which is what a board's
-  USB port reaches on most development boards; a board wired only to the
-  chip's own USB port needs a build with that console chosen (below).
+  The plain files use the chip's UART0 as the console: a board's USB port
+  with a USB-serial bridge behind it (`/dev/ttyUSB0` on Linux, for most
+  bridges). A `-usb` file puts the console on the chip's own USB Serial/JTAG
+  port instead, for a board that has only that one: `lsusb` shows it as
+  `303a:1001 Espressif USB JTAG/serial debug unit`, and through it a plain
+  file flashes fine but its console never answers. On a board with both
+  ports, each file works through its own.
+
+  Through the chip's own USB port, esptool's usual reset after writing can
+  leave the chip in its download mode, where the ROM loader answers instead
+  of the benchmark. Add `--after watchdog-reset` to the esptool command, or
+  unplug the board and plug it back in without holding BOOT. On Linux the
+  port is `root:dialout`: `sudo usermod -aG dialout $USER` and log in again,
+  or each reset, which makes a new device node, locks you out of it.
 
 Then run it as under [Running a board](#running-a-board). The files are built
 by [firmware.yml](../.github/workflows/firmware.yml), which also builds them on
@@ -100,8 +113,16 @@ idf.py -C mcu/esp32 build flash                 # add -p PORT if there is more t
 The console is the chip's UART0, which on most development boards is the USB
 port with a USB-serial bridge behind it (`/dev/ttyUSB0`). For a board wired to
 the chip's own USB Serial/JTAG port instead (many ESP32-C3, C6 and S3 boards),
-choose it as the console before building: `idf.py -C mcu/esp32 menuconfig`,
-*Component config → ESP System Settings → Channel for console output*.
+build with that console, as the release's `-usb` files are:
+
+```sh
+idf.py -C mcu/esp32 -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.usb" set-target esp32s3
+idf.py -C mcu/esp32 build flash
+```
+
+or choose it in `idf.py -C mcu/esp32 menuconfig`, *Component config → ESP
+System Settings → Channel for console output*. The ESP32 has no such port, and
+the S2's USB is OTG, which this port does not drive.
 
 ## Zephyr
 
@@ -142,14 +163,19 @@ runs, so a timed phase never ends.
 From a desktop, with the board plugged in:
 
 ```sh
-python3 mcu/cpcpub-serial.py                    # --full; saves cpcpub-<chip>-<time>.json
-python3 mcu/cpcpub-serial.py -o run.json -- --variants --time 1
-python3 mcu/cpcpub-serial.py --port /dev/ttyUSB0 -- --per-core
+python3 mcu/cpcpub-serial.py                    # a full run; saves cpcpub-<chip>-<time>.json
+python3 mcu/cpcpub-serial.py -o run.json -- --variants all --time 1
+python3 mcu/cpcpub-serial.py --port /dev/ttyUSB0 -- --mode per-core
 ```
 
 It finds the board, waits for its prompt, types the options after `--` with
 `--json` added, shows the board's output as it comes, and writes the document.
-A `--variants` run writes an array, as `cpcpub --variants --json` does.
+Before typing it erases whatever is already on the board's input line: a USB
+port that has just appeared -- after every reset or flash -- starts with the
+system's echo on, and in the moment before the script sets it raw the system
+echoes the board's prompt back to it, so the command would arrive as
+`cpcpu--version`.
+A run of several variants writes an array, as `cpcpub --variants all --json` does.
 Standard library only on Linux and macOS; on Windows it needs
 `pip install pyserial`.
 
@@ -162,17 +188,21 @@ curl -fsS -X POST 'https://HUB/api/runs?label=my+pico' \
 ```
 
 as [web/README.md](../web/README.md) describes, with `-H 'Authorization: Bearer
-TOKEN'` to put it on an account. A `--variants` array goes up whole from the
+TOKEN'` to put it on an account. A variants array goes up whole from the
 page, which uploads each variant as its own run.
 
 Or open the port in any terminal (`picocom /dev/ttyACM0`, `idf.py monitor`,
 PuTTY) and type at the `cpcpub>` prompt: the options are the desktop's —
-`--full`, `--per-core`, `--cpus 1`, `--time`, `--reps`, `--variants`, `--json`,
-`--help` — less the ones with nothing to act on here (`--submit`,
-`--disp-sweep`, `--cooldown`). A `--json` result is printed between
-`-----BEGIN CPCPUB JSON-----` and `-----END CPCPUB JSON-----` lines.
+`--mode`, `--cpus 1`, `--time`, `--reps`, `--variants`, `--json`, `--help` —
+less the ones with nothing to act on here (`--submit`, `--disp-sweep`,
+`--cooldown`, and `--per-kind`: no chip here has more than four cores of a
+kind, so every sweep measures each core). A `--json` result is printed between
+`-----BEGIN CPCPUB JSON-----` and `-----END CPCPUB JSON-----` lines. The board
+echoes what you type, so leave the terminal's local echo off. If the first
+line after a reset comes back as `unknown option: cpcpu...`, that is the same
+stray echo: press Enter and type it again.
 
-A default `--full` run on a two-core chip is three passes of the suite -- both
+A default run (`--mode full`) on a two-core chip is three passes of the suite -- both
 cores at once, then each alone -- at 17 half-second phases a pass and three
 repetitions each: about a minute and a half of measuring. A one-core chip runs
 two passes.
@@ -212,7 +242,23 @@ Read [bench/README.md](../bench/README.md) first; this is what changes.
   through a cache -- 16 KiB on the RP2040, shared by both cores -- so the
   kernels, and on the Pico builds the soft-float routines they call, are put in
   SRAM (the ESP32's instruction RAM; Zephyr's `.ramfunc` on a board that runs
-  from flash) so that cache is not what is measured.
+  from flash) so that cache is not what is measured. On the ESP32-S3 that RAM
+  is SRAM1: the build gives all 32 KiB of SRAM0 to the instruction cache,
+  because with the default 16 KiB the kernels land in the other half of SRAM0,
+  and two cores running code from SRAM0 at once each slow to about two thirds
+  of their speed alone -- by how much depending on where the linker put each
+  kernel. `check-firmware.py` fails a build with a kernel there.
+- **Two cores share what they run from.** Both run the same kernel at the
+  same address, so on the other two-core chips the both-cores pass can read
+  below twice one core's for reasons of the chip's wiring rather than its
+  cores -- the same in every build, unlike the S3's SRAM0. The original ESP32
+  serves two cores at full speed only from different 32 KiB banks of its SRAM
+  (TRM, 3.3.5.3), and theirs is always the same one; how much that costs is
+  untested. The RP2040's double-precision routines run from its boot ROM, one
+  port both cores take turns at. The RP2040 and RP2350 stripe main SRAM a word
+  per bank, so two cores collide only now and then; the ESP32-P4 gives each
+  core its own instruction cache. The run shows how much any of it costs: the
+  total beside the sum of the per-core rows.
 - **The clock is measured**, so `mhz` is `measured`: on the Pico builds by the
   chip's frequency counter against the crystal, on an ESP32 as the cycles a
   core counts against the crystal-driven timer over 2 ms. Zephyr has no

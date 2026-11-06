@@ -139,7 +139,7 @@ final class Metrics {
         return String.valueOf(value);
     }
 
-    /** The variant a document came from, spelled the way --variant takes it. */
+    /** The variant a document came from, spelled the way --variants takes it. */
     static String variantOf(JSONObject doc) {
         JSONObject build = doc.optJSONObject("build");
         if (build == null) return "?";

@@ -1,8 +1,18 @@
 {
+    // Where `server` is imported from (tests/test_contract.py puts web/ on
+    // sys.path first) is in pyrightconfig.json: with that file there, Pylance
+    // takes its search paths from it and ignores any set here.
     "python.analysis.diagnosticMode": "workspace",
-    // tests/test_contract.py puts web/ on sys.path before importing `server`;
-    // the analyser cannot see that, so tell it where the module lives.
-    "python.analysis.extraPaths": [
-        "web"
+    // The Android app has no Gradle or Maven file for the Java extension to
+    // read: android/build.sh compiles it against the SDK's android.jar (which
+    // also carries org.json) and an R.java that aapt2 generates. The build
+    // leaves both in android/.ide/; see android/README.md for an editor
+    // without an SDK.
+    "java.project.sourcePaths": [
+        "android/.ide/gen",
+        "android/src"
+    ],
+    "java.project.referencedLibraries": [
+        "android/.ide/android.jar"
     ]
 }

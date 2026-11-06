@@ -27,7 +27,7 @@ endif
 # flags -- no pragma switches them per function -- so a binary that can measure
 # more than one of them has to compile the kernels more than once. src/kernels.c
 # is compiled once per row below and all four objects are linked into the one
-# binary; `./cpcpub --variants` then runs them in turn.
+# binary; `./cpcpub --variants all` then runs them in turn.
 #
 # The flags are named once, here, and reach the result document by being both
 # put on the command line and passed in as -DKV_FLAGS, so a run cannot report a

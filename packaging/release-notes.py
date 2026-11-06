@@ -43,8 +43,12 @@ BIN_OSES = ["linux", "macos", "windows", "android"]
 CHIPS = [
     ("Raspberry Pi", [("rp2040", "RP2040"), ("rp2350-arm", "RP2350, Arm"),
                       ("rp2350-riscv", "RP2350, RISC-V")]),
-    ("ESP32", [("esp32", "ESP32"), ("esp32s2", "ESP32-S2"), ("esp32s3", "ESP32-S3"),
-               ("esp32c3", "ESP32-C3"), ("esp32c6", "ESP32-C6"), ("esp32p4", "ESP32-P4")]),
+    # A -usb file has its console on the chip's own USB port, beside the UART one.
+    ("ESP32", [("esp32", "ESP32"), ("esp32s2", "ESP32-S2"),
+               ("esp32s3", "ESP32-S3"), ("esp32s3-usb", "ESP32-S3, USB"),
+               ("esp32c3", "ESP32-C3"), ("esp32c3-usb", "ESP32-C3, USB"),
+               ("esp32c6", "ESP32-C6"), ("esp32c6-usb", "ESP32-C6, USB"),
+               ("esp32p4", "ESP32-P4"), ("esp32p4-usb", "ESP32-P4, USB")]),
 ]
 
 

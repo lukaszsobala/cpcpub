@@ -42,7 +42,7 @@ SAMPLE = ROOT / "testdata" / "full-run.json"
 
 # Top-level keys the benchmark may emit, split by whether the hub reads them.
 CONSUMED_TOP = {"schema", "mode", "build", "system", "config", "dram",
-                "cores", "threads", "total", "checksum"}
+                "cores", "threads", "total", "sweep", "checksum"}
 # Emitted and deliberately dropped on ingest. `core_spread` is a summary of the
 # per-core array, recomputable from the records the hub already stores.
 UNCONSUMED_TOP = {"core_spread"}
@@ -90,17 +90,22 @@ SECTION_COLUMNS = {
     ("dram", "mhz_max"):              "dram_mhz_max",
 }
 
-# A short but complete run: both halves of --full, one CPU, so `make check`
-# costs a second or two rather than sweeping every core on the machine. A
-# token cool-down between the halves, so the document carries that key too.
-LIVE_ARGS = ["--full", "--cpus", "0", "--threads", "1", "--cooldown", "0.01",
+# A short but complete run: both halves of --mode full, one CPU, so `make
+# check` costs a second or two rather than sweeping every core on the machine.
+# A token cool-down between the halves, so the document carries that key too.
+LIVE_ARGS = ["--mode", "full", "--cpus", "0", "--threads", "1", "--cooldown", "0.01",
              "--time", "0.05", "--reps", "1", "--warmup", "0.02", "--json"]
+# And a sampled sweep, one CPU of each kind, so a document with "sweep" is held
+# to the contract too -- on a machine whose kinds have more than one CPU in
+# them; a sweep that left nothing out carries no "sweep" and is the run above.
+SAMPLED_ARGS = ["--mode", "per-core", "--per-kind", "1", "--no-mem",
+                "--time", "0.05", "--reps", "1", "--warmup", "0", "--json"]
 
 # The microcontroller front end (mcu/frontend.c) writes the same document from
 # its own code, so it is held to the same contract -- through its test port,
 # mcu/host, which runs it on this machine. Two cores, so the multi-core half
 # has a barrier to cross; a heap large enough that the memory phases run.
-MCU_LINE = "--full --cpus 0,1 --time 0.05 --reps 1 --warmup 0.02 --json\n"
+MCU_LINE = "--mode full --cpus 0,1 --time 0.05 --reps 1 --warmup 0.02 --json\n"
 MCU_HEAP = str(8 << 20)
 
 
@@ -125,6 +130,11 @@ def documents():
         proc = subprocess.run([binary] + LIVE_ARGS, check=True,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         out.append((f"live: {Path(binary).name}", json.loads(proc.stdout)))
+        proc = subprocess.run([binary] + SAMPLED_ARGS, check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        sampled = json.loads(proc.stdout)
+        if "sweep" in sampled:
+            out.append((f"sampled: {Path(binary).name}", sampled))
     mcu = os.environ.get("CPCPUB_MCU_HOST_BIN")
     if mcu:
         out.append((f"mcu: {Path(mcu).name}", mcu_document(mcu)))
@@ -393,7 +403,7 @@ class SubmitTest(unittest.TestCase):
         cls.tmp.cleanup()
 
     def submit(self, *extra):
-        args = [self.binary, "--full", "--cpus", "0", "--threads", "1",
+        args = [self.binary, "--mode", "full", "--cpus", "0", "--threads", "1",
                 "--time", "0.05", "--reps", "1", "--warmup", "0.02",
                 "--submit", self.base, *extra]
         # `check=False` throughout this class: what the binary exits with is
@@ -451,7 +461,8 @@ class SubmitTest(unittest.TestCase):
         The hub cuts a label from the end, which is where the tag is, so the
         benchmark takes the tag's room out of the label first.
         """
-        args = [self.binary, "--variants", "--threads", "1", "--time", "0.05",
+        args = [self.binary, "--variants", "all", "--mode", "threads",
+                "--threads", "1", "--time", "0.05",
                 "--reps", "1", "--warmup", "0.02", "--submit", self.base,
                 "--label", "K" * 205]
         proc = subprocess.run(args, capture_output=True, text=True, check=False)

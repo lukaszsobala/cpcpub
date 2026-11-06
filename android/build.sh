@@ -88,6 +88,13 @@ link() {
 link "$work/base.apk" --java "$work/gen"
 link "$work/proto.apk" --proto-format
 
+# What an editor needs to resolve the code as this build does, kept where
+# .vscode/settings.json looks for it: the platform's classes and the R this
+# build generated. Nothing reads it back.
+mkdir -p "$here/.ide/gen/io/github/lukaszsobala/cpcpub"
+ln -sf "$platform" "$here/.ide/android.jar"
+cp "$work/gen/io/github/lukaszsobala/cpcpub/R.java" "$here/.ide/gen/io/github/lukaszsobala/cpcpub/"
+
 javac --release 11 -encoding UTF-8 -Xlint:all,-options -Werror \
     -classpath "$platform" -d "$work/classes" \
     "$work"/gen/io/github/lukaszsobala/cpcpub/R.java "$here"/src/io/github/lukaszsobala/cpcpub/*.java

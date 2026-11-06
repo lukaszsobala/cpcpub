@@ -56,13 +56,14 @@ profile. Plain `make` (`rv64gc`) runs everywhere.
 ```sh
 ./cpcpub --help
 ./cpcpub --version                        # version, build, digest, and this machine
-./cpcpub                                  # all cores at once
-./cpcpub --per-core                       # sweep each CPU single-threaded
-./cpcpub --full                           # both in one report -- the form to share
-./cpcpub --full --variants                # ...once per build variant
+./cpcpub                                  # all cores at once, then each kind alone
+./cpcpub --mode threads                   # only all cores at once
+./cpcpub --mode per-core                  # only the sweep, each CPU single-threaded
+./cpcpub --variants all                   # ...once per build variant
+./cpcpub --per-kind 0                     # sweep every CPU, not 4 of each kind
 ./cpcpub --cpus 4-7 --threads 4           # only the big cluster
 ./cpcpub --time 2.0 --reps 5              # longer and more repetitions
-./cpcpub --full --cooldown 30             # let a phone cool before each batch
+./cpcpub --cooldown 30                    # let a phone cool before each batch
 ./cpcpub --no-mem / --no-pin              # skip the memory phases / do not pin
 ./cpcpub --mhz 1050                       # state the clock on a board that will not
 ./cpcpub -v                               # explain every metric afterwards
@@ -72,15 +73,26 @@ profile. Plain `make` (`rv64gc`) runs everywhere.
 
 Defaults: threads = online cores, `--time 0.5` per phase, `--reps 3`,
 `--warmup 0.15`, pinned, `--clock raw`. The memory working set defaults to
-`max(16 MiB, 4 x LLC / threads)` per thread; `--full` sizes its two phases
+`max(16 MiB, 4 x LLC / threads)` per thread; `--mode full` sizes its two phases
 separately, since N threads share the cache and one core does not.
 
-`--full` is the form worth keeping: the multi-threaded run says what the machine
-does at once, the per-core sweep what each core type does on its own, and
-neither is interpretable without the other. Each phase runs `--reps` times and
-the **best** is kept — interference only ever slows a run down.
+`--mode full`, the default, is the form worth keeping: the multi-threaded run
+says what the machine does at once, the per-core sweep what each core type does
+on its own, and neither is interpretable without the other. Each phase runs
+`--reps` times and the **best** is kept — interference only ever slows a run
+down.
 
-A phone or a fanless board throttles as it heats, so in a `--full` run the
+The sweep measures up to `--per-kind` CPUs (4) of each kind of core, spread
+over the kind's CPUs so a sample reaches each cluster or chiplet, and the
+document lists every kind's CPUs under `sweep`. Two CPUs are one kind only when
+Linux reports nothing that sets them apart: the design (the MIDR, on Arm), the
+scheduler's capacity, the rated clock, the firmware's preferred-core rank and
+every cache size. So a chip's favoured cores, a phone's prime core and each
+cluster of a hybrid are always measured, and a difference nobody reports is
+the only way to miss a core. `--per-kind 0`, a `--cpus` list, or a system that
+reports none of it (macOS, Windows) sweeps every CPU.
+
+A phone or a fanless board throttles as it heats, so in a `--mode full` run the
 per-core sweep starts on a device the multi-threaded run just warmed, and in a
 `--variants` run each variant starts warmer than the last. `--cooldown SEC`
 idles that long before each multi-threaded run and each per-core sweep after
@@ -97,7 +109,7 @@ upward by background load, not merely noised, so more reps do not fix it.
 ## Submitting a result
 
 ```sh
-./cpcpub --full --submit http://my.server:8782 --token YOUR-TOKEN --label "my box"
+./cpcpub --submit http://my.server:8782 --token YOUR-TOKEN --label "my box"
 ```
 
 The upload happens after the last measurement, so a hub that is down costs the
@@ -108,7 +120,7 @@ report neither hides a failed upload nor writes that token into a file you might
 share. Its last line, `see how it compares: URL`, is the run's page on the hub.
 `$CPCPUB_HUB`
 and `$CPCPUB_TOKEN` stand in for the two flags, which keeps the token out of the
-process list. `--variants --submit` uploads one run per variant, since results
+process list. `--variants all --submit` uploads one run per variant, since results
 only compare between matching builds — each run's label gets the variant name
 appended, which is what tells the four rows apart. `--label` and `--notes` are
 trimmed to what the hub keeps (200 and 2000 bytes) and say so when they are.
@@ -185,15 +197,15 @@ carrying both toggles has to compile the kernels more than once:
 
 ```sh
 ./cpcpub --list-variants           # what this binary carries, and why
-./cpcpub --variant vector-fma      # measure one
-./cpcpub --variants                # measure each distinct one, and compare
-./cpcpub --variants=all            # all four, distinct or not
+./cpcpub --variants vector-fma     # measure one
+./cpcpub --variants all            # measure each distinct one, and compare
+./cpcpub --variants scalar-nofma,vector-nofma   # these, distinct or not
 ```
 
 Which variants are *distinct* is a property of `-march`, not of the flags:
 without a vector unit there is nothing to vectorize and without hardware FMA
-nothing to contract, so `--variants` runs only the ones the target can tell
-apart. Under clang each row also carries `-f[no-]slp-vectorize`, because clang's
+nothing to contract, so `--variants all` runs only the ones the target can
+tell apart, and says which it left out; naming one runs it anyway. Under clang each row also carries `-f[no-]slp-vectorize`, because clang's
 `-fno-tree-vectorize` leaves its SLP vectorizer running at `-O3` — without that
 flag a clang "scalar" build comes out with SIMD in it. This matters most where
 there is no choice of compiler: macOS and Windows-on-Arm.
@@ -232,7 +244,7 @@ nor a clock in their device tree, and only debugfs knows — and records it as
 `given` rather than `measured`.
 
 macOS is the one that changes a number rather than omitting it: pinning is
-turned off there and `config.pin` records that, so `--per-core` on a Mac sweeps
+turned off there and `config.pin` records that, so the per-core sweep on a Mac sweeps
 *requests* and repeatedly measures whichever core the scheduler picked — on
 Apple Silicon that is not a P-core versus E-core reading. Whole-machine and
 single-thread figures are unaffected. Windows keeps real pinning, including
@@ -250,14 +262,14 @@ needs `xattr -d com.apple.quarantine cpcpub-macos-arm64` before it will run;
 moves everything else — banner, warnings, DRAM clock, prose — to **stderr**.
 
 ```sh
-./cpcpub --per-core --tsv > cores.tsv
+./cpcpub --mode per-core --tsv > cores.tsv
 ./cpcpub --json | jq '.total.int_thr_mops'
-./cpcpub --full --variants --json | jq -r '.[] | "\(.build.flags) \(.total.score)"'
+./cpcpub --variants all --json | jq -r '.[] | "\(.build.flags) \(.total.score)"'
 ```
 
 TSV is one header line and one row per scope (`cpu`, `thread`, `total`), with a
 leading `variant` column. JSON is one object per run carrying `build`, `system`
-and `config` alongside the records; `--variants --json` is an array of exactly
+and `config` alongside the records; `--variants all --json` is an array of exactly
 those documents, one per variant. Every result records the toolchain and the
 exact `CFLAGS` the measured code was built with — an `-march` nobody remembers
 passing is otherwise invisible.

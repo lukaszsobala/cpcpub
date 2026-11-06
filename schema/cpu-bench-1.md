@@ -6,7 +6,8 @@ They share no code, so this file and [tests/test_contract.py](../tests/test_cont
 are what keep them in agreement — the test enforces every rule stated here, and
 a live sample lives in [testdata/full-run.json](../testdata/full-run.json).
 
-Produced by `cpcpub --json` (also `--per-core --json`, `--full --json`).
+Produced by `cpcpub --json` (`--mode full`, the default; also `--mode threads`
+and `--mode per-core`).
 Written by `json_open` / `emit_json` in [bench/src/bench.c](../bench/src/bench.c)
 and, for each record, `json_result` in [bench/src/report.c](../bench/src/report.c);
 read by `validate()` in
@@ -31,6 +32,7 @@ read by `validate()` in
   "total":   record,
   "cores":   [ record, … ],
   "core_spread": 1.46,
+  "sweep":   { "per_kind": 4, "kinds": [[0, 1, …, 15], [16, …, 23]] },
   "checksum": "0x…"
 }
 ```
@@ -44,7 +46,19 @@ differently, N threads sharing the cache that one swept core has to itself, so
 `mem_bytes_per_thread` describes the multi-threaded phase where there is one.
 `config.cooldown_seconds` appears only when `--cooldown` idled the machine
 before each multi-threaded run and per-core sweep after the first; the hub
-keeps it in the raw document and reads nothing from it. Each system names its own hardware and the field passes that
+keeps it in the raw document and reads nothing from it.
+
+`sweep` appears only when the per-core sweep left CPUs out: it measures up to
+`per_kind` CPUs of each kind of core (`--per-kind`, 4 by default), and
+`kinds` lists every CPU of each kind, each CPU in one kind and each kind with
+at least one of its CPUs in `cores`. A kind is the CPUs the system reports
+nothing different about — design, capacity, rated clock, preferred-core rank,
+cache sizes — so a hub reads a kind's records for the CPUs of it that were
+not measured: it counts a layout from `kinds`, and files a thread on an
+unmeasured CPU under the kind its CPUs' records came out as. Without `sweep`,
+`cores` is every CPU the sweep was given.
+
+Each system names its own hardware and the field passes that
 through unchanged, so the same silicon reads `aarch64` on Linux, `arm64` on
 macOS and `ARM64` on Windows — `build.target` is the normalised one to key on.
 `system.sysname` is uname's too, and that is `Linux` on Android; the hub files a run
@@ -142,7 +156,7 @@ machine code, which is the comparability question rather than the honesty one.
 
 ## More than one document
 
-`cpcpub --variants` measures the same machine once per build variant and
+`cpcpub --variants all` (or a list of names) measures the same machine once per build variant and
 writes a JSON **array** of the documents above, one per variant, in the order
 they ran. Each element is an ordinary `cpu-bench/1` document and the array is
 the only thing that is new — so this is not a schema change, and the hub is not
@@ -156,7 +170,7 @@ every metric, and every comparison in the hub to learn about a dimension it does
 not have.
 
 `validate()` takes one document, so the splitting happens before the upload.
-`cpcpub --variants --submit URL` never builds the array at all: it posts each
+`cpcpub --variants all --submit URL` never builds the array at all: it posts each
 variant's document as it finishes, appending the variant name to the label.
 Anything else feeding the hub has to split it too — `jq '.[0]'`, or a loop.
 
