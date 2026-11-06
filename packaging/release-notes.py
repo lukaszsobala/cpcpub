@@ -43,13 +43,12 @@ BIN_OSES = ["linux", "macos", "windows", "android"]
 CHIPS = [
     ("Raspberry Pi", [("rp2040", "RP2040"), ("rp2350-arm", "RP2350, Arm"),
                       ("rp2350-riscv", "RP2350, RISC-V")]),
-    # A -usb file has its console on the chip's own USB port, beside the UART one.
-    ("ESP32", [("esp32", "ESP32"), ("esp32s2", "ESP32-S2"),
-               ("esp32s3", "ESP32-S3"), ("esp32s3-usb", "ESP32-S3, USB"),
-               ("esp32c3", "ESP32-C3"), ("esp32c3-usb", "ESP32-C3, USB"),
-               ("esp32c6", "ESP32-C6"), ("esp32c6-usb", "ESP32-C6, USB"),
-               ("esp32p4", "ESP32-P4"), ("esp32p4-usb", "ESP32-P4, USB")]),
+    ("ESP32", [("esp32", "ESP32"), ("esp32s2", "ESP32-S2"), ("esp32s3", "ESP32-S3"),
+               ("esp32c3", "ESP32-C3"), ("esp32c6", "ESP32-C6"), ("esp32p4", "ESP32-P4")]),
 ]
+# The chips with a second build, cpcpub-CHIP-usb.bin, whose console is on the
+# chip's own USB port rather than its UART: listed in a column of their own.
+USB_CHIPS = {"esp32s3", "esp32c3", "esp32c6", "esp32p4"}
 
 
 def notes(tag: str, base: str, names: list[str]) -> str:
@@ -131,12 +130,16 @@ def notes(tag: str, base: str, names: list[str]) -> str:
     for family, chips in CHIPS:
         got = [link(label, n) for key, label in chips
                for n in (f"cpcpub-{key}.uf2", f"cpcpub-{key}.bin") if n in names]
-        if got:
-            fw.append(f"| {family} | " + " · ".join(got) + " |")
+        usb = [link(label, n) for key, label in chips if key in USB_CHIPS
+               for n in (f"cpcpub-{key}-usb.bin",) if n in names]
+        if got or usb:
+            fw.append(f"| {family} | " + " · ".join(got) + " | " + " · ".join(usb) + " |")
     if fw:
         lines += [("**Microcontroller firmware**: a `.uf2` is copied to the Pico's drive, "
-                   f"a `.bin` written at 0x0. See [mcu/README.md]({repo}/blob/{tag}/mcu/README.md)."),
-                  "", "| | chip |", "| --- | --- |"] + fw + [""]
+                   "a `.bin` written at 0x0. The USB-console column is for a board whose "
+                   "only USB port is the chip's own. See "
+                   f"[mcu/README.md]({repo}/blob/{tag}/mcu/README.md)."),
+                  "", "| | firmware | USB console |", "| --- | --- | --- |"] + fw + [""]
 
     # Checksums.
     sums = [link(f"`{n}`", n) for n in ("SHA256SUMS", "verified-builds.json") if n in names]

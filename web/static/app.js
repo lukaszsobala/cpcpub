@@ -3677,11 +3677,14 @@ function renderDownloads(d) {
     for (const fam of d.firmware) {
       const card = el("div", "dl-card");
       card.append(el("h3", null, fam.family));
-      card.append(chipRow(null, fam.chips.map((f) => fileChip(f, f.chip))));
+      // A family with USB-console builds gets them as a row of their own.
+      const usb = fam.usb || [];
+      card.append(chipRow(usb.length ? "UART" : null, fam.chips.map((f) => fileChip(f, f.chip))));
+      if (usb.length) card.append(chipRow("USB", usb.map((f) => fileChip(f, f.chip))));
       card.append(el("p", "note", fam.family === "Raspberry Pi"
         ? "Hold BOOTSEL, plug in, copy the .uf2 to the drive."
-        : "Flash at 0x0 with esptool." + (fam.chips.some((f) => f.chip.endsWith(", USB"))
-          ? " A USB file is for a board whose only USB port is the chip's own." : "")));
+        : "Flash at 0x0 with esptool." + (usb.length
+          ? " USB is for a board whose only USB port is the chip's own." : "")));
       grid.append(card);
     }
     box.append(grid);

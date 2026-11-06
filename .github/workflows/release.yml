@@ -1000,10 +1000,10 @@ jobs:
       # list or a log line. --clobber so re-running the workflow for a tag
       # replaces the assets rather than failing on them.
       #
-      # The downloads table goes on top of the notes, between markers: a new
-      # release gets it above GitHub's generated changelog, and an existing one
-      # -- made by hand first, or a re-run -- has its table replaced and the
-      # rest of its notes left as they were.
+      # The downloads table sits between markers: a new release gets it on top,
+      # above GitHub's generated changelog, and an existing one -- made by hand
+      # first, or a re-run -- has its table replaced where it stands, so notes
+      # written above or below it stay where they were.
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1021,10 +1021,14 @@ jobs:
           python3 - <<'PY'
           import re
           table = open("release-notes.md").read().strip()
-          rest = re.sub(r"<!-- downloads -->.*?<!-- /downloads -->\s*", "",
-                        open("old-notes.md").read(), flags=re.S).strip()
-          open("notes.md", "w").write(
-              f"<!-- downloads -->\n{table}\n<!-- /downloads -->\n\n{rest}\n")
+          block = f"<!-- downloads -->\n{table}\n<!-- /downloads -->"
+          old = open("old-notes.md").read()
+          marked = re.compile(r"<!-- downloads -->.*?<!-- /downloads -->", re.S)
+          if marked.search(old):
+              notes = marked.sub(lambda _: block, old, count=1).strip()
+          else:
+              notes = f"{block}\n\n{old.strip()}"
+          open("notes.md", "w").write(notes + "\n")
           PY
           if [ "$exists" = 1 ]; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md

@@ -95,13 +95,12 @@ BIN_OSES = [("linux", "Linux"), ("macos", "macOS"), ("windows", "Windows"),
 CHIPS = [
     ("Raspberry Pi", [("rp2040", "RP2040"), ("rp2350-arm", "RP2350, Arm"),
                       ("rp2350-riscv", "RP2350, RISC-V")]),
-    # A -usb file has its console on the chip's own USB port, beside the UART one.
-    ("ESP32", [("esp32", "ESP32"), ("esp32s2", "ESP32-S2"),
-               ("esp32s3", "ESP32-S3"), ("esp32s3-usb", "ESP32-S3, USB"),
-               ("esp32c3", "ESP32-C3"), ("esp32c3-usb", "ESP32-C3, USB"),
-               ("esp32c6", "ESP32-C6"), ("esp32c6-usb", "ESP32-C6, USB"),
-               ("esp32p4", "ESP32-P4"), ("esp32p4-usb", "ESP32-P4, USB")]),
+    ("ESP32", [("esp32", "ESP32"), ("esp32s2", "ESP32-S2"), ("esp32s3", "ESP32-S3"),
+               ("esp32c3", "ESP32-C3"), ("esp32c6", "ESP32-C6"), ("esp32p4", "ESP32-P4")]),
 ]
+# The chips with a second build, cpcpub-CHIP-usb.bin, whose console is on the
+# chip's own USB port rather than its UART: listed in a column of their own.
+USB_CHIPS = {"esp32s3", "esp32c3", "esp32c6", "esp32p4"}
 
 
 def place(version: str, name: str) -> dict | None:
@@ -126,12 +125,14 @@ def place(version: str, name: str) -> dict | None:
             if m.group(2) in variants:
                 return {"group": "binary", "os": m.group(1), "row": row,
                         "variant": m.group(2)}
-    m = re.fullmatch(r"cpcpub-([a-z0-9-]+)\.(uf2|bin)", name)
+    m = re.fullmatch(r"cpcpub-([a-z0-9]+(?:-arm|-riscv)?)(-usb)?\.(uf2|bin)", name)
     if m:
+        usb = m.group(2) is not None
         for family, chips in CHIPS:
             for key, label in chips:
-                if key == m.group(1):
-                    return {"group": "firmware", "family": family, "chip": label}
+                if key == m.group(1) and (not usb or (key in USB_CHIPS and m.group(3) == "bin")):
+                    return {"group": "firmware", "family": family, "chip": label,
+                            **({"usb": True} if usb else {})}
     return None
 
 
@@ -180,14 +181,16 @@ def layout(manifest: dict) -> dict:
     oses = [{"id": o, "name": n} for o, n in BIN_OSES
             if any(o in r["cells"] for r in rows)]
 
+    # Per family, the chips' own builds and, beside them, the USB-console ones.
     firmware = []
     for family, chips in CHIPS:
-        got = []
+        got, usb = [], []
         for _, label in chips:
-            got += [entry(f, chip=label) for f, p in placed
-                    if p and p["group"] == "firmware" and p["chip"] == label]
-        if got:
-            firmware.append({"family": family, "chips": got})
+            for f, p in placed:
+                if p and p["group"] == "firmware" and p["chip"] == label:
+                    (usb if p.get("usb") else got).append(entry(f, chip=label))
+        if got or usb:
+            firmware.append({"family": family, "chips": got, "usb": usb})
 
     return {
         "release": tag, "version": version, "url": manifest.get("url"),

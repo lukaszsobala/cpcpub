@@ -3444,13 +3444,18 @@ class DownloadsTest(unittest.TestCase):
         names = ["cpcpub-esp32c3.bin", "cpcpub-esp32s3-usb.bin", "cpcpub-esp32s3.bin",
                  "cpcpub-esp32c3-usb.bin", "cpcpub-esp32s2-usb.bin"]
         self.assertEqual(downloads.place("0.5.2", "cpcpub-esp32s3-usb.bin"),
-                         {"group": "firmware", "family": "ESP32", "chip": "ESP32-S3, USB"})
+                         {"group": "firmware", "family": "ESP32", "chip": "ESP32-S3",
+                          "usb": True})
         # No S2 build has the USB console, so a file claiming one is not served.
         self.assertIsNone(downloads.place("0.5.2", "cpcpub-esp32s2-usb.bin"))
+        self.assertIsNone(downloads.place("0.5.2", "cpcpub-esp32s3-usb.uf2"))
         files = [{"name": n, "size": 1, "sha256": "0" * 64} for n in names]
         lay = downloads.layout({"tag": "v0.5.2", "files": files})
-        self.assertEqual([c["chip"] for f in lay["firmware"] for c in f["chips"]],
-                         ["ESP32-S3", "ESP32-S3, USB", "ESP32-C3", "ESP32-C3, USB"])
+        # The USB builds in a list of their own beside the chips' own builds.
+        self.assertEqual([[c["chip"] for c in f["chips"]] for f in lay["firmware"]],
+                         [["ESP32-S3", "ESP32-C3"]])
+        self.assertEqual([[c["name"] for c in f["usb"]] for f in lay["firmware"]],
+                         [["cpcpub-esp32s3-usb.bin", "cpcpub-esp32c3-usb.bin"]])
 
     def test_a_hub_with_nothing_mirrored_says_so(self):
         status, body, _ = self.get("/api/downloads")
