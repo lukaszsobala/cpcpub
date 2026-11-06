@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the Windows window: a PyInstaller folder holding Python, PyGObject,
+# Build the Windows GUI: a PyInstaller folder holding Python, PyGObject,
 # GTK 4 and the script, at dist/cpcpub-gui/, for the machine it runs on. Run
 # from the top of the tree in an MSYS2 shell with these installed -- UCRT64 on
 # x64:
@@ -27,6 +27,6 @@ PY
 pyinstaller --version
 pyinstaller --noconfirm --clean --distpath dist --workpath build/pyinstaller \
     packaging/windows/cpcpub-gui.spec
-# The window's whole footprint, for the log: the installer carries all of it.
+# The GUI's whole footprint, for the log: the installer carries all of it.
 du -sh dist/cpcpub-gui
 find dist/cpcpub-gui -type f | wc -l

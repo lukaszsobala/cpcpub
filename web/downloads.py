@@ -71,7 +71,7 @@ PKG = {"x86_64": "x86-64", "aarch64": "Arm64", "armv7h": "32-bit Arm", "riscv64"
        "loong64": "LoongArch", "ppc64le": "ppc64le", "s390x": "s390x"}
 TERMUX = {"aarch64": "Arm64", "arm": "32-bit Arm"}
 
-# (id, name, the benchmark's pattern and arch names, the window's pattern)
+# (id, name, the benchmark's pattern and arch names, the GUI's pattern)
 LINUX_PACKAGES = [
     ("debian", "Debian, Ubuntu", r"cpcpub_{v}-\d+_([^_.]+)\.deb", DEB,
      r"cpcpub-gui_{v}-\d+_all\.deb"),

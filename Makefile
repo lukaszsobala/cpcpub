@@ -60,7 +60,7 @@ testdata: bench
 	    > testdata/full-run.json
 	@echo "wrote testdata/full-run.json"
 
-# A GTK 4 window over the same flags, for a machine with a desktop on it. It
+# A GTK 4 GUI over the same flags, for a machine with a desktop on it. It
 # runs the binary this tree builds, so build first. See gui/README.md.
 gui: bench
 	@$(PYTHON) gui/cpcpub-gui.py

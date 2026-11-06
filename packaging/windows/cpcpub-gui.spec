@@ -1,4 +1,4 @@
-# PyInstaller spec for the Windows build of the window. Run by build-gui.sh in
+# PyInstaller spec for the Windows build of the GUI. Run by build-gui.sh in
 # an MSYS2 UCRT64 shell, whose Python, PyGObject and GTK 4 it bundles:
 #
 #     pyinstaller --noconfirm packaging/windows/cpcpub-gui.spec
@@ -19,19 +19,19 @@ a = Analysis(
         "gi": {
             # GTK 4, not the 3 PyInstaller's hook assumes without being told.
             "module-versions": {"Gtk": "4.0"},
-            # The symbolic icons the window uses -- the copy button, the
+            # The symbolic icons the GUI uses -- the copy button, the
             # token field's eye -- are Adwaita's; GTK itself has only a few.
             "icons": ["Adwaita", "hicolor"],
             "themes": ["Adwaita"],
-            # The window is in English and says nothing GTK would translate
+            # The GUI is in English and says nothing GTK would translate
             # beyond its file dialogs, which are Windows' own.
             "languages": [],
         },
     },
     excludes=["tkinter", "unittest", "pydoc", "test"],
 )
-# The window icon, by the name the window asks the icon theme for; frozen, the
-# window adds this folder to the theme's search path.
+# The GUI's icon, by the name the GUI asks the icon theme for; frozen, the
+# GUI adds this folder to the theme's search path.
 a.datas += [("icons/io.github.lukaszsobala.cpcpub.Gui.svg", os.path.join(icons, "cpcpub.svg"), "DATA")]
 
 pyz = PYZ(a.pure)
@@ -41,7 +41,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="cpcpub-gui",
-    console=False,            # a window, with no console behind it
+    console=False,            # a GUI, with no console behind it
     icon=os.path.join(icons, "cpcpub.ico"),
     upx=False,
 )

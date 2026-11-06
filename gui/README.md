@@ -1,8 +1,8 @@
 # `cpcpub-gui` — a front end for the benchmark
 
-A small GTK 4 window that builds a `cpcpub` command line, runs it, saves the
+A small GTK 4 GUI that builds a `cpcpub` command line, runs it, saves the
 result document and shows the numbers. It measures nothing itself: the
-benchmark does the work and the upload, and the window shows you the exact
+benchmark does the work and the upload, and the GUI shows you the exact
 command before it runs one.
 
 ```sh
@@ -22,7 +22,7 @@ almost certainly already has:
 | Fedora | `dnf install python3-gobject gtk4` |
 | Arch | `pacman -S python-gobject gtk4` |
 
-The benchmark itself still needs nothing installed. The window looks for the
+The benchmark itself still needs nothing installed. The GUI looks for the
 `bench/cpcpub` this tree builds, then the `cpcpub` installed beside itself, then
 `cpcpub` on `PATH`. Where a package put a newer-ISA build beside the plain one
 -- `cpcpub-v3`, `cpcpub-rva23`, `cpcpub-neon` -- it takes the newest one this processor has
@@ -73,7 +73,7 @@ kept in `cpcpub/uploads/` under the user's configuration folder, readable by
 its owner only, under the result's file name. So **Withdraw** also works on a
 result reopened later with **Open…**.
 
-With Upload ticked and no hub to send to, the window asks before measuring. No
+With Upload ticked and no hub to send to, the GUI asks before measuring. No
 Hub URL, no `$CPCPUB_HUB` and no address built into the benchmark is the usual
 case for a build from this tree. It offers to run without uploading instead.
 
@@ -84,7 +84,7 @@ time, in `cpcpub/gui.json` under the user's configuration folder
 written back in its place.
 
 **Advanced** — `--threads`, `--cpus`, `--time`, `--reps`, `--warmup`,
-**Cool-down**, and the benchmark the window runs. The window asks that binary
+**Cool-down**, and the benchmark the GUI runs. The GUI asks that binary
 for its variants and default hub in the background, once typing in the path
 pauses, and will not run one older than 0.6.0, which takes none of the options
 it passes (`--mode`, `--variants all`) and with neither runs only the
@@ -116,10 +116,10 @@ kind, rather than every CPU, names each kind for all its CPUs: "small ×12, 4
 measured".
 
 **Open…** in the header bar shows a result saved earlier, with its hub link
-and **Withdraw** if it was uploaded from this window.
+and **Withdraw** if it was uploaded from this GUI.
 
 The menu at the right of the header bar starts with the version of the
-benchmark the window runs (what `cpcpub --version` says), its compiler and
+benchmark the GUI runs (what `cpcpub --version` says), its compiler and
 target, and where it is. Below that: **Copy Version Details**, the whole
 `--version` report for a bug report; **Open the Hub**, where a run would upload
 to; the **Privacy Policy**; and **About cpcpub**.
@@ -130,7 +130,7 @@ also holds them stays hidden after a run that went well. If the benchmark
 crashes, the status line names the signal. If a newer-ISA build dies of an
 illegal instruction, it suggests the plain build.
 
-Closing the window during a run asks first, since closing stops the run.
+Closing the GUI during a run asks first, since closing stops the run.
 
 The text behind the table is hidden until you press **Output** in the header
 bar: the benchmark's **Log**, a plain-text **Report** of the same numbers to
@@ -142,7 +142,7 @@ in it you need — a run that failed, produced nothing, or uploaded.
 The line under the output pane is what the current settings should cost, and
 the small line below it the parameters the benchmark will get, cut to the
 width of the window. The button at its end copies the whole command, binary
-included, for a terminal — without the token, which the window passes in the
+included, for a terminal — without the token, which the GUI passes in the
 environment. The command is also echoed into the log when a run starts. One pass
 of the suite is eleven warm-ups and seventeen measured phases — ten phases at the
 full `--time`, and an indirect-dispatch ladder of fourteen points at half of it

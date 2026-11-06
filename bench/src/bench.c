@@ -1338,7 +1338,7 @@ static void usage(const char *prog) {
         "  cpcpub --json > run.json   the result as a document, to upload later\n"
         "  cpcpub --variants all      once per build variant, compared\n",
         prog,
-        // Its own line, after a space: the desktop window and the Android
+        // Its own line, after a space: the desktop GUI and the Android
         // build read the default hub out of " (default: URL)".
         CPCPUB_HUB_URL[0] ? "                     (default: " CPCPUB_HUB_URL ")\n"
                           : "                     This build has no default hub: URL is required\n");

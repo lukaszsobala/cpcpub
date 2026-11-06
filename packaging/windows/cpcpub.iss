@@ -1,11 +1,11 @@
-﻿; The Windows installer: the benchmark, on PATH, and the window, in the Start
+﻿; The Windows installer: the benchmark, on PATH, and the GUI, in the Start
 ; menu, in one setup program for both x64 and Arm64 machines, each of which
-; gets its own native benchmark and window. Compiled by
+; gets its own native benchmark and GUI. Compiled by
 ; build-installer.ps1 with Inno Setup 6.3 or newer, which passes:
 ;
 ;   Version   the release, plain numbers and dots
 ;   Rel       a folder holding the release's Windows binaries
-;   GuiX64    the PyInstaller folders of the window (build-gui.sh), one
+;   GuiX64    the PyInstaller folders of the GUI (build-gui.sh), one
 ;   GuiArm64  frozen on each machine
 ;   Top       the top of the source tree, for the icon and the license
 ;
@@ -61,35 +61,35 @@ SolidCompression=yes
 OutputBaseFilename=cpcpub-{#Version}-windows-setup
 
 [Types]
-Name: "full"; Description: "The benchmark and the window"
+Name: "full"; Description: "The benchmark and the GUI"
 Name: "cli"; Description: "The benchmark only, for the command line"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
 [Components]
 Name: "benchmark"; Description: "The benchmark, cpcpub.exe"; Types: full cli custom; Flags: fixed
-Name: "gui"; Description: "The window, in the Start menu"; Types: full
+Name: "gui"; Description: "The GUI, in the Start menu"; Types: full
 
 [Tasks]
 Name: "path"; Description: "Add cpcpub to PATH, so that a new terminal finds it"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Components: gui; Flags: unchecked
 
 [InstallDelete]
-; The window is a frozen Python with GTK, whose files change names from one
-; release to the next; a new release's window starts from an empty folder.
+; The GUI is a frozen Python with GTK, whose files change names from one
+; release to the next; a new release's GUI starts from an empty folder.
 Type: filesandordirs; Name: "{app}\gui"
 
 [Files]
 ; The baseline build is always cpcpub.exe: it runs on every machine of its
 ; kind, and it is what results compare against. x64 also gets the x86-64-v3
-; build beside it, as the Linux package does; the window's Browse picks it.
+; build beside it, as the Linux package does; the GUI's Browse picks it.
 Source: "{#Rel}\cpcpub-windows-x86_64.exe"; DestDir: "{app}"; DestName: "cpcpub.exe"; Check: IsX64OS; Flags: ignoreversion
 Source: "{#Rel}\cpcpub-windows-x86_64-v3.exe"; DestDir: "{app}"; DestName: "cpcpub-v3.exe"; Check: IsX64OS; Flags: ignoreversion
 Source: "{#Rel}\cpcpub-windows-arm64.exe"; DestDir: "{app}"; DestName: "cpcpub.exe"; Check: IsArm64; Flags: ignoreversion
 Source: "{#Top}\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "{#Top}\bench\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Top}\packaging\icons\cpcpub.ico"; DestDir: "{app}"; Flags: ignoreversion
-; The window too is native to each machine. It measures nothing itself, but
-; under emulation GTK starts slowly and draws slowly, and an x64 window would
+; The GUI too is native to each machine. It measures nothing itself, but
+; under emulation GTK starts slowly and draws slowly, and an x64 GUI would
 ; need Windows 11's x64 emulation, which Arm machines on Windows 10 lack.
 Source: "{#GuiX64}\*"; DestDir: "{app}\gui"; Components: gui; Check: IsX64OS; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#GuiArm64}\*"; DestDir: "{app}\gui"; Components: gui; Check: IsArm64; Flags: ignoreversion recursesubdirs createallsubdirs

@@ -62,12 +62,12 @@ import org.json.JSONTokener;
 
 /**
  * The one screen: what to run, a Run button, and the results as a table. Like
- * the desktop window it measures nothing itself -- it builds the benchmark's
+ * the desktop GUI it measures nothing itself -- it builds the benchmark's
  * command line, runs the release binary, and reads back what it prints.
  */
 public final class MainActivity extends Activity {
     // One pass of the suite: eleven warm-ups and seventeen measured phases, plus
-    // a tenth of a second of setup. The desktop window's estimate, unchanged.
+    // a tenth of a second of setup. The desktop GUI's estimate, unchanged.
     private static final int WARMUPS_PER_PASS = 11;
     private static final int PHASES_PER_PASS = 17;
     private static final double SETUP_SECONDS_PER_PASS = 0.1;
@@ -199,7 +199,7 @@ public final class MainActivity extends Activity {
         }
 
         page.addView(heading("Run"));
-        // As in the desktop window: Both sums up the two under it, and a run
+        // As in the desktop GUI: Both sums up the two under it, and a run
         // needs at least one of them.
         int mode = prefs.getInt("mode", 0);
         both = check(page, "Both", 0);

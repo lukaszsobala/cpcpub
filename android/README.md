@@ -1,6 +1,6 @@
 # cpcpub for Android
 
-An app for the release's static Android binary. Like the desktop window, it
+An app for the release's static Android binary. Like the desktop GUI, it
 measures nothing itself. It builds the command line, runs the benchmark, and
 reads back what it prints. The command itself is not shown, only written at
 the top of the log. You choose:

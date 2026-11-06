@@ -1,4 +1,4 @@
-# Build the Windows installer from a release's binaries and the window's
+# Build the Windows installer from a release's binaries and the GUI's
 # folder:
 #
 #   pwsh packaging/windows/build-installer.ps1 -Release DIR -GuiX64 DIR -GuiArm64 DIR -Version V -Out DIR
@@ -36,8 +36,8 @@ $GuiArm64 = (Resolve-Path $GuiArm64).Path
 foreach ($name in "cpcpub-windows-x86_64.exe", "cpcpub-windows-x86_64-v3.exe", "cpcpub-windows-arm64.exe") {
     if (-not (Test-Path (Join-Path $Release $name))) { throw "$Release has no $name" }
 }
-# Each window folder for the machine it claims to be for, read off the
-# executable's PE header: a mix-up would install an emulated window.
+# Each GUI folder for the machine it claims to be for, read off the
+# executable's PE header: a mix-up would install an emulated GUI.
 foreach ($gui in @(@($GuiX64, 0x8664), @($GuiArm64, 0xAA64))) {
     $exe = Join-Path $gui[0] "cpcpub-gui.exe"
     if (-not (Test-Path $exe)) { throw "$($gui[0]) has no cpcpub-gui.exe" }

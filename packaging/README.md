@@ -7,11 +7,11 @@ beside them:
 | | package | holds |
 | --- | --- | --- |
 | Debian, Ubuntu | `cpcpub_VERSION-1_ARCH.deb` | `/usr/bin/cpcpub`, and `cpcpub-v3` (x86-64), `cpcpub-rva23` (RISC-V) or `cpcpub-neon` (32-bit Arm) |
-| | `cpcpub-gui_VERSION-1_all.deb` | the window, with a menu entry |
+| | `cpcpub-gui_VERSION-1_all.deb` | the GUI, with a menu entry |
 | Fedora, openSUSE | `cpcpub-VERSION-1.ARCH.rpm`, `cpcpub-gui-VERSION-1.noarch.rpm` | the same |
 | Arch Linux | `cpcpub-VERSION-1-ARCH.pkg.tar.zst`, `cpcpub-gui-VERSION-1-any.pkg.tar.zst` | the same |
 | Termux | `cpcpub-termux_VERSION-1_aarch64.deb`, `..._arm.deb` | the static Android binary for that ABI, under Termux's prefix |
-| Windows | `cpcpub-VERSION-windows-setup.exe`, for x64 and Arm64 | `cpcpub.exe` on PATH (and `cpcpub-v3.exe` on x64), the window in the Start menu |
+| Windows | `cpcpub-VERSION-windows-setup.exe`, for x64 and Arm64 | `cpcpub.exe` on PATH (and `cpcpub-v3.exe` on x64), the GUI in the Start menu |
 | Android | `cpcpub-VERSION-android.apk`, and `.aab` for Google Play | an app around the static Android binaries, arm64 and armv7; see [android/](../android/README.md) |
 
 The Linux packages exist for every architecture the release has a Linux
@@ -63,8 +63,8 @@ is published only if all of them pass:
   - checks the digests;
   - runs the benchmark;
   - validates the desktop entry and AppStream data;
-  - starts the window under Xvfb, which finds the benchmark, runs it and saves
-    the result (see `CPCPUB_GUI_SMOKE` in the window's source);
+  - starts the GUI under Xvfb, which finds the benchmark, runs it and saves
+    the result (see `CPCPUB_GUI_SMOKE` in the GUI's source);
   - uninstalls.
 
   Debian 12 must *refuse* the package (see below). The armhf packages go
@@ -75,10 +75,10 @@ is published only if all of them pass:
 - **Windows:** [windows/test-installer.ps1](windows/test-installer.ps1)
   installs the setup silently on an x64 and an Arm64 runner, and checks:
   - that each got its own machine's benchmark, by digest, and its own
-    machine's window;
+    machine's GUI;
   - PATH, the Start-menu shortcut and the entry in Apps;
   - that the benchmark runs;
-  - the window's own run;
+  - the GUI's own run;
   - that installing again over it leaves one install and one PATH entry;
   - a clean uninstall.
 - **Android:** the APK is checked rather than installed. There is no
@@ -157,7 +157,7 @@ python3 packaging/linux/build.py rel "$tag" out    # needs nfpm and readelf
 packaging/linux/test.sh out rel                    # needs docker
 ```
 
-The Windows setup is built on Windows. Freeze the window on each machine
+The Windows setup is built on Windows. Freeze the GUI on each machine
 with [windows/build-gui.sh](windows/build-gui.sh), in an MSYS2 UCRT64 shell on
 x64 and a CLANGARM64 one on Arm64; each leaves `dist/cpcpub-gui`. Then, with
 Inno Setup 6.3 or newer installed:
@@ -179,7 +179,7 @@ commit packages to the same bytes. The workflow sets it to the commit's time.
 - **Two x86-64 builds, one package.** `/usr/bin/cpcpub` (and `cpcpub.exe` on
   Windows) is always the baseline build: it runs everywhere, and it is what
   results compare against. The `-v3` build goes beside it, and the RISC-V
-  package does the same with `-rva23` and the 32-bit Arm one with `-neon`. The window's Benchmark field mentions
+  package does the same with `-rva23` and the 32-bit Arm one with `-neon`. The GUI's Benchmark field mentions
   the other build in its tooltip, and Browse picks it. Choosing one quietly by
   CPU would hide which build produced a result.
 - **The glibc floor is read from the binaries.** The binaries currently need
@@ -192,15 +192,15 @@ commit packages to the same bytes. The workflow sets it to the commit's time.
   own and hands an upload to an https hub to curl. apt and dnf install
   recommended packages by default, and a minimal system can leave curl out
   and still measure. Uploading without curl stops before the run and says
-  how to install it, in the window and on the command line. Arch needs
+  how to install it, in the GUI and on the command line. Arch needs
   nothing, since pacman itself depends on curl.
 - **GUI dependencies differ between the rpm distributions.** The rpm names
   GTK's introspection data so that both Fedora (`gtk4` plus
   `gobject-introspection`, for cairo's typelib) and openSUSE (the separate
-  `typelib(Gtk)` package) end up with a window that starts.
+  `typelib(Gtk)` package) end up with a GUI that starts.
   [linux/build.py](linux/build.py) says why a plain "or" was not enough.
 - **One Windows setup for both machines.** It carries the x64 and the Arm64
-  builds of the benchmark and of the window, and installs the ones native to
+  builds of the benchmark and of the GUI, and installs the ones native to
   the machine. On Arm, Windows would also run the x64 benchmark, under
   emulation, and report the emulator's speed as the processor's. The setup
   is about 50 MB, twice what one machine's would be, which seemed a fair price

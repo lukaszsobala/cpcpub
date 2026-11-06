@@ -40,7 +40,7 @@ REPO_URL = "https://github.com/lukaszsobala/cpcpub"
 # The policy of whoever publishes these apps, kept in the repository like the
 # Android app's link to it.
 PRIVACY_URL = REPO_URL + "/blob/main/PRIVACY.md"
-# What the window's own requests call themselves. A CDN in front of a hub may
+# What the GUI's own requests call themselves. A CDN in front of a hub may
 # turn away urllib's default ("Python-urllib/3.x") as a script -- Cloudflare's
 # browser check does, with error 1010.
 USER_AGENT = f"cpcpub-gui (+{REPO_URL})"
@@ -55,18 +55,18 @@ EXE = ".exe" if os.name == "nt" else ""
 # in one: its output comes here. Zero, and so no flag, everywhere else.
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-# Set by the packaging tests to a file path: the window then makes one short
+# Set by the packaging tests to a file path: the GUI then makes one short
 # run by itself, writes what happened to that file as JSON, and quits. It is
 # how a machine with no one at it checks that an installed copy can find the
 # benchmark, start it, read both of its streams and show a result.
 SMOKE = os.environ.get("CPCPUB_GUI_SMOKE", "")
 
-# Where the window keeps the upload fields between runs. The token in it is a
+# Where the GUI keeps the upload fields between runs. The token in it is a
 # credential, so the file is the user's alone; see save_settings.
 SETTINGS = os.path.join(GLib.get_user_config_dir(), "cpcpub", "gui.json")
 
 # What is kept there besides the notes, the upload tick and where results go:
-# the window's text fields, each with the variable that wins over it. Those
+# the GUI's text fields, each with the variable that wins over it. Those
 # win for one session and are not written back in what was kept.
 KEPT_TEXT = (("hub", "CPCPUB_HUB"), ("token", "CPCPUB_TOKEN"), ("run_label", None))
 
@@ -597,14 +597,14 @@ def default_hub(text):
 
 def too_old(text):
     """Whether a build's help text is from before 0.6.0, whose options this
-    window passes: --mode, and --variants with a value. Such a build refuses
+    GUI passes: --mode, and --variants with a value. Such a build refuses
     them, and with neither given runs only the multi-threaded half, not the
     whole run it now defaults to. Unknown where there is no help text."""
     return bool(text) and "--mode" not in text
 
 
 def runnable(binary):
-    """Whether the program field names something the window can start: an
+    """Whether the program field names something the GUI can start: an
     executable file, or a name found on PATH, as a shell would take it."""
     return bool(binary) and (os.access(binary, os.X_OK)
                              or bool(GLib.find_program_in_path(binary)))
@@ -1184,7 +1184,7 @@ class Window(Gtk.ApplicationWindow):
         self.probe_timer = 0
         self.probing = False
         self.binary_hub = ""    # the hub the binary uploads to by default
-        self.binary_old = False  # it predates the options the window passes
+        self.binary_old = False  # it predates the options the GUI passes
         self.binary_info = {}   # what the binary said under --version
 
         header = Gtk.HeaderBar()
@@ -1202,7 +1202,7 @@ class Window(Gtk.ApplicationWindow):
         open_btn.connect("clicked", self.on_open)
         header.pack_start(open_btn)
         # The primary menu, rightmost as GNOME places it: which build of the
-        # benchmark this window runs, and what is not part of a run.
+        # benchmark this GUI runs, and what is not part of a run.
         menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic")
         menu_btn.set_tooltip_text("Benchmark version, the hub and about")
         menu_btn.set_popover(self.build_menu())
@@ -1294,7 +1294,7 @@ class Window(Gtk.ApplicationWindow):
             self.version_detail.set_text(binary)
         elif info:
             self.version_title.set_text(f"Benchmark {info['version']}")
-            old = "Older than 0.6.0: this window cannot run it." if self.binary_old else ""
+            old = "Older than 0.6.0: the GUI cannot run it." if self.binary_old else ""
             self.version_detail.set_text("\n".join(x for x in (info["build"], binary, old) if x))
         else:
             self.version_title.set_text("No benchmark found")
@@ -1549,7 +1549,7 @@ class Window(Gtk.ApplicationWindow):
                 signal = "changed" if isinstance(widget, Gtk.Entry) else "value-changed"
                 widget.connect(signal, lambda *_: self.update_command())
 
-        # The benchmark itself, last: the window finds it, and picks the
+        # The benchmark itself, last: the GUI finds it, and picks the
         # fastest build of it this processor runs, so there is seldom a reason
         # to look. A row of its own, so its width does not spread the short
         # fields above across the window.
@@ -1676,7 +1676,7 @@ class Window(Gtk.ApplicationWindow):
     # -- form behaviour ----------------------------------------------------
 
     def update_binary_tip(self):
-        tip = ("The benchmark this window runs. It starts as the fastest build "
+        tip = ("The benchmark this GUI runs. It starts as the fastest build "
                "installed that this processor runs.")
         folder = os.path.dirname(self.binary.get_text().strip())
         others = other_builds(os.path.join(folder, "cpcpub" + EXE))
@@ -1692,7 +1692,7 @@ class Window(Gtk.ApplicationWindow):
     def probe_binary(self, now=False):
         """Ask the binary which variants it carries and where it uploads, on a
         thread: each question starts it, which can take seconds on a Windows
-        that scans a program the first time it runs, and the window must not
+        that scans a program the first time it runs, and the GUI must not
         stop for it. A path being typed is asked about once typing pauses."""
         if self.probe_timer:
             GLib.source_remove(self.probe_timer)
@@ -1818,11 +1818,11 @@ class Window(Gtk.ApplicationWindow):
 
     def on_close(self, *_):
         if self.proc is not None and not self.closing:
-            # The benchmark goes with the window, and what it measured so far
+            # The benchmark goes with the GUI, and what it measured so far
             # with it: one click should not cost a ten-minute run.
             dialog = Gtk.AlertDialog(
                 message="A run is still going",
-                detail="Closing the window stops it, and what it has measured so "
+                detail="Closing the GUI stops it, and what it has measured so "
                        "far is lost.",
                 buttons=["Keep running", "Stop and close"],
                 cancel_button=0, default_button=0)
@@ -1877,7 +1877,7 @@ class Window(Gtk.ApplicationWindow):
         if self.cooldown.get_sensitive() and self.cooldown.get_value_as_int() > 0:
             argv += ["--cooldown", f"{self.cooldown.get_value_as_int()}"]
         if SMOKE:
-            # The packaging tests ask whether the window runs the benchmark,
+            # The packaging tests ask whether the GUI runs the benchmark,
             # not what it measures: left to size itself from the last-level
             # cache, the memory buffer on a large server part is gigabytes,
             # and under emulation filling it outlasts the test.
@@ -2032,7 +2032,7 @@ class Window(Gtk.ApplicationWindow):
         if too_old(text) if self.probing else self.binary_old:
             version = self.binary_info.get("version") or "this build"
             self.fail(f"The benchmark at {binary!r} ({version}) is older than 0.6.0 "
-                      f"and does not take the options this window passes -- pick a "
+                      f"and does not take the options this GUI passes -- pick a "
                       f"newer one under Advanced.")
             return
         outdir = self.outdir.get_text().strip()
@@ -2067,7 +2067,7 @@ class Window(Gtk.ApplicationWindow):
                 return
             # The benchmark hands an https upload to curl, which the packages
             # only recommend. A newer benchmark refuses before measuring when
-            # it is missing; this says so for any of them, and in a window
+            # it is missing; this says so for any of them, and in a dialog
             # rather than at the end of a log.
             if hub.startswith("https://") and not shutil.which("curl"):
                 detail = (f"{hub} is an https address, and the benchmark uploads "
@@ -2384,7 +2384,7 @@ class Window(Gtk.ApplicationWindow):
 
     def open_result(self, path):
         """Show a result saved earlier, with its link and Withdraw if it was
-        uploaded from this window."""
+        uploaded from this GUI."""
         name = os.path.basename(path)
         try:
             with open(path, encoding="utf-8") as fh:

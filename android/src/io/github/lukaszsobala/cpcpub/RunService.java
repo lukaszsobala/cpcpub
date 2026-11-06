@@ -16,7 +16,7 @@ import android.os.PowerManager;
  * leaving the app makes it a cached process, which Android freezes -- and the
  * benchmark, a child of the app, freezes with it, mid-measurement. A
  * foreground service keeps the app out of the cache; the partial wake lock
- * keeps the CPU awake if the screen goes off. The window keeps the screen on
+ * keeps the CPU awake if the screen goes off. The app keeps the screen on
  * by itself while the app is in front.
  */
 public final class RunService extends Service {

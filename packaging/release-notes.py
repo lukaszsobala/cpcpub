@@ -101,7 +101,7 @@ def notes(tag: str, base: str, names: list[str]) -> str:
         rows.append(("Termux", by_arch(termux, {"aarch64": "Arm64", "arm": "32-bit Arm"}), ""))
     if rows:
         lines += [("**Installers and packages**"), "",
-                  "| | benchmark | window |", "| --- | --- | --- |"]
+                  "| | benchmark | GUI |", "| --- | --- | --- |"]
         lines += [f"| {a} | {b} | {c} |" for a, b, c in rows]
         lines.append("")
 
