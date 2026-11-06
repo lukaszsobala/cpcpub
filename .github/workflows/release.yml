@@ -264,7 +264,7 @@ jobs:
           # which would refuse to start on an older Mac for no reason. 11.0 is
           # where Apple Silicon began, so that is the floor worth publishing.
           - name: macos-arm64
-            runs-on: macos-14
+            runs-on: macos-15
             asset: cpcpub-macos-arm64
             target: aarch64
             deployment-target: "11.0"
