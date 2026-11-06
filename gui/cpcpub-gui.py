@@ -830,10 +830,26 @@ class Scope(GObject.Object):
 
 
 def sampled_kinds(doc):
-    """{cpu: every CPU of its kind} from a sampled sweep's `sweep` block, for
-    the CPUs it measured; {} for a sweep that measured every CPU."""
+    """A sampled sweep's kinds, every CPU of each, from its `sweep` block; []
+    for a sweep that measured every CPU."""
     kinds = (doc.get("sweep") or {}).get("kinds") or []
-    return {cpu: kind for kind in kinds if isinstance(kind, list) for cpu in kind}
+    return [k for k in kinds if isinstance(k, list)]
+
+
+def stand_ins(groups, kinds):
+    """For each group of measured CPUs, every CPU it stands for: its own, and
+    those of a sampled kind the sweep left out, each with the group most of
+    its kind's measured CPUs are in -- the lowest-numbered one's on a tie, as
+    the hub files them. A kind whose measured CPUs scored apart is split
+    between their groups rather than counted whole in each."""
+    owner = {c: i for i, g in enumerate(groups) for c in g}
+    for k in kinds:
+        votes = [owner[c] for c in k if c in owner]
+        if votes:
+            pick = max(dict.fromkeys(votes), key=votes.count)
+            for c in k:
+                owner.setdefault(c, pick)
+    return [sorted(c for c, o in owner.items() if o == i) for i in range(len(groups))]
 
 
 def table_rows(doc):
@@ -842,13 +858,14 @@ def table_rows(doc):
     sampled sweep's kind is named for every CPU of it, measured or not."""
     scopes = scopes_of(doc)
     sweep = [rec for name, rec in scopes if name.startswith("cpu")]
-    of_kind = sampled_kinds(doc)
-    if len(sweep) < 2 and not of_kind:
+    sampled = sampled_kinds(doc)
+    if len(sweep) < 2 and not sampled:
         return [Scope(name, rec) for name, rec in scopes]
     rows = [Scope(name, rec) for name, rec in scopes if not name.startswith("cpu")]
     kinds = core_kinds(sweep, doc.get("system", {}).get("cpu_models"))
+    stands = stand_ins([[r.get("cpu") or 0 for r in recs] for _, recs in kinds], sampled)
     kinded = set()
-    for label, recs in kinds:
+    for (label, recs), every in zip(kinds, stands):
         kinded.update(id(r) for r in recs)
         cores = []
         for r in sorted(recs, key=lambda r: r.get("cpu") or 0):
@@ -858,9 +875,6 @@ def table_rows(doc):
                 tip += f" One of the {label} cores."
             cores.append(Scope(name, r, tip=tip))
         measured = sorted(r.get("cpu") or 0 for r in recs)
-        # The CPUs these records stand for: the measured ones, and the rest of
-        # each sampled kind they came from.
-        every = sorted({c for m in measured for c in of_kind.get(m, [m])})
         if len(every) == 1:
             rows += cores
             continue

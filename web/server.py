@@ -1373,18 +1373,28 @@ def core_types(records: list[dict], cpu_models: str | None,
         c = r.get("cpu")
         return c if isinstance(c, int) and c >= 0 else None
 
-    stands = {c: k for k in kinds or [] for c in k}
     cores = [r for r in records if r.get("scope") == "cpu" and r.get("score")]
     threads = [r for r in records if r.get("scope") == "thread"]
     out = []
     if len(cores) > 1:
         labels, groups = _kinds(cores, cpu_models, "all cores")
-        for label, g in zip(labels, groups):
+        # Which group each CPU a sampled sweep left out stands with: the one
+        # most of its system kind's swept CPUs came out in, the lowest-numbered
+        # one's on a tie -- as its thread is filed below. A kind whose swept
+        # CPUs scored apart is then split, not claimed whole by each group.
+        owner = {c: i for i, g in enumerate(groups) for c in map(cpu_of, g) if c is not None}
+        for k in kinds or []:
+            votes = [owner[c] for c in k if c in owner]
+            if votes:
+                pick = max(dict.fromkeys(votes), key=votes.count)
+                for c in k:
+                    owner.setdefault(c, pick)
+        for i, (label, g) in enumerate(zip(labels, groups)):
             swept = sorted(c for c in map(cpu_of, g) if c is not None)
             out.append({"scope": "cpu", "name": label, "ids": [r["id"] for r in g],
                         "cpus": swept})
             if kinds:
-                out[-1]["of"] = sorted({x for c in swept for x in stands.get(c, [c])})
+                out[-1]["of"] = sorted(c for c, o in owner.items() if o == i)
     elif (len(threads) > 1
           and all(t.get("score") and cpu_of(t) is not None for t in threads)):
         labels, groups = _kinds(threads, cpu_models, "all threads")

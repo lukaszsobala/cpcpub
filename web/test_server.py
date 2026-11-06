@@ -1223,6 +1223,18 @@ class CoreTypesTest(unittest.TestCase):
         self.assertEqual([(t["scope"], t["name"], t["cpus"]) for t in got],
                          [("cpu", "large", [1]), ("cpu", "small", [0]),
                           ("thread", "large", [1]), ("thread", "small", [0, 2])])
+        # The per-core groups split the kind the same way, rather than each
+        # claiming all three of its CPUs.
+        self.assertEqual([t.get("of") for t in got if t["scope"] == "cpu"], [[1], [0, 2]])
+
+    def test_a_kind_whose_swept_cpus_scored_apart_is_counted_once(self):
+        # One system kind of four, its two swept CPUs a step apart: the layout
+        # still adds up to the four, not to four in each group.
+        recs = [{"id": 0, "scope": "cpu", "cpu": 0, "score": 2000},
+                {"id": 1, "scope": "cpu", "cpu": 3, "score": 6000}]
+        layout = srv.guess_layout(recs, "Cortex-A55 + Cortex-A76", 4, [[0, 1, 2, 3]])
+        counts = [int(part.split("x")[0]) for part in (layout or "").split(" + ")]
+        self.assertEqual(sum(counts), 4, layout)
 
     def test_a_sampled_sweep_counts_its_layout_from_the_kinds(self):
         recs = [{"id": c, "scope": "cpu", "cpu": c, "score": s}
