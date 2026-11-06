@@ -1338,7 +1338,9 @@ def sweep_kinds(sweep, cores: list) -> list[list[int]]:
         kinds.append(sorted(k))
     if len(seen) > 4096:
         raise Invalid("too many CPUs in 'sweep.kinds'")
-    swept = {c.get("cpu") for c in cores if isinstance(c, dict)}
+    # Checked as the records' own cpu is, so a list or an object there is a
+    # refusal and not an unhashable set member.
+    swept = {_int(c.get("cpu"), "cpu", -1, 1 << 20) for c in cores if isinstance(c, dict)}
     if not swept <= seen:
         raise Invalid("a swept CPU is in none of 'sweep.kinds'")
     if any(not swept & set(k) for k in kinds):

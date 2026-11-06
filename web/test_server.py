@@ -937,6 +937,16 @@ class HubTest(unittest.TestCase):
             self.assertEqual(status, 400, kinds)
             self.assertIn(why, out["error"])
 
+    def test_a_sampled_sweep_with_a_cpu_that_is_no_number_is_refused(self):
+        # Refused as a bad upload, not a server error from an unhashable cpu.
+        for cpu in ([0], {"n": 0}):
+            doc = document("per-core")
+            doc["cores"] = [core(cpu=cpu), core(cpu=3)]
+            doc["sweep"] = {"per_kind": 1, "kinds": [[0, 1], [2, 3]]}
+            status, out = self.expect_error("/api/runs", "POST", doc)
+            self.assertEqual(status, 400, cpu)
+            self.assertIn("cpu", out["error"])
+
     def test_the_expanded_row_carries_the_kinds_too(self):
         out = self.hybrid("Hybrid Kinds 2", [8000, 8000, 10500, 10500], mode="full")
         _, page = self.req(f"/api/cores?run={out['id']}&scope=thread")

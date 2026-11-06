@@ -90,10 +90,16 @@ link "$work/proto.apk" --proto-format
 
 # What an editor needs to resolve the code as this build does, kept where
 # .vscode/settings.json looks for it: the platform's classes and the R this
-# build generated. Nothing reads it back.
-mkdir -p "$here/.ide/gen/io/github/lukaszsobala/cpcpub"
-ln -sf "$platform" "$here/.ide/android.jar"
-cp "$work/gen/io/github/lukaszsobala/cpcpub/R.java" "$here/.ide/gen/io/github/lukaszsobala/cpcpub/"
+# build generated. Nothing reads it back, so a checkout it cannot be written
+# to only gets a warning. The link's target is absolute: a relative
+# $ANDROID_HOME would otherwise be read from inside .ide/.
+ide="$here/.ide/gen/io/github/lukaszsobala/cpcpub"
+platform_abs="$(cd "$(dirname "$platform")" && pwd)/$(basename "$platform")"
+if ! { mkdir -p "$ide" &&
+       ln -sf "$platform_abs" "$here/.ide/android.jar" &&
+       cp "$work/gen/io/github/lukaszsobala/cpcpub/R.java" "$ide/"; } 2>/dev/null; then
+    echo "warning: could not write $here/.ide for the editor; building on" >&2
+fi
 
 javac --release 11 -encoding UTF-8 -Xlint:all,-options -Werror \
     -classpath "$platform" -d "$work/classes" \
