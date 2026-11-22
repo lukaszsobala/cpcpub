@@ -970,8 +970,11 @@ function metricCells(tr, row, bar = false) {
     const v = value(row, m);
     if (bar && m.key === state.sort && state.barBest && v > 0) {
       const share = m.better === "low" ? state.barBest / v : v / state.barBest;
-      td.classList.add("rankbar");
-      td.style.setProperty("--fill", `${Math.round(Math.min(1, share) * 100)}%`);
+      // On a block around the number rather than on the cell, so the bar sits
+      // just under it however many lines the CPU's name wraps the row to.
+      const fill = el("div", "rankbar", td.textContent);
+      fill.style.setProperty("--fill", `${Math.round(Math.min(1, share) * 100)}%`);
+      td.replaceChildren(fill);
     }
     tr.append(td);
   }
@@ -1062,8 +1065,9 @@ function renderSubmitterChip() {
 }
 
 // What an empty board says. It matters more than it looks now that Vectorize
-// and FMA start at "off": the first thing a visitor sees can be nothing at all
-// on a hub whose results were built the other way, and telling them to be the
+// and FMA start at "off" and Build at published binaries: the first thing a
+// visitor sees can be nothing at all on a hub whose results were built the
+// other way, or built by hand, and telling them to be the
 // first to upload -- when there are results here they merely filtered out --
 // sends them away for no reason. `state.held` is how many runs the hub has
 // regardless of filters, so an empty hub still says it is empty; until
@@ -1076,8 +1080,8 @@ function renderEmptyNote() {
   box.textContent = state.held === 0
     ? "Nothing here yet. Be the first to upload a run."
     : "No result matches these filters. Vectorize and FMA start at " +
-      "\u201coff\u201d \u2014 set either to \u201cany\u201d to see results " +
-      "built the other way.";
+      "\u201coff\u201d and Build at \u201cfrom a published binary\u201d " +
+      "\u2014 set any of them to \u201cany\u201d to see the rest.";
 }
 
 function renderBoard() {

@@ -220,18 +220,21 @@ thead th {
 }
 tbody tr:last-child td { border-bottom: 0; }
 /* The board's rows: denser than the other tables, being the longest list. */
-#board-table tbody td { padding-top: 0.28rem; padding-bottom: 0.28rem; line-height: 1.35; }
-#board-table .label { line-height: 1.2; }
+#board-table tbody td { padding-top: 0.4rem; padding-bottom: 0.4rem; line-height: 1.45; }
+#board-table .label { line-height: 1.3; margin-top: 0.05rem; }
 /* A row whose empty area opens it (rowAction): a hand there, the usual text
    cursor over its text, which stays selectable. */
 tr.tap { cursor: pointer; }
 tr.tap.on-text { cursor: auto; }
 /* The ranked metric's bar (metricCells; not .bar, which is Compare's): as long as the value is against the
    page's best, drawn from the right edge where the number sits. */
-td.rankbar {
+.rankbar {
+  /* Room for the bar under the number, given back so the number stays level
+     with the rest of its row. */
+  padding-bottom: 0.3rem; margin-bottom: -0.3rem;
   background-image: linear-gradient(to left,
     color-mix(in srgb, var(--accent) 22%, transparent) var(--fill), transparent var(--fill));
-  background-size: 100% 0.3rem; background-position: right bottom 0.2rem;
+  background-size: 100% 0.2rem; background-position: right bottom;
   background-repeat: no-repeat;
 }
 tbody tr:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
@@ -257,6 +260,11 @@ th.sorted { color: var(--ink); }
 th.sorted .sorth { color: var(--accent); }
 .arrow { margin-left: 0.2rem; }
 .wide { white-space: normal; min-width: 15rem; }
+/* The board's CPU column gives way last: wide enough that a long name wraps
+   to two lines, not four, when Detailed has every metric competing for room.
+   The table scrolls sideways sooner for it, which beats a column of names
+   broken up word by word. */
+#board-table .wide { min-width: 22rem; }
 /* On the board every column but the name is as wide as what it holds, and the
    name takes the rest: shared out by the browser, the spare width moved every
    column whenever the rows changed, as grouping by CPU does. The vs CPU column
