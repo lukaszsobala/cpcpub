@@ -455,7 +455,8 @@ class HubTest(unittest.TestCase):
     def test_per_ghz_turns_a_latency_into_cycles(self):
         """A `time` metric multiplies by the clock rather than dividing."""
         slow = self.upload(document(label="cycles-slow", cores=[
-            core(cpu=0, mhz=2000.0, mem_lat_ns=100.0)]))     # 200 cycles
+            core(cpu=0, mhz=2000.0, int_lat_mops=2000.0,
+                 mem_lat_ns=100.0)]))     # 200 cycles
         quick = self.upload(document(label="cycles-quick", cores=[
             core(cpu=0, mhz=5000.0, mem_lat_ns=60.0)]))      # 300 cycles
 
@@ -3032,10 +3033,48 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual({(r["mhz"], r["mhz_src"]) for r in rows},
                          {(3700.0, "rated")})
 
+    def test_a_measured_clock_below_int_lat_gives_way_to_it(self):
+        # `scaling_cur_freq` under intel_pstate's passive mode: the 400 MHz
+        # floor while the core ran its INT-lat at 4000.
+        doc = self.rated_doc(400.0)
+        for key in ("cores", "threads"):
+            doc[key] = [dict(r, mhz_src="measured") for r in doc[key]]
+        doc["total"] = dict(doc["total"], mhz_src="measured")
+        _, rows = srv.validate(doc)
+        self.assertEqual({(r["mhz"], r["mhz_src"]) for r in rows},
+                         {(4000.0, "estimated")})
+
+    def test_a_measured_clock_meets_only_its_own_int_lat(self):
+        # An all-core clock of 3000 stands under a one-thread INT-lat of 4000
+        # on the same CPU: it is no ceiling, unlike a rated clock, and all-core
+        # turbo is rightly lower. 3700 under 4000 is within the slack.
+        doc = document("full")
+        doc["threads"] = [core("thread", c, mhz=3000.0, mhz_src="measured",
+                               int_lat_mops=3000.0) for c in (0, 1)]
+        doc["cores"] = [core(cpu=c, mhz=3700.0, mhz_src="measured") for c in (0, 1)]
+        doc["total"] = dict(doc["total"], mhz=3000.0, mhz_src="measured")
+        self.assertEqual({c[2:] for c in self.clocks(doc)},
+                         {(3700.0, "measured"), (3000.0, "measured")})
+
+    def test_stored_measured_floor_clocks_are_fixed_on_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "t.sqlite3")
+            store = srv.Store(path)
+            run, cores = srv.validate(document("full"))
+            run_id, _ = store.insert(run, cores, "{}", None, None)
+            # As a hub before 0.6.1 stored a Core Ultra 7 258V's run.
+            with store.connect() as db:
+                db.execute("UPDATE cores SET mhz = 400, mhz_src = 'measured'")
+            srv.Store(path)
+            with store.connect() as db:
+                got = db.execute("SELECT DISTINCT mhz, mhz_src FROM cores "
+                                 "WHERE run_id = ?", (run_id,)).fetchall()
+            self.assertEqual([tuple(r) for r in got], [(4000.0, "estimated")])
+
     def test_the_total_keeps_the_weakest_source_of_its_threads(self):
         doc = document("full")
         doc["threads"] = [dict(doc["threads"][0], mhz=806.0, mhz_src="rated"),
-                          dict(doc["threads"][1], mhz=3000.0, mhz_src="measured")]
+                          core("thread", 1, mhz=3000.0, int_lat_mops=3000.0)]
         doc["total"] = dict(doc["total"], mhz=1903.0, mhz_src="rated")
         _, rows = srv.validate(doc)
         total = next(r for r in rows if r["scope"] == "total")

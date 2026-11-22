@@ -696,7 +696,7 @@ def check_consistency(rows: list[dict], threads: int | None) -> None:
 # rated clock, and that is the base clock, which turbo leaves behind -- an N100
 # says 806 MHz and runs its INT-lat at 3370 -- so every per-GHz number from
 # such a run came out four times too good. The benchmark now drops a rated
-# clock below this floor for its INT-lat estimate (RATED_SLACK in measure.c,
+# clock below this floor for its INT-lat estimate (CLOCK_SLACK in measure.c,
 # the same 10%); the hub does the same for documents that still carry one.
 #
 # A rated clock is a ceiling, so on a pinned run every INT-lat measured on its
@@ -705,7 +705,15 @@ def check_consistency(rows: list[dict], threads: int | None) -> None:
 # shared CPU INT-lat measured a share of the clock, so it estimates nothing:
 # the benchmark reports such a thread's clock as unknown from 0.5.1, and the
 # hub does the same for documents from before.
-RATED_SLACK = 1.1
+#
+# A measured clock below its own INT-lat is as wrong: before 0.6.1 the
+# benchmark read `scaling_cur_freq`, which under intel_pstate's passive mode
+# holds the frequency last requested -- 400 MHz on a Core Ultra 7 258V running
+# at 4.7 GHz -- and a reading taken at one instant can catch a dip the rest of
+# the phase outran. The benchmark drops those from 0.6.1. Only the row's own
+# INT-lat is a floor under one: a sampled clock is no ceiling, and an all-core
+# clock is rightly below the one-thread pass's.
+CLOCK_SLACK = 1.1
 # `mhz_src` values from most to least trusted, as measure.h orders them. The
 # total keeps the weakest of its threads', as aggregate() does.
 MHZ_TRUST = ("measured", "given", "rated", "estimated")
@@ -713,7 +721,7 @@ MHZ_TRUST = ("measured", "given", "rated", "estimated")
 
 def fix_clocks(rows: list[dict], threads: int | None, cpus: int | None,
                pin: object) -> bool:
-    """Bring one run's clocks to what the 0.5.1 benchmark would have written.
+    """Bring one run's clocks to what the 0.6.1 benchmark would have written.
 
     `rows` are the run's records under the hub's column names, changed in
     place; `threads`, `cpus` and `pin` are its config.threads, system.cpus and
@@ -722,9 +730,12 @@ def fix_clocks(rows: list[dict], threads: int | None, cpus: int | None,
 
     - a rated clock below the highest INT-lat on its CPU (on a pinned run; its
       own INT-lat otherwise), less 10%, is dropped;
+    - a measured clock below its own INT-lat, less 10%, is dropped;
     - an estimated clock on a shared CPU is dropped;
     - a dropped clock becomes the row's INT-lat as an estimate, or unknown on
-      a shared CPU.
+      a shared CPU. (The benchmark would try the CPU's rated clock before the
+      estimate for a measured one it drops, but the document does not carry
+      it.)
 
     A thread whose clock changes takes the total's with it: the benchmark
     writes the total's `mhz` as the mean of its threads' known clocks and its
@@ -753,7 +764,9 @@ def fix_clocks(rows: list[dict], threads: int | None, cpus: int | None,
             continue
         src, mhz, lat = row.get("mhz_src"), _f(row, "mhz"), _f(row, "int_lat")
         if src == "rated":
-            drop = mhz > 0.0 and max(lat, floor.get(row.get("cpu"), 0.0)) > mhz * RATED_SLACK
+            drop = mhz > 0.0 and max(lat, floor.get(row.get("cpu"), 0.0)) > mhz * CLOCK_SLACK
+        elif src == "measured":
+            drop = mhz > 0.0 and lat > mhz * CLOCK_SLACK
         else:
             drop = src == "estimated" and shared(row)
         if not drop:

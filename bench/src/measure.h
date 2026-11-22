@@ -180,10 +180,11 @@ typedef struct {
 result_t summarize(const worker_t *w, int cpu);
 // The whole-machine row over `n` per-thread rows.
 void aggregate(const result_t *rows, int n, result_t *tot);
-// Whether a rated clock is one the core can have run at, given the INT-lat it
-// measured: INT-lat is a floor under the clock, and a "rated" base clock that
-// turbo outran is below it. False also for no clock at all.
-int rated_fits(double rated, double int_lat);
+// Whether a clock, rated or sampled, is one the core can have run at, given the
+// INT-lat it measured: INT-lat is a floor under the clock, and a "rated" base
+// clock that turbo outran is below it, as is a sampled reading of the frequency
+// last requested rather than the one running. False also for no clock at all.
+int clock_fits(double mhz, double int_lat);
 // Tests each rated clock in `rows` against every INT-lat measured on its CPU
 // in the run -- `rows` and `also` both -- not only its own: a rated clock is a
 // ceiling, so any of them is a floor under it, and the one-thread pass's is
@@ -205,7 +206,7 @@ double cpu_cur_mhz(int cpu);
 double dram_mhz(void);
 // The clock `cpu` is rated for, in MHz: a ceiling the machine declares, used
 // only when nothing was sampled under load, and only if INT-lat does not prove
-// it too low (see rated_fits).
+// it too low (see clock_fits).
 double rated_mhz(int cpu);
 
 #endif  // CPCPUB_MEASURE_H

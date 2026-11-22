@@ -147,8 +147,18 @@ static double read_cpu_khz(int cpu, const char *what) {
     return khz;
 }
 
+// `cpuinfo_avg_freq` first: the kernel's average over the last tick from the
+// core's own cycle counters (APERF/MPERF on x86, AMU on Arm), so it is what the
+// core ran at whoever chose it. `scaling_cur_freq` is the fallback for kernels
+// before 6.14 and drivers with no counters to read, and it may be only the
+// frequency cpufreq last asked for: intel_pstate in passive mode under
+// schedutil sets the core's performance level without recording one, and the
+// file reads the 400 MHz floor of a Core Ultra 7 258V running at 4.7 GHz. The
+// average reads an error on a CPU that has idled since the last tick, which
+// this one has not -- it is sampled straight after a timed loop on it.
 double cpu_cur_mhz(int cpu) {
-    double khz = read_cpu_khz(cpu, "scaling_cur_freq");
+    double khz = read_cpu_khz(cpu, "cpuinfo_avg_freq");
+    if (khz <= 0.0) khz = read_cpu_khz(cpu, "scaling_cur_freq");
     return khz > 0.0 ? khz / 1000.0 : 0.0;
 }
 
@@ -2507,10 +2517,12 @@ int main(int argc, char **argv) {
 
         double mhz[1024];
         for (int i = 0; i < n_cpus; ++i) {
+            // The same order and the same floor as summarize().
             double m = sw[i].mhz_observed;
+            if (!clock_fits(m, sw[i].int_lat_mops)) m = 0.0;
             if (m <= 0.0) {
                 m = cpu_max_mhz(cpu_list[i]);
-                if (!rated_fits(m, sw[i].int_lat_mops)) m = 0.0;
+                if (!clock_fits(m, sw[i].int_lat_mops)) m = 0.0;
             }
             if (m <= 0.0) m = sw[i].int_lat_mops;   // 1 op/cycle by construction
             mhz[i] = m;
