@@ -1296,6 +1296,21 @@ class CoreTypesTest(unittest.TestCase):
                                     "Cortex-X4 + Cortex-A520"),
                          [("Cortex-X4", [0]), ("Cortex-A520", [1, 2])])
 
+    def test_one_design_at_two_capacities_is_still_one_kind(self):
+        # Kirin 980: A76s at 2.6 and 1.92 GHz, 35% apart in capacity as in
+        # score -- one design, as the line says, and named as one.
+        a55, a76lo, a76hi = ({"capacity": c} for c in (300.0, 756.0, 1024.0))
+        rows = [(2000, a55)] * 4 + [(7000, a76hi)] * 2 + [(5200, a76lo)] * 2
+        self.assertEqual(self.sized(rows, "Cortex-A55 + Cortex-A76"),
+                         [("Cortex-A76", [4, 5, 6, 7]), ("Cortex-A55", [0, 1, 2, 3])])
+
+    def test_highest_perf_orders_where_capacity_is_alike(self):
+        # Every core at capacity 1024, as a kernel can give an AMD Zen 5 + 5c
+        # part; the firmware still ranks the Zen 5s (0-3) above the 5cs.
+        zen5, zen5c = ({"capacity": 1024.0, "highest_perf": h} for h in (196.0, 150.0))
+        self.assertEqual(self.sized([(8000, zen5)] * 4 + [(9500, zen5c)] * 4),
+                         [("large", [0, 1, 2, 3]), ("small", [4, 5, 6, 7])])
+
     def test_layout_designs(self):
         self.assertEqual(srv.layout_designs("4x P-core + 4x LP E-core"),
                          ["P-core", "LP E-core"])

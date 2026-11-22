@@ -684,6 +684,24 @@ static int has_cpu(const int *list, int n, int cpu) {
     return 0;
 }
 
+// Whether `cpu` is the first online thread of its core: the one a layout
+// counts, so that a P-core with two threads -- Alder Lake's, Meteor Lake's --
+// is one P-core, as Intel counts them. True where the kernel will not say.
+static int first_thread(int cpu, const int *online, int n_online) {
+    int sib[64];
+    char rel[64];
+    snprintf(rel, sizeof(rel), "cpu%d/topology/core_cpus_list", cpu);
+    int n = read_cpu_list_file(rel, sib, ARRAY_LEN(sib));
+    if (n <= 0) {
+        snprintf(rel, sizeof(rel), "cpu%d/topology/thread_siblings_list", cpu);
+        n = read_cpu_list_file(rel, sib, ARRAY_LEN(sib));
+    }
+    for (int i = 0; i < n; ++i) {
+        if (has_cpu(online, n_online, sib[i])) return sib[i] == cpu;
+    }
+    return 1;
+}
+
 // Whether a CPU has a level-3 cache of its own to report.
 static int has_l3(int cpu) {
     for (int i = 0; i < 8; ++i) {
@@ -695,7 +713,8 @@ static int has_l3(int cpu) {
 }
 
 // "4x P-core + 4x LP E-core": an Intel hybrid's core types, as cpu_layout, in
-// the order of each type's first online CPU. The brand string names the chip
+// the order of each type's first online CPU, counting cores rather than
+// threads. The brand string names the chip
 // only, so without this a hub can tell its kinds of core apart by score alone,
 // and a power-saving plan that holds the P-cores under the E-cores swaps them.
 // The kernel registers one PMU per core type, `cpu_core` and `cpu_atom`, each
@@ -712,6 +731,7 @@ static void x86_hybrid_layout(char *layout, size_t layoutsz) {
     memset(&tally, 0, sizeof tally);
     for (int i = 0; i < n; ++i) {
         const int c = online[i];
+        if (!first_thread(c, online, n)) continue;
         if (has_cpu(big, nb, c))        tally_add(&tally, "P-core");
         else if (has_cpu(small, ns, c)) tally_add(&tally, has_l3(c) ? "E-core" : "LP E-core");
         else return;

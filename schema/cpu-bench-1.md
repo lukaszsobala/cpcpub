@@ -82,7 +82,8 @@ one kind. Read from the same per-CPU MIDR lines on Arm. On an Intel hybrid
 under Linux it names the core types instead, which the brand string in
 `cpu_models` does not: `4x P-core + 4x LP E-core`, from the kernel's `cpu_core`
 and `cpu_atom` PMUs, with an E-core that has no L3 an `LP E-core`, in the order
-of each type's first CPU. **Absent** elsewhere. It lets a hub tell a 4+4 part
+of each type's first CPU and counting cores, not threads: a P-core with two
+threads is one P-core, as Intel counts them. **Absent** elsewhere. It lets a hub tell a 4+4 part
 from a 2+6 one, which `cpu_models` names identically, and name a run's kinds
 of core. Where the kernel names the chip rather than its cores, `cpu_models`
 carries that name and this still counts the cores.
@@ -204,9 +205,9 @@ is, on Linux, for a record pinned to one: the scheduler's `cpu_capacity`
 measurements and move with neither the clock nor the power plan, which is the
 point: a power-saving plan can hold a P-core under an E-core, and the score
 then cannot say which is the larger. A hub splits kinds of core where
-`capacity` steps by more than 15% and orders their size names by it, or by
-`highest_perf` where there is no `capacity` -- only orders, since an AMD part
-ranks its preferred cores by it and those steps can be wider within one design.
+`capacity` steps by more than 15% and orders their size names by it, then by
+`highest_perf` -- which only orders, since an AMD part ranks its preferred
+cores by it and those steps can be wider within one design.
 
 `mhz_src` says how much the clock beside it is worth: `measured` was sampled
 off the machine while the core was under load (the kernel's cycle-counter

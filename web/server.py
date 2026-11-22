@@ -1351,10 +1351,12 @@ def _kinds(recs: list[dict], cpu_models: str | None,
     at 3.2 -- and by score the E-cores were then "large", or with the scores
     brought level, one kind with the P-cores. What the system says of each
     CPU does not move with the plan: `capacity` (the scheduler's) splits the
-    records first, at the same gap, and each part is grouped by score; where
-    there is none, size names follow CPPC's `highest_perf` instead of the
-    score. That one only orders: on an AMD part it ranks preferred cores, and
-    its steps between cores of one design can be wider than the gap.
+    records first, at the same gap, and each part is grouped by score. Within
+    a part, size names follow CPPC's `highest_perf` before the score -- a
+    kernel can give every core of an AMD Zen 5 + 5c part the same capacity,
+    and the firmware still ranks the Zen 5s higher. That one only orders: an
+    AMD part ranks its preferred cores by it, and its steps between cores of
+    one design can be wider than the gap.
     """
     groups: list[list[dict]] = []
     part_of: list[int] = []
@@ -1369,13 +1371,22 @@ def _kinds(recs: list[dict], cpu_models: str | None,
     names = named_designs(cpu_models)
     # Fewer designs named than steps found: two of the groups are one design at
     # two clocks, as a phone's prime core and the rest of its big cluster are.
-    # The closest pair of a capacity part is joined until the counts agree;
-    # groups the system gave different capacities are never one design.
+    # The closest pair is joined until the counts agree -- closest in score and
+    # in capacity both, the wider of the two steps counting. One design at two
+    # clocks is as far apart in capacity as in score (Kirin 980's A76s at 2.6
+    # and 1.92 GHz, 35% in each), so a capacity step alone does not keep them
+    # apart; two designs that a power plan brought level in score stay apart
+    # by the capacity step between them.
+    def step(k: int) -> float:
+        a, b = groups[k][-1]["score"], groups[k + 1][0]["score"]
+        d = max(a, b) / min(a, b)
+        if _said(recs, "capacity"):
+            ca = statistics.median(r["capacity"] for r in groups[k])
+            cb = statistics.median(r["capacity"] for r in groups[k + 1])
+            d = max(d, max(ca, cb) / min(ca, cb))
+        return d
     while names and len(groups) > len(names):
-        pairs = [k for k in range(len(groups) - 1) if part_of[k] == part_of[k + 1]]
-        if not pairs:
-            break
-        i = min(pairs, key=lambda k: groups[k][-1]["score"] / groups[k + 1][0]["score"])
+        i = min(range(len(groups) - 1), key=step)
         groups[i:i + 2] = [groups[i] + groups[i + 1]]
         del part_of[i + 1]
     if len(groups) == 1:
@@ -1391,9 +1402,12 @@ def _kinds(recs: list[dict], cpu_models: str | None,
                                          key=lambda k: first(groups[k]))):
             labels[k] = name
         return labels, groups
-    if not _said(recs, "capacity") and _said(recs, "highest_perf"):
-        # Stable, so groups CPPC ranks alike keep their score order.
-        groups.sort(key=lambda g: -statistics.median(r["highest_perf"] for r in g))
+    if _said(recs, "highest_perf"):
+        # Stable, so groups CPPC ranks alike keep their score order, and
+        # never across a capacity step.
+        hp = [statistics.median(r["highest_perf"] for r in g) for g in groups]
+        order = sorted(range(len(groups)), key=lambda k: (part_of[k], -hp[k]))
+        groups = [groups[k] for k in order]
     return _size_names(len(groups)), groups
 
 

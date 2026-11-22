@@ -211,8 +211,8 @@ double cpu_cur_mhz(int cpu);
 // The DRAM controller's clock now, in MHz.
 double dram_mhz(void);
 // The clock `cpu` is rated for, in MHz: a ceiling the machine declares, used
-// only when nothing was sampled under load, and only if INT-lat does not prove
-// it too low (see clock_fits).
+// only when nothing usable was sampled under load, and only if INT-lat does not
+// prove it too low (see clock_fits).
 double rated_mhz(int cpu);
 
 #endif  // CPCPUB_MEASURE_H

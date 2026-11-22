@@ -318,9 +318,9 @@ step of more than 15% starts a new kind. Where the records carry the system's
 power-saving plan can bring a P-core's score under an E-core's. Where the CPU
 line names several designs, as an Arm one does ("Cortex-A55 + Cortex-A78"), or
 the layout does, as an Intel hybrid's does ("4x P-core + 4x LP E-core"), the
-kinds take those names, with the closest steps of one capacity joined until the
-counts agree. Otherwise they are large, medium and small, the largest by
-`capacity`, else by CPPC's `highest_perf`, else by score. Threads take the kind of the CPU they were pinned
+kinds take those names, with the closest steps -- in score and in capacity --
+joined until the counts agree. Otherwise they are large, medium and small,
+ordered by `capacity`, then CPPC's `highest_perf`, then score. Threads take the kind of the CPU they were pinned
 to. `/api/runs/<id>` lists them as `types` and marks each record with its
 `type`; the page shows one averaged row per kind, unfolding to the records.
 
