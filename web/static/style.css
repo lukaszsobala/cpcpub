@@ -89,7 +89,11 @@ pre {
 .tabs button:hover { color: var(--ink); }
 .tabs button.active { color: var(--ink); border-bottom-color: var(--accent); }
 
-main { max-width: 1100px; margin: 0 auto; }
+/* Every tab as wide as the header and the tabs, except the leaderboard, which
+   takes the window, less the body's margin: it is a table that only grows
+   wider as it is asked for more metrics. */
+main > section { max-width: 1100px; margin: 0 auto; }
+main > section#board { max-width: none; }
 .tab { display: none; padding-top: 1.25rem; }
 .tab.active { display: block; }
 
@@ -109,7 +113,9 @@ main { max-width: 1100px; margin: 0 auto; }
 .filters label[hidden], form label[hidden] { display: none; }
 /* The tick that puts a run into the comparison, big enough to hit. */
 input.row-pick { width: 1.15rem; height: 1.15rem; cursor: pointer; }
-.filters .grow { flex: 1 1 12rem; }
+.filters .grow { flex: 1 1 18rem; }
+.search-row { display: flex; gap: 0.6rem; align-items: flex-end; }
+.search-row label { flex: 1; min-width: 0; }
 /* The search box's own clear button, the same in every browser: Firefox draws
    none, and the one WebKit draws is hidden so there are not two. */
 .search-box { position: relative; display: flex; }
@@ -167,6 +173,21 @@ thead th {
   color: var(--muted); font-weight: 600; vertical-align: bottom;
 }
 tbody tr:last-child td { border-bottom: 0; }
+/* The board's rows: denser than the other tables, being the longest list. */
+#board-table tbody td { padding-top: 0.28rem; padding-bottom: 0.28rem; line-height: 1.35; }
+#board-table .label { line-height: 1.2; }
+/* A row whose empty area opens it (rowAction): a hand there, the usual text
+   cursor over its text, which stays selectable. */
+tr.tap { cursor: pointer; }
+tr.tap.on-text { cursor: auto; }
+/* The ranked metric's bar (metricCells; not .bar, which is Compare's): as long as the value is against the
+   page's best, drawn from the right edge where the number sits. */
+td.rankbar {
+  background-image: linear-gradient(to left,
+    color-mix(in srgb, var(--accent) 22%, transparent) var(--fill), transparent var(--fill));
+  background-size: 100% 0.3rem; background-position: right bottom 0.2rem;
+  background-repeat: no-repeat;
+}
 tbody tr:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 /* The rest of the CPU under the pointer, quieter than the row itself. */
 tbody tr.peer-lit:not(:hover) { background: color-mix(in srgb, var(--accent) 7%, transparent); }
@@ -526,7 +547,6 @@ details.more .meta { margin: 0.5rem 0 0.25rem; }
 }
 .authmsg { margin: 0.25rem 0 0; font-size: 0.85rem; min-height: 1.2em; }
 
-.foldname { cursor: pointer; }
 #board-chip {
   display: flex; align-items: baseline; gap: 0.5rem; margin-top: 0.85rem;
   font-size: 0.85rem;

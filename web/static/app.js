@@ -29,6 +29,7 @@ const state = {
   search: "",           // the last submitted search, not what is in the box
   cpus: new Map(),      // suggested CPU name -> [cpu_key, layout], from /api/stats
   pickable: [],         // the run rows the board is showing, for its tick-all box
+  barBest: null,        // the page's best at the ranked metric, for its bars
   norm: "abs",
   detailed: false,      // every metric, rather than the headline set
   scopeNote: "",        // what changing scope did to the selection, if anything
@@ -53,6 +54,16 @@ const FULL_NOTE = `A comparison holds at most ${MAX_COMPARE} runs.`;
 
 function compareFull() {
   return state.selected.size >= MAX_COMPARE;
+}
+
+// What a box over `total` runs, `on` of them ticked, does when clicked to tick
+// them -- every one, or the first few, where the comparison has room for fewer
+// than are left: "tick the first 3 runs shown". `where` is "shown" or "on
+// this CPU".
+function tickTitle(where, total, on) {
+  const room = MAX_COMPARE - state.selected.size;
+  if (total - on <= room) return `tick every run ${where}`;
+  return `tick the first ${room} ${room === 1 ? "run" : "runs"} ${where}: ${FULL_NOTE}`;
 }
 const PAGE_SIZES = [25, 50, 100, 250, MAX_PAGE];
 
@@ -792,7 +803,7 @@ function groupBox(g) {
   const { on, total } = groupTicks(g);
   cb.checked = total > 0 && on === total;
   cb.indeterminate = on > 0 && on < total;
-  cb.title = cb.checked ? "untick every run on this CPU" : "tick every run on this CPU";
+  cb.title = cb.checked ? "untick every run on this CPU" : tickTitle("on this CPU", g.runs || total, on);
   const removes = takesOut(cb, on);
   cb.addEventListener("change", async () => {
     try {
@@ -815,15 +826,17 @@ function groupBox(g) {
 function groupedTickAll(box, groups) {
   let on = 0;
   let full = 0;
+  let runs = 0;
   for (const g of groups) {
     const t = groupTicks(g);
     on += t.on;
+    runs += g.runs || t.total;
     if (t.total > 0 && t.on === t.total) full++;
   }
   box.checked = groups.length > 0 && full === groups.length;
   box.indeterminate = on > 0 && full < groups.length;
   box.disabled = !groups.length;
-  box.title = box.checked ? "untick every run shown" : "tick every run shown";
+  box.title = box.checked ? "untick every run shown" : tickTitle("shown", runs, on);
   const removes = takesOut(box, on);
   box.addEventListener("change", async () => {
     try {
@@ -947,9 +960,58 @@ function fitCell(row) {
   return td;
 }
 
-function metricCells(tr, row) {
+// `bar` draws, behind the number the board is ranked by, a bar as long as it
+// is against the best of the page (renderBoard's state.barBest): the gaps
+// between rows read at a glance, not by subtracting five-digit numbers.
+function metricCells(tr, row, bar = false) {
   tr.append(el("td", "num", row.mhz ? Math.round(row.mhz) : "—"));
-  for (const m of shownMetrics()) tr.append(markAside(el("td", "num", fmt(value(row, m))), m));
+  for (const m of shownMetrics()) {
+    const td = markAside(el("td", "num", fmt(value(row, m))), m);
+    const v = value(row, m);
+    if (bar && m.key === state.sort && state.barBest && v > 0) {
+      const share = m.better === "low" ? state.barBest / v : v / state.barBest;
+      td.classList.add("rankbar");
+      td.style.setProperty("--fill", `${Math.round(Math.min(1, share) * 100)}%`);
+    }
+    tr.append(td);
+  }
+}
+
+// Whether (x, y) is over a character of the text under `target`, rather than
+// the space around it. Measured from the boxes the text is laid out in, since
+// a cell is mostly empty and its text is where a reader selects and copies.
+function overText(target, x, y) {
+  if (!(target instanceof Element)) return false;
+  const walk = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+    if (!t.textContent.trim()) continue;
+    range.selectNodeContents(t);
+    for (const r of range.getClientRects()) {
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true;
+    }
+  }
+  return false;
+}
+
+// A row that does `act` when its empty area is clicked or tapped: opens the
+// run, or unfolds what is under it. Its text does not -- that stays for
+// selecting and copying -- and neither do the links, buttons and boxes in it,
+// which do their own thing, nor a click that ends a text selection.
+function rowAction(tr, act) {
+  tr.classList.add("tap");
+  tr.addEventListener("click", (e) => {
+    if (e.button !== 0 || e.defaultPrevented) return;
+    if (e.target instanceof Element && e.target.closest("a, button, input, select, label")) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return;
+    if (overText(e.target, e.clientX, e.clientY)) return;
+    Promise.resolve(act()).catch((err) => alert(err.message));
+  });
+  // The pointer says which: a hand over the area, the text cursor over text.
+  tr.addEventListener("mousemove", (e) => {
+    tr.classList.toggle("on-text", overText(e.target, e.clientX, e.clientY));
+  });
 }
 
 // A run as a link, #run=N, so it can be opened in a new tab, copied or
@@ -1037,7 +1099,7 @@ function renderBoard() {
   allBox.type = "checkbox";
   all.append(allBox);
   hr.append(el("th", "num", "#"), all,
-            el("th", "wide", state.grouped ? "CPU" : "machine"),
+            el("th", "wide", "CPU"),
             el("th", "", "OS"), el("th", "", "arch"), el("th", "", "build"));
   // Grouped, each row already is its CPU, so standing against it says nothing.
   // The column stays, empty, so the board does not shift as grouping toggles.
@@ -1053,6 +1115,13 @@ function renderBoard() {
   }
   $("#board-legend").textContent = "↑ higher is better · ↓ lower is better" +
     [...asides].map(([why, labels]) => ` · ${labels.join(", ")}: ${why}`).join("");
+
+  // The best of the page at the metric it is ranked by, for metricCells' bars.
+  const ranked = state.metrics.find((x) => x.key === state.sort);
+  const vals = ranked && ranked.better !== "none"
+    ? state.rows.map((r) => value(r, ranked)).filter((v) => v > 0) : [];
+  state.barBest = !vals.length ? null
+    : ranked.better === "low" ? Math.min(...vals) : Math.max(...vals);
 
   state.pickable = [];
   if (state.grouped) {
@@ -1078,7 +1147,7 @@ function tickAllBox(box, rows) {
   box.checked = rows.length > 0 && on === rows.length;
   box.indeterminate = on > 0 && on < rows.length;
   box.disabled = !rows.length;
-  box.title = box.checked ? "untick every run shown" : "tick every run shown";
+  box.title = box.checked ? "untick every run shown" : tickTitle("shown", rows.length, on);
   const removes = takesOut(box, on);
   box.addEventListener("change", () =>
     selectRows(rows, !removes).catch((e) => alert(e.message)));
@@ -1152,7 +1221,8 @@ function runRow(row, number, nested = false) {
   tr.append(el("td", "", osName(row)), el("td", "", row.target || "—"),
             el("td", "flags", flagsText(row)));
   tr.append(state.grouped ? el("td", "num fit") : fitCell(row));
-  metricCells(tr, row);
+  metricCells(tr, row, !nested);
+  rowAction(tr, () => showRun(row.run_id));
   return tr;
 }
 
@@ -1196,6 +1266,10 @@ function renderRecords(tbody, row) {
     });
     const cpus = members.map((m) => m.cpu).filter((x) => x !== null && x >= 0)
       .sort((a, b) => a - b);
+    rowAction(sub, () => {
+      if (!state.kindsOpen.delete(openKey)) state.kindsOpen.add(openKey);
+      renderBoard();
+    });
     label.append(ex, `${kindName(c0.type, c0.scope, members.length)}`);
     if (cpus.length) label.append(el("span", "hint", ` cpu ${cpuList(cpus)} · mean`));
     cname.append(label);
@@ -1221,11 +1295,10 @@ function renderGroup(tbody, g, number) {
     ex.title = open ? "hide the runs" : "show each run on this CPU";
     ex.setAttribute("aria-expanded", String(open));
     ex.addEventListener("click", () => toggleGroup(g).catch((e) => alert(e.message)));
-    // The name folds the row as well as the arrow: it is the bigger target.
-    // The arrow stays the keyboard's way in, being the one that is a button.
-    const cpu = el("strong", "foldname", machineName(g));
-    cpu.addEventListener("click", () => toggleGroup(g).catch((e) => alert(e.message)));
-    head.append(ex, cpu);
+    // The row's empty area folds it too (rowAction below), the bigger target;
+    // the name is left to be selected and copied. The arrow stays the
+    // keyboard's way in, being the one that is a button.
+    head.append(ex, el("strong", "foldname", machineName(g)));
   } else {
     head.append(el("span", "expander blank", " "),
                 g.run_id ? runLink(g.run_id, machineName(g)) : machineName(g));
@@ -1241,7 +1314,9 @@ function renderGroup(tbody, g, number) {
   const systems = (g.sysnames || []).map((s) => osName({ sysname: s })).join(", ");
   tr.append(el("td", "", systems || "—"), el("td", "", g.target || "—"),
             el("td", "flags", flagsText(g)), el("td", "num fit"));
-  metricCells(tr, g);
+  metricCells(tr, g, true);
+  if (g.runs > 1) rowAction(tr, () => toggleGroup(g));
+  else if (g.run_id) rowAction(tr, () => showRun(g.run_id));
   tbody.append(tr);
   if (!open) return;
   for (const r of state.children.get(key) || []) tbody.append(runRow(r, "", true));

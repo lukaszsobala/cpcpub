@@ -70,7 +70,7 @@
       <input type="checkbox" name="detailed"> Detailed
     </label>
     <label class="check" title="one row per processor: the median of its runs, unfolding to each run">
-      <input type="checkbox" name="bycpu"> Group by CPU
+      <input type="checkbox" name="bycpu" checked> Group by CPU
     </label>
     <!-- Options filled by the page, from the one list that also holds the cap
          the server clamps to. -->
@@ -86,7 +86,9 @@
     <!-- Suggestions filled by the page: each CPU this hub can compare, with
          how many of each core it has, once. Picking one narrows the board to
          that CPU; any other text is searched for as typed. -->
-    <label class="grow">Search
+    <!-- The box and its button as one item, so they wrap together. -->
+    <div class="search-row grow">
+    <label>Search
       <span class="search-box">
         <input type="search" name="q" list="cpu-list" autocomplete="off"
                placeholder="CPU, model, label or machine">
@@ -96,6 +98,7 @@
       <datalist id="cpu-list"></datalist>
     </label>
     <button type="submit">Search</button>
+    </div>
   </form>
 
   <!-- Only present while the board is narrowed to one submitter. -->
