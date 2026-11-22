@@ -334,6 +334,9 @@ function kindName(kind, scope, n, of) {
   const all = of && of.length > n ? of.length : n;
   const sampled = all > n ? `, ${n} measured` : "";
   if (kind.startsWith("all ")) return `all ${all} ${noun}${sampled}`;
+  // A name that is already a kind of core, as Intel's are: "P-cores ×4", not
+  // "P-core cores ×4". Threads keep their noun: "P-core threads ×4".
+  if (scope !== "thread" && kind.endsWith("core")) return `${kind}s ×${all}${sampled}`;
   return `${kind} ${noun} ×${all}${sampled}`;
 }
 
@@ -568,13 +571,24 @@ function fastFirst(line) {
 // (Radxa ROCK 5B)", fastest core first. Where the line names the chip rather
 // than its cores, as a vendor kernel's does, the counts lead all the same and
 // the line's own name for the machine follows in their place: "4× Cortex-A76 +
-// 4× Cortex-A55 (RK3588S CoolPi 4B Board)".
+// 4× Cortex-A55 (RK3588S CoolPi 4B Board)" -- except an Intel hybrid's, whose
+// brand string leads and its core types follow.
+// The core types the benchmark names an Intel hybrid's in cpu_layout
+// (INTEL_CORE_TYPES in server.py).
+const INTEL_CORE_TYPES = ["P-core", "E-core", "LP E-core"];
+
 function withCounts(line, layout) {
   line = fastFirst(line);
   if (!layout) return line;
   const parts = fastFirst(layout).split(" + ").map((p) => p.match(/^(\d+)x (.+)$/));
   if (parts.some((p) => !p)) return line;
   const counted = (p) => `${p[1]}× ${p[2]}`;
+  // An Intel hybrid's layout names core types, not designs, and the brand
+  // string is what the chip is known by, so it stays in front: "Intel(R)
+  // Core(TM) Ultra 7 258V (4× P-core + 4× LP E-core)".
+  if (parts.every((p) => INTEL_CORE_TYPES.includes(p[2]))) {
+    return `${line} (${parts.map(counted).join(" + ")})`;
+  }
   const board = line.match(/\s*\([^()]*\)$/);
   const names = (board ? line.slice(0, board.index) : line).split(" + ");
   if (parts.length === names.length && parts.every((p, i) => p[2] === names[i])) {
