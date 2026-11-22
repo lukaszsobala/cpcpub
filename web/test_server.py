@@ -943,6 +943,17 @@ class HubTest(unittest.TestCase):
         self.assertEqual({c["cpu"]: c["type"] for c in page["cores"]},
                          {c: "P-core" if c < 4 else "LP E-core" for c in range(8)})
 
+    def test_a_layout_guess_reads_capacity_too(self):
+        # Two named designs scoring alike: only capacity tells them apart, and
+        # the guessed layout must group the records as the run's kinds do.
+        doc = document("per-core")
+        doc["system"].update(cpu_models="Cortex-A55 + Cortex-A76 (Guess Board)", cpus=8)
+        doc["cores"] = ([core(cpu=c, score=9000.0, capacity=400.0) for c in range(4)]
+                        + [core(cpu=c, score=9100.0, capacity=1024.0) for c in range(4, 8)])
+        out = self.upload(doc)
+        _, run = self.req(f"/api/runs/{out['id']}")
+        self.assertEqual(run["cpu_layout"], "4x Cortex-A55 + 4x Cortex-A76")
+
     def test_a_sampled_sweep_stands_for_every_cpu_of_its_kinds(self):
         # 4 large and 12 small CPUs; the sweep measured 2 of each, as
         # --per-kind 2 does, and listed every CPU of both kinds.
@@ -1310,6 +1321,17 @@ class CoreTypesTest(unittest.TestCase):
         zen5, zen5c = ({"capacity": 1024.0, "highest_perf": h} for h in (196.0, 150.0))
         self.assertEqual(self.sized([(8000, zen5)] * 4 + [(9500, zen5c)] * 4),
                          [("large", [0, 1, 2, 3]), ("small", [4, 5, 6, 7])])
+
+    def test_intel_core_types_go_by_size_in_a_subset(self):
+        # `--cpus 8,16` on a machine numbering P-cores 0-7 and 16-23, E-cores
+        # 8-15: the lowest CPU measured is an E-core, and still named one.
+        recs = [{"id": 0, "scope": "cpu", "cpu": 8, "score": 10400.0, "capacity": 676.0},
+                {"id": 1, "scope": "cpu", "cpu": 16, "score": 9000.0, "capacity": 1024.0}]
+        got = srv.core_types(recs, srv.design_line(
+            {"cpu_models": "Intel(R) Core(TM) i9-12900K",
+             "cpu_layout": "8x P-core + 8x E-core"}))
+        self.assertEqual([(t["name"], t["cpus"]) for t in got],
+                         [("P-core", [16]), ("E-core", [8])])
 
     def test_layout_designs(self):
         self.assertEqual(srv.layout_designs("4x P-core + 4x LP E-core"),

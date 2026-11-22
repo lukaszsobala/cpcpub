@@ -1393,13 +1393,24 @@ def _kinds(recs: list[dict], cpu_models: str | None,
         return [alike], groups
     if names and len(names) == len(groups):
         # The line lists designs in the order of their first CPU, so the group
-        # holding the lowest-numbered CPU is the first name.
+        # holding the lowest-numbered CPU is the first name -- which holds for
+        # the records only where they keep that order, as a sweep of every
+        # CPU, or of each kind's first, does. Intel's core types say which is
+        # the larger, so where the records say how large each CPU is, those go
+        # by size instead, and a `--cpus` subset of a machine whose numbering
+        # interleaves them names each right.
         def first(g):
             return min((c for r in g if isinstance(c := r.get("cpu"), int) and c >= 0),
                        default=1 << 30)
+        size = next((k for k in ("capacity", "highest_perf") if _said(recs, k)), None)
+        if size and all(n in INTEL_CORE_TYPES for n in names):
+            names = sorted(names, key=INTEL_CORE_TYPES.index)
+            order = sorted(range(len(groups)),
+                           key=lambda k: -statistics.median(r[size] for r in groups[k]))
+        else:
+            order = sorted(range(len(groups)), key=lambda k: first(groups[k]))
         labels = [""] * len(groups)
-        for name, k in zip(names, sorted(range(len(groups)),
-                                         key=lambda k: first(groups[k]))):
+        for name, k in zip(names, order):
             labels[k] = name
         return labels, groups
     if _said(recs, "highest_perf"):
@@ -1687,6 +1698,11 @@ def classify(cpu_models: str | None, cpus: int | None, cpus_offline: int | None,
     # the one named, so nothing is counted from it.
     layout = None if cpus_offline else guess_layout(records, cpu_models, cpus, kinds)
     return cpu_family(cpu_models, machine), layout
+
+
+# The core types the benchmark names an Intel hybrid's in cpu_layout, largest
+# first: see x86_hybrid_layout() in bench.c.
+INTEL_CORE_TYPES = ("P-core", "E-core", "LP E-core")
 
 
 def layout_designs(layout: str | None) -> list[str]:
@@ -2153,8 +2169,8 @@ class Store:
             db.execute("UPDATE runs SET cpu_models = ? WHERE id = ?", (tidy, run_id))
             run["cpu_models"] = tidy
         # The records are only read where a count could come from them.
-        rows = (db.execute("SELECT id, scope, cpu, score FROM cores WHERE run_id = ?",
-                           (run_id,)).fetchall()
+        rows = (db.execute("SELECT id, scope, cpu, score, capacity, highest_perf "
+                           "FROM cores WHERE run_id = ?", (run_id,)).fetchall()
                 if run["cpu_models"] and not run["cpu_layout"]
                 and named_designs(run["cpu_models"]) else [])
         key, layout = classify(run["cpu_models"], run["cpus"], run["cpus_offline"],
