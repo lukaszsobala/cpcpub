@@ -177,11 +177,21 @@ SCRYPT_SLOTS = threading.BoundedSemaphore(4)
 #         which the geomean cannot stand in for -- plus whichever metric the
 #         board is being sorted on. The rest are one select away, and every
 #         metric is still ranked, filtered and compared on.
+#   clock_share  on a `rate` that only part of scales with the clock: per GHz
+#         it divides by GHz to this power rather than by GHz. The score is the
+#         geomean of six parts, and two of them -- the random-access memory rate
+#         and the predictor's span -- are the DRAM's and the predictor's, not the
+#         clock's. Divided whole by GHz, a core's score per GHz fell as its clock
+#         to the -1/3: the same core read 24% lower at 4.75 GHz than at 2.05, and
+#         a hybrid's fast kind 8-9% lower than its slow one for its clock alone.
+#         To the 4/6 it is the score the core would make at 1 GHz with the same
+#         memory and predictor, which is what every other rate per GHz means.
 #   aside   set on a metric that is not part of the score, saying why; the page
 #         sets those columns apart and puts this in their tooltips. Listed last,
 #         after everything the score is made of, as the benchmark prints them.
 METRICS = [
-    {"key": "score",       "label": "score",    "unit": "geomean", "kind": "rate",  "better": "high", "headline": True},
+    {"key": "score",       "label": "score",    "unit": "geomean", "kind": "rate",  "better": "high", "headline": True,
+     "clock_share": 4 / 6},
     {"key": "int_thr",     "label": "INT-thr",  "unit": "Mop/s",  "kind": "rate",  "better": "high", "headline": True},
     {"key": "int_lat",     "label": "INT-lat",  "unit": "Mop/s",  "kind": "rate",  "better": "high"},
     {"key": "ilp",         "label": "ILP",      "unit": "x",       "kind": "ratio", "better": "high"},
@@ -207,6 +217,8 @@ METRIC_KEYS = [m["key"] for m in METRICS]
 # arithmetic in SQL. Spelled apart from METRIC_KINDS below, which is the
 # vocabulary rather than a lookup.
 KIND_OF = {m["key"]: m["kind"] for m in METRICS}
+# key -> the power of GHz a `rate` divides by per GHz: see clock_share above.
+CLOCK_SHARE = {m["key"]: m.get("clock_share", 1.0) for m in METRICS}
 # The front end switches on these strings and falls through to "leave the value
 # alone" for anything it does not know, so a typo here is a metric that quietly
 # stops being normalised. The contract test pins the vocabulary.
@@ -1223,16 +1235,23 @@ def sort_expr(sort: str, norm: str) -> str:
     screen that is visibly out of order, which is the sort of wrong that makes
     a reader distrust the rows as well as the ordering.
 
-    The arithmetic is the front end's, exactly: rates divide by GHz, latencies
-    in ns become cycles, `ratio` and `fixed` metrics do not move, and a record
-    whose clock was never reported shows its raw value and therefore sorts on
-    it. `mhz` itself is a column, not a metric, and is never normalised.
+    The arithmetic is the front end's, exactly: rates divide by GHz (the
+    score by GHz to its clock_share), latencies in ns become cycles, `ratio`
+    and `fixed` metrics do not move, and a record whose clock was never
+    reported shows its raw value and therefore sorts on it. `mhz` itself is a
+    column, not a metric, and is never normalised. The power is clock_pow(),
+    which Store.connect() registers: SQLite's own pow() is a compile-time
+    option.
     """
     op = {"rate": "/", "time": "*"}.get(KIND_OF.get(sort, ""))
     if norm != "ghz" or op is None:
         return f"c.{sort}"
-    return (f"CASE WHEN c.mhz IS NULL OR c.mhz = 0 THEN c.{sort} "
-            f"ELSE c.{sort} {op} (c.mhz / 1000.0) END")
+    ghz = "(c.mhz / 1000.0)"
+    share = CLOCK_SHARE.get(sort, 1.0)
+    if share != 1.0:
+        ghz = f"clock_pow(c.mhz / 1000.0, {share!r})"
+    return (f"CASE WHEN c.mhz IS NULL OR c.mhz <= 0 THEN c.{sort} "
+            f"ELSE c.{sort} {op} {ghz} END")
 
 
 def normalised(row: dict, key: str, norm: str) -> float | None:
@@ -1242,7 +1261,9 @@ def normalised(row: dict, key: str, norm: str) -> float | None:
         return v
     ghz = row["mhz"] / 1000.0
     kind = KIND_OF.get(key)
-    return v / ghz if kind == "rate" else v * ghz if kind == "time" else v
+    if kind == "rate":
+        return v / ghz ** CLOCK_SHARE.get(key, 1.0)
+    return v * ghz if kind == "time" else v
 
 
 # Kinds of core ----------------------------------------------------------------
@@ -1790,6 +1811,7 @@ class Store:
     def connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10.0)
         db.row_factory = sqlite3.Row
+        db.create_function("clock_pow", 2, math.pow, deterministic=True)
         db.execute("PRAGMA foreign_keys = ON")
         db.execute("PRAGMA journal_mode = WAL")
         return db

@@ -439,9 +439,10 @@ class HubTest(unittest.TestCase):
         out of order is the bug, whatever the underlying values do.
         """
         fast = self.upload(document(label="perghz-fast", cores=[
-            core(cpu=0, mhz=5000.0, score=20000.0)]))       # 4000 per GHz
+            core(cpu=0, mhz=8000.0, score=16000.0)]))       # 4000 at 1 GHz
         frugal = self.upload(document(label="perghz-frugal", cores=[
-            core(cpu=0, mhz=2000.0, score=12000.0)]))       # 6000 per GHz
+            core(cpu=0, mhz=1000.0, int_lat_mops=1000.0,
+                 score=6000.0)]))        # 6000 at 1 GHz
 
         def order(norm):
             _, b = self.req(f"/api/cores?scope=cpu&q=perghz&sort=score"
@@ -465,6 +466,24 @@ class HubTest(unittest.TestCase):
 
         self.assertEqual(order("abs"), [quick["id"], slow["id"]])
         self.assertEqual(order("ghz"), [slow["id"], quick["id"]])
+
+    def test_per_ghz_divides_only_the_clock_bound_part_of_the_score(self):
+        """Two of the score's six parts are not the clock's, so per GHz it is
+        divided by GHz to the 4/6: 8 GHz is a divisor of 4, not 8. Ranked on
+        that too -- a whole division would put the slower clock first here."""
+        quick = self.upload(document(label="share-quick", cores=[
+            core(cpu=0, mhz=8000.0, score=20000.0)]))        # 5000 at 1 GHz
+        slow = self.upload(document(label="share-slow", cores=[
+            core(cpu=0, mhz=1000.0, score=4500.0)]))         # 4500 at 1 GHz
+        _, b = self.req("/api/cores?scope=cpu&q=share-&sort=score"
+                        "&order=desc&norm=ghz&limit=10")
+        self.assertEqual([c["run_id"] for c in b["cores"]], [quick["id"], slow["id"]])
+        self.assertAlmostEqual(b["cores"][0]["sort_value"], 5000.0, places=3)
+        shown = srv.normalised(b["cores"][0], "score", "ghz")
+        # fail() rather than assertIsNotNone(), which leaves `shown` optional.
+        if shown is None:
+            self.fail("a clocked record's score read back as nothing per GHz")
+        self.assertAlmostEqual(shown, 5000.0, places=3)
 
     def test_a_clock_independent_metric_does_not_move(self):
         """`fixed` and `ratio` metrics rank the same either way.
@@ -495,8 +514,9 @@ class HubTest(unittest.TestCase):
         pick, and its printed value can sit out of order among the rest.
         """
         out = self.upload(document(label="pick-perghz", cores=[
-            core(cpu=0, mhz=5000.0, score=20000.0),          # 4000 per GHz
-            core(cpu=1, mhz=2000.0, score=12000.0)]))        # 6000 per GHz
+            core(cpu=0, mhz=8000.0, score=16000.0),          # 4000 at 1 GHz
+            core(cpu=1, mhz=1000.0, int_lat_mops=1000.0,
+                 score=6000.0)]))         # 6000 at 1 GHz
 
         def row(norm):
             _, b = self.req(f"/api/cores?scope=cpu&q=pick-perghz&sort=score"
@@ -515,7 +535,7 @@ class HubTest(unittest.TestCase):
         position its own number does not explain.
         """
         clocked = self.upload(document(label="noclock-clocked", cores=[
-            core(cpu=0, mhz=5000.0, score=20000.0)]))        # 4000 per GHz
+            core(cpu=0, mhz=8000.0, score=16000.0)]))        # 4000 at 1 GHz
         clockless = self.upload(document(label="noclock-bare", cores=[
             core(cpu=0, mhz=None, score=5000.0)]))           # shown as 5000
 
@@ -951,7 +971,8 @@ class HubTest(unittest.TestCase):
         # Refused as a bad upload, not a server error from an unhashable cpu.
         for cpu in ([0], {"n": 0}):
             doc = document("per-core")
-            doc["cores"] = [core(cpu=cpu), core(cpu=3)]
+            # Set after core(), whose cpu is typed for the documents it means.
+            doc["cores"] = [dict(core(cpu=0), cpu=cpu), core(cpu=3)]
             doc["sweep"] = {"per_kind": 1, "kinds": [[0, 1], [2, 3]]}
             status, out = self.expect_error("/api/runs", "POST", doc)
             self.assertEqual(status, 400, cpu)

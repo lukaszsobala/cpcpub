@@ -367,13 +367,17 @@ function value(row, metric) {
   if (state.norm === "abs" || !row.mhz) return raw;
   const ghz = row.mhz / 1000;
   if (!ghz) return raw;
-  if (metric.kind === "rate") return raw / ghz;
+  // The score only partly scales with the clock (clock_share in server.py).
+  if (metric.kind === "rate") return raw / ghz ** (metric.clock_share ?? 1);
   if (metric.kind === "time") return raw * ghz;
   return raw;
 }
 
 function unitOf(metric) {
   if (state.norm === "abs") return metric.unit;
+  // Not "/GHz" for the score: only its clock-bound parts are divided, so what
+  // it reads is the score the core would make at 1 GHz.
+  if (metric.kind === "rate" && metric.clock_share) return metric.unit + " at 1 GHz";
   if (metric.kind === "rate") return metric.unit + "/GHz";
   if (metric.kind === "time") return "cycles";
   return metric.unit;

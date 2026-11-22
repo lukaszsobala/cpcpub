@@ -260,7 +260,9 @@ the hub and are not counted.
 
 `norm` is which reading of `sort` to rank on: `abs` (default) for the figure as
 measured, `ghz` for it per gigahertz of clock — rates divided by GHz, `time`
-metrics turned into cycles, `ratio` and `fixed` ones left alone, and a record
+metrics turned into cycles, the score divided by GHz to the 4/6 because two of
+its six parts (the random-access memory rate and the predictor's span) are not
+the clock's, which makes it the score the core would make at 1 GHz, `ratio` and `fixed` ones left alone, and a record
 whose clock was never reported ranked on its raw value, because that is what is
 shown for it. It is the page's **Values** picker, and it is a server-side sort
 because the board is paged: ordering a page after it arrives would only sort the
