@@ -135,6 +135,8 @@ CREATE TABLE IF NOT EXISTS cores (
     cpu             INTEGER,
     mhz             REAL,
     mhz_src         TEXT,
+    capacity        REAL,   -- the system's cpu_capacity, for kinds
+    highest_perf    REAL,   -- CPPC highest_perf, for kinds
 
     int_lat         REAL,
     int_thr         REAL,

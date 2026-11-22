@@ -78,10 +78,15 @@ seeing the field missing than seeing `aarch64` in a column of CPU names.
 
 `system.cpu_layout` says how many of each core the machine has, in the order
 `cpu_models` names them: `2x Cortex-A76 + 6x Cortex-A55`, or `4x Cortex-A55` for
-one kind. Read from the same per-CPU MIDR lines, so Arm only for now, and
-**absent** elsewhere. It lets a hub tell a 4+4 part from a 2+6 one, which
-`cpu_models` names identically. Where the kernel names the chip rather than its
-cores, `cpu_models` carries that name and this still counts the cores.
+one kind. Read from the same per-CPU MIDR lines on Arm. On an Intel hybrid
+under Linux it names the core types instead, which the brand string in
+`cpu_models` does not: `4x P-core + 4x LP E-core`, from the kernel's `cpu_core`
+and `cpu_atom` PMUs, with an E-core that has no L3 an `LP E-core`, in the order
+of each type's first CPU and counting cores, not threads: a P-core with two
+threads is one P-core, as Intel counts them. **Absent** elsewhere. It lets a hub tell a 4+4 part
+from a 2+6 one, which `cpu_models` names identically, and name a run's kinds
+of core. Where the kernel names the chip rather than its cores, `cpu_models`
+carries that name and this still counts the cores.
 
 `system.cpus_offline` is how many CPUs the kernel lists as present but not
 online, the most seen at the start of the run or at its end; **absent** when
@@ -179,7 +184,8 @@ Anything else feeding the hub has to split it too — `jq '.[0]'`, or a loop.
 One object per measured core, thread, or whole-machine total. Every key below is
 always present; anything not measured is `null`, never absent and never `0`.
 
-`scope` (`cpu`|`thread`|`total`), `cpu`, `mhz`, `mhz_src`, `int_lat_mops`,
+`scope` (`cpu`|`thread`|`total`), `cpu`, `mhz`, `mhz_src`, `capacity`,
+`highest_perf`, `int_lat_mops`,
 `int_thr_mops`, `ilp`, `mul_thr_mmul_s`, `fp_lat_mflops`, `fp_thr_mflops`,
 `filp`, `mem_gbps`, `mem_lat_ns`, `mem_lat8_ns`, `mlp`, `disp_thr_mcall_s`,
 `disp_cap_calls`, `disp_prediction`, `disp_gain`, `disp_span`, `score`,
@@ -193,8 +199,19 @@ library and these measure the hardware; on a core with a double-precision FPU
 the two pairs usually read close to each other. The hub ranks them like any
 other metric and sets them apart from the ones the score is made of.
 
+`capacity` and `highest_perf` are how large the system says the record's CPU
+is, on Linux, for a record pinned to one: the scheduler's `cpu_capacity`
+(1024 for the largest) and the firmware's CPPC `highest_perf`. They are not
+measurements and move with neither the clock nor the power plan, which is the
+point: a power-saving plan can hold a P-core under an E-core, and the score
+then cannot say which is the larger. A hub splits kinds of core where
+`capacity` steps by more than 15% and orders their size names by it, then by
+`highest_perf` -- which only orders, since an AMD part ranks its preferred
+cores by it and those steps can be wider within one design.
+
 `mhz_src` says how much the clock beside it is worth: `measured` was sampled
-off the machine while the core was under load, `given` was asserted by whoever
+off the machine while the core was under load (the kernel's cycle-counter
+average, `cpuinfo_avg_freq`, where Linux has one, else `scaling_cur_freq`), `given` was asserted by whoever
 ran it with `--mhz`, `rated` is a ceiling the machine declares rather than a
 number anybody observed (cpufreq's max, the device tree's `clock-frequency`,
 the Windows registry's `~MHz`, or macOS's `hw.cpufrequency`) — a throttling
@@ -203,7 +220,11 @@ which is a floor under the clock: the Windows and macOS numbers are the base
 clock, which turbo outruns, and a rated clock below that floor is dropped for
 the estimate. On a pinned run the floor is the highest `int_lat_mops` measured
 on that CPU in any record, so a `thread` record is held to the `cpu` record's
-too. `estimated` was inferred from `int_lat_mops`, which
+too. A `measured` clock is held to its own record's `int_lat_mops` the same
+way and dropped below it, for the rated clock or the estimate: a reading at one
+instant can be of the frequency last requested rather than the one running
+(400 MHz on a 4.7 GHz Core Ultra), or of a dip the rest of the phase outran.
+`estimated` was inferred from `int_lat_mops`, which
 assumes the core retires one dependent op per cycle and reads low on one that
 does not. A machine with no cpufreq driver and no clock in its device tree has
 nothing else to offer, which is what `--mhz` is for. A `thread` that shared its

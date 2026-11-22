@@ -135,20 +135,49 @@ static const variant_t g_variants[] = {
 // Per-CPU information
 // ---------------------------------------------------------------------------
 
-static double read_cpu_khz(int cpu, const char *what) {
+// A number from one CPU's sysfs directory, `rel` below it; 0 where there is no
+// such file or no number in it.
+static double read_cpu_num(int cpu, const char *rel) {
     char path[160];
-    snprintf(path, sizeof(path),
-             "/sys/devices/system/cpu/cpu%d/cpufreq/%s", cpu, what);
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/%s", cpu, rel);
     FILE *f = fopen(path, "r");
     if (!f) return 0.0;
-    double khz = 0.0;
-    if (fscanf(f, "%lf", &khz) != 1) khz = 0.0;
+    double v = 0.0;
+    if (fscanf(f, "%lf", &v) != 1) v = 0.0;
     fclose(f);
-    return khz;
+    return v;
 }
 
+static double read_cpu_khz(int cpu, const char *what) {
+    char rel[96];
+    snprintf(rel, sizeof(rel), "cpufreq/%s", what);
+    return read_cpu_num(cpu, rel);
+}
+
+// How large the system says a row's CPU is (result_t's capacity and
+// highest_perf), for a row pinned to one. `cpu_capacity` is the scheduler's,
+// from the device tree on Arm and from each core's HWP ceiling on an Intel
+// hybrid; CPPC's `highest_perf` is the firmware's, and is what an AMD part
+// ranks its cores by. Both are what the core can do, not what it was let do,
+// so they hold on a power-saving plan that clocks a P-core under an E-core.
+static void note_capacity(result_t *r) {
+    if (r->cpu < 0) return;
+    r->capacity     = read_cpu_num(r->cpu, "cpu_capacity");
+    r->highest_perf = read_cpu_num(r->cpu, "acpi_cppc/highest_perf");
+}
+
+// `cpuinfo_avg_freq` first: the kernel's average over the last tick from the
+// core's own cycle counters (APERF/MPERF on x86, AMU on Arm), so it is what the
+// core ran at whoever chose it. `scaling_cur_freq` is the fallback for kernels
+// before 6.14 and drivers with no counters to read, and it may be only the
+// frequency cpufreq last asked for: intel_pstate in passive mode under
+// schedutil sets the core's performance level without recording one, and the
+// file reads the 400 MHz floor of a Core Ultra 7 258V running at 4.7 GHz. The
+// average reads an error on a CPU that has idled since the last tick, which
+// this one has not -- it is sampled straight after a timed loop on it.
 double cpu_cur_mhz(int cpu) {
-    double khz = read_cpu_khz(cpu, "scaling_cur_freq");
+    double khz = read_cpu_khz(cpu, "cpuinfo_avg_freq");
+    if (khz <= 0.0) khz = read_cpu_khz(cpu, "scaling_cur_freq");
     return khz > 0.0 ? khz / 1000.0 : 0.0;
 }
 
@@ -574,6 +603,12 @@ static const char *arch_string(void) {
 #define CPCPUB_ARM_MIDR 1
 #endif
 
+// An x86 brand string names the chip, never its cores, but Linux tells an
+// Intel hybrid's core types apart: see x86_hybrid_layout().
+#if defined(CPCPUB_PROC_CPUINFO) && (defined(__x86_64__) || defined(__i386__))
+#define CPCPUB_X86_HYBRID 1
+#endif
+
 #ifdef CPCPUB_PROC_CPUINFO
 // Append one name to the " + "-separated list in `out`, if it is not already
 // in it. The membership test is per element and exact: a substring test reads
@@ -595,7 +630,7 @@ static void models_add(char *out, size_t outsz, const char *name) {
 }
 #endif  // CPCPUB_PROC_CPUINFO
 
-#ifdef CPCPUB_ARM_MIDR
+#if defined(CPCPUB_ARM_MIDR) || defined(CPCPUB_X86_HYBRID)
 // How many logical CPUs each distinct core name was read from, in the order of
 // each name's first CPU -- the same order models_add() gives the names, so the
 // two lists line up.
@@ -627,7 +662,83 @@ static void tally_layout(const core_tally_t *t, char *out, size_t outsz) {
         if (used >= outsz) { out[0] = '\0'; return; }
     }
 }
-#endif  // CPCPUB_ARM_MIDR
+#endif  // CPCPUB_ARM_MIDR || CPCPUB_X86_HYBRID
+
+#ifdef CPCPUB_X86_HYBRID
+// The CPUs one of the kernel's PMUs covers, from /sys/devices/<pmu>/cpus.
+// Returns the count, or -1 where there is no such PMU.
+static int pmu_cpus(const char *pmu, int *out, int max_out) {
+    char path[96], spec[1024];
+    snprintf(path, sizeof(path), "/sys/devices/%s/cpus", pmu);
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char *got = fgets(spec, (int)sizeof(spec), f);
+    fclose(f);
+    if (!got) return -1;
+    spec[strcspn(spec, "\r\n")] = '\0';
+    return parse_cpu_list(spec, out, max_out);
+}
+
+static int has_cpu(const int *list, int n, int cpu) {
+    for (int i = 0; i < n; ++i) if (list[i] == cpu) return 1;
+    return 0;
+}
+
+// Whether `cpu` is the first online thread of its core: the one a layout
+// counts, so that a P-core with two threads -- Alder Lake's, Meteor Lake's --
+// is one P-core, as Intel counts them. True where the kernel will not say.
+static int first_thread(int cpu, const int *online, int n_online) {
+    int sib[64];
+    char rel[64];
+    snprintf(rel, sizeof(rel), "cpu%d/topology/core_cpus_list", cpu);
+    int n = read_cpu_list_file(rel, sib, ARRAY_LEN(sib));
+    if (n <= 0) {
+        snprintf(rel, sizeof(rel), "cpu%d/topology/thread_siblings_list", cpu);
+        n = read_cpu_list_file(rel, sib, ARRAY_LEN(sib));
+    }
+    for (int i = 0; i < n; ++i) {
+        if (has_cpu(online, n_online, sib[i])) return sib[i] == cpu;
+    }
+    return 1;
+}
+
+// Whether a CPU has a level-3 cache of its own to report.
+static int has_l3(int cpu) {
+    for (int i = 0; i < 8; ++i) {
+        char rel[48];
+        snprintf(rel, sizeof(rel), "cache/index%d/level", i);
+        if (read_cpu_num(cpu, rel) == 3.0) return 1;
+    }
+    return 0;
+}
+
+// "4x P-core + 4x LP E-core": an Intel hybrid's core types, as cpu_layout, in
+// the order of each type's first online CPU, counting cores rather than
+// threads. The brand string names the chip
+// only, so without this a hub can tell its kinds of core apart by score alone,
+// and a power-saving plan that holds the P-cores under the E-cores swaps them.
+// The kernel registers one PMU per core type, `cpu_core` and `cpu_atom`, each
+// listing its CPUs. An E-core with no L3 is what Intel calls a low-power one:
+// Meteor Lake's two on the SoC tile, and every E-core of a Lunar Lake. Left
+// empty for a machine with no such PMUs, or with an online CPU in neither.
+static void x86_hybrid_layout(char *layout, size_t layoutsz) {
+    int big[1024], small[1024], online[1024];
+    const int nb = pmu_cpus("cpu_core", big, ARRAY_LEN(big));
+    const int ns = pmu_cpus("cpu_atom", small, ARRAY_LEN(small));
+    const int n = read_cpu_list_file("online", online, ARRAY_LEN(online));
+    if (nb <= 0 || ns <= 0 || n <= 0) return;
+    core_tally_t tally;
+    memset(&tally, 0, sizeof tally);
+    for (int i = 0; i < n; ++i) {
+        const int c = online[i];
+        if (!first_thread(c, online, n)) continue;
+        if (has_cpu(big, nb, c))        tally_add(&tally, "P-core");
+        else if (has_cpu(small, ns, c)) tally_add(&tally, has_l3(c) ? "E-core" : "LP E-core");
+        else return;
+    }
+    tally_layout(&tally, layout, layoutsz);
+}
+#endif  // CPCPUB_X86_HYBRID
 
 #ifdef CPCPUB_ARM_MIDR
 // Arm parts carry no brand string: there is no CPUID leaf to hold one and no
@@ -1058,6 +1169,9 @@ static void detect_cpu_models(char *out, size_t outsz, char *layout, size_t layo
     if (!midrs[0]) midr_from_sysfs(midrs, sizeof(midrs), &tally);
     if (layout && layoutsz) tally_layout(&tally, layout, layoutsz);
     if (!models[0]) snprintf(models, sizeof(models), "%s", midrs);
+#endif
+#ifdef CPCPUB_X86_HYBRID
+    if (layout && layoutsz) x86_hybrid_layout(layout, layoutsz);
 #endif
 
     // The device tree names the board ("Radxa ROCK 5B"); "Hardware" tends to
@@ -1625,6 +1739,7 @@ static int collect_threads(suite_t *s, const run_opts_t *o, int threads, int pin
 
     for (int i = 0; i < threads; ++i) {
         res[i] = summarize(&w[i], w[i].cpu);
+        note_capacity(&res[i]);
         note_dram(s, w[i].dram_mhz_observed);
         s->checksum ^= w[i].checksum;
     }
@@ -1648,6 +1763,8 @@ static int collect_per_core(suite_t *s, const run_opts_t *o, const int *cpu_list
         w.cpu = pin ? cpu_list[i] : -1;
         if (run_workers(&w, 1, o) != 0) { free(res); return -1; }
         res[i] = summarize(&w, cpu_list[i]);
+        // Unpinned, the row's cpu is the one asked for, not where it ran.
+        if (pin) note_capacity(&res[i]);
         // Held to the threads' INT-lat on the same CPU too, as the hub holds
         // every record, and before the row prints. No threads pass: no-op.
         if (pin) settle_rated(&res[i], 1, s->threads, s->n_threads);
@@ -2507,10 +2624,12 @@ int main(int argc, char **argv) {
 
         double mhz[1024];
         for (int i = 0; i < n_cpus; ++i) {
+            // The same order and the same floor as summarize().
             double m = sw[i].mhz_observed;
+            if (!clock_fits(m, sw[i].int_lat_mops)) m = 0.0;
             if (m <= 0.0) {
                 m = cpu_max_mhz(cpu_list[i]);
-                if (!rated_fits(m, sw[i].int_lat_mops)) m = 0.0;
+                if (!clock_fits(m, sw[i].int_lat_mops)) m = 0.0;
             }
             if (m <= 0.0) m = sw[i].int_lat_mops;   // 1 op/cycle by construction
             mhz[i] = m;

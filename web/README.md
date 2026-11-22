@@ -313,10 +313,14 @@ each row already is its CPU, it shows none. Picking one of the CPUs the
 there is `q=`, matched against the CPU line, the label and the machine.
 
 **Kinds of core.** A run's per-core records are grouped by score: sorted, a
-step of more than 15% starts a new kind. Where the CPU line names several
-designs, as an Arm one does ("Cortex-A55 + Cortex-A78"), the kinds take those
-names, with the closest steps joined until the counts agree. Otherwise they
-are large, medium and small. Threads take the kind of the CPU they were pinned
+step of more than 15% starts a new kind. Where the records carry the system's
+`capacity`, a step of more than 15% in it splits them first, since a
+power-saving plan can bring a P-core's score under an E-core's. Where the CPU
+line names several designs, as an Arm one does ("Cortex-A55 + Cortex-A78"), or
+the layout does, as an Intel hybrid's does ("4x P-core + 4x LP E-core"), the
+kinds take those names, with the closest steps -- in score and in capacity --
+joined until the counts agree. Otherwise they are large, medium and small,
+ordered by `capacity`, then CPPC's `highest_perf`, then score. Threads take the kind of the CPU they were pinned
 to. `/api/runs/<id>` lists them as `types` and marks each record with its
 `type`; the page shows one averaged row per kind, unfolding to the records.
 

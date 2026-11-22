@@ -455,7 +455,8 @@ class HubTest(unittest.TestCase):
     def test_per_ghz_turns_a_latency_into_cycles(self):
         """A `time` metric multiplies by the clock rather than dividing."""
         slow = self.upload(document(label="cycles-slow", cores=[
-            core(cpu=0, mhz=2000.0, mem_lat_ns=100.0)]))     # 200 cycles
+            core(cpu=0, mhz=2000.0, int_lat_mops=2000.0,
+                 mem_lat_ns=100.0)]))     # 200 cycles
         quick = self.upload(document(label="cycles-quick", cores=[
             core(cpu=0, mhz=5000.0, mem_lat_ns=60.0)]))      # 300 cycles
 
@@ -926,6 +927,33 @@ class HubTest(unittest.TestCase):
         self.assertEqual(by_cpu[("thread", 7)], "large")
         self.assertIsNone(by_cpu[("total", None)])
 
+    def test_a_layout_names_an_intel_hybrids_core_types(self):
+        # The brand string names the chip; cpu_layout names its core types,
+        # and the P-cores are still the P-cores scoring under the E-cores.
+        doc = document("per-core")
+        doc["system"].update(cpu_models="Intel(R) Core(TM) Ultra 7 258V", cpus=8,
+                             cpu_layout="4x P-core + 4x LP E-core")
+        doc["cores"] = ([core(cpu=c, score=8250.0, capacity=1005.0) for c in range(4)]
+                        + [core(cpu=c, score=10400.0, capacity=676.0) for c in range(4, 8)])
+        out = self.upload(doc)
+        _, run = self.req(f"/api/runs/{out['id']}")
+        self.assertEqual([(t["name"], t["cpus"]) for t in run["types"]],
+                         [("P-core", [0, 1, 2, 3]), ("LP E-core", [4, 5, 6, 7])])
+        _, page = self.req(f"/api/cores?run={out['id']}&scope=cpu")
+        self.assertEqual({c["cpu"]: c["type"] for c in page["cores"]},
+                         {c: "P-core" if c < 4 else "LP E-core" for c in range(8)})
+
+    def test_a_layout_guess_reads_capacity_too(self):
+        # Two named designs scoring alike: only capacity tells them apart, and
+        # the guessed layout must group the records as the run's kinds do.
+        doc = document("per-core")
+        doc["system"].update(cpu_models="Cortex-A55 + Cortex-A76 (Guess Board)", cpus=8)
+        doc["cores"] = ([core(cpu=c, score=9000.0, capacity=400.0) for c in range(4)]
+                        + [core(cpu=c, score=9100.0, capacity=1024.0) for c in range(4, 8)])
+        out = self.upload(doc)
+        _, run = self.req(f"/api/runs/{out['id']}")
+        self.assertEqual(run["cpu_layout"], "4x Cortex-A55 + 4x Cortex-A76")
+
     def test_a_sampled_sweep_stands_for_every_cpu_of_its_kinds(self):
         # 4 large and 12 small CPUs; the sweep measured 2 of each, as
         # --per-kind 2 does, and listed every CPU of both kinds.
@@ -1236,6 +1264,93 @@ class CoreTypesTest(unittest.TestCase):
                                     "Intel(R) Core(TM) Ultra 7 155H"),
                          [("cpu", "large", [2, 3]), ("cpu", "medium", [0, 1]),
                           ("cpu", "small", [4])])
+
+    @staticmethod
+    def sized(rows, cpu_models=""):
+        """(name, cpus) per kind of per-core records given as (score, extra)."""
+        recs = [dict({"id": i, "scope": "cpu", "cpu": i, "score": s}, **extra)
+                for i, (s, extra) in enumerate(rows)]
+        return [(t["name"], t["cpus"]) for t in srv.core_types(recs, cpu_models)]
+
+    def test_capacity_keeps_a_held_back_core_large(self):
+        # A Core Ultra 7 258V on Powersave: the Lion Coves (0-3) score under
+        # the Skymonts (4-7), and the scheduler still says which is larger.
+        p, e = {"capacity": 1005.0}, {"capacity": 676.0}
+        self.assertEqual(self.sized([(8250, p)] * 4 + [(10400, e)] * 4),
+                         [("large", [0, 1, 2, 3]), ("small", [4, 5, 6, 7])])
+
+    def test_capacity_splits_kinds_the_score_brought_level(self):
+        p, e = {"capacity": 1024.0}, {"capacity": 676.0}
+        self.assertEqual(self.sized([(10000, p)] * 4 + [(10100, e)] * 4),
+                         [("large", [0, 1, 2, 3]), ("small", [4, 5, 6, 7])])
+
+    def test_capacity_a_favoured_core_steps_within_is_one_kind(self):
+        self.assertEqual(self.sized([(10300, {"capacity": 1024.0})] * 2
+                                    + [(10000, {"capacity": 1005.0})] * 2),
+                         [("all cores", [0, 1, 2, 3])])
+
+    def test_highest_perf_orders_sizes_but_splits_nothing(self):
+        p, e = {"highest_perf": 55.0}, {"highest_perf": 37.0}
+        self.assertEqual(self.sized([(8250, p)] * 4 + [(10400, e)] * 4),
+                         [("large", [0, 1, 2, 3]), ("small", [4, 5, 6, 7])])
+        # An AMD part ranks its preferred cores by it, a step wider than the
+        # gap between cores of one design: still one kind.
+        self.assertEqual(self.sized([(10000, {"highest_perf": 236.0})] * 2
+                                    + [(10000, {"highest_perf": 196.0})] * 2),
+                         [("all cores", [0, 1, 2, 3])])
+
+    def test_designs_are_not_joined_across_a_capacity_step(self):
+        # Three steps, two names: the X4 scores close to the faster A520, but
+        # the scheduler says they differ, so the two A520 steps are joined.
+        x4, a520 = {"capacity": 1024.0}, {"capacity": 400.0}
+        self.assertEqual(self.sized([(5000, x4), (4800, a520), (3000, a520)],
+                                    "Cortex-X4 + Cortex-A520"),
+                         [("Cortex-X4", [0]), ("Cortex-A520", [1, 2])])
+
+    def test_one_design_at_two_capacities_is_still_one_kind(self):
+        # Kirin 980: A76s at 2.6 and 1.92 GHz, 35% apart in capacity as in
+        # score -- one design, as the line says, and named as one.
+        a55, a76lo, a76hi = ({"capacity": c} for c in (300.0, 756.0, 1024.0))
+        rows = [(2000, a55)] * 4 + [(7000, a76hi)] * 2 + [(5200, a76lo)] * 2
+        self.assertEqual(self.sized(rows, "Cortex-A55 + Cortex-A76"),
+                         [("Cortex-A76", [4, 5, 6, 7]), ("Cortex-A55", [0, 1, 2, 3])])
+
+    def test_highest_perf_orders_where_capacity_is_alike(self):
+        # Every core at capacity 1024, as a kernel can give an AMD Zen 5 + 5c
+        # part; the firmware still ranks the Zen 5s (0-3) above the 5cs.
+        zen5, zen5c = ({"capacity": 1024.0, "highest_perf": h} for h in (196.0, 150.0))
+        self.assertEqual(self.sized([(8000, zen5)] * 4 + [(9500, zen5c)] * 4),
+                         [("large", [0, 1, 2, 3]), ("small", [4, 5, 6, 7])])
+
+    def test_intel_core_types_go_by_size_in_a_subset(self):
+        # `--cpus 8,16` on a machine numbering P-cores 0-7 and 16-23, E-cores
+        # 8-15: the lowest CPU measured is an E-core, and still named one.
+        recs = [{"id": 0, "scope": "cpu", "cpu": 8, "score": 10400.0, "capacity": 676.0},
+                {"id": 1, "scope": "cpu", "cpu": 16, "score": 9000.0, "capacity": 1024.0}]
+        got = srv.core_types(recs, srv.design_line(
+            {"cpu_models": "Intel(R) Core(TM) i9-12900K",
+             "cpu_layout": "8x P-core + 8x E-core"}))
+        self.assertEqual([(t["name"], t["cpus"]) for t in got],
+                         [("P-core", [16]), ("E-core", [8])])
+
+    def test_intel_core_types_fall_back_on_cppc_where_capacity_is_alike(self):
+        # Every core at capacity 1024, the P-cores held back under the
+        # E-cores' score: CPPC's rank still says which is which.
+        recs = [{"id": c, "scope": "cpu", "cpu": c, "score": 8000.0 if c < 4 else 10400.0,
+                 "capacity": 1024.0, "highest_perf": 196.0 if c < 4 else 150.0}
+                for c in range(8)]
+        got = srv.core_types(recs, srv.design_line(
+            {"cpu_models": "Intel(R) Core(TM) Ultra 7 258V",
+             "cpu_layout": "4x P-core + 4x LP E-core"}))
+        self.assertEqual([(t["name"], t["cpus"]) for t in got],
+                         [("LP E-core", [4, 5, 6, 7]), ("P-core", [0, 1, 2, 3])])
+
+    def test_layout_designs(self):
+        self.assertEqual(srv.layout_designs("4x P-core + 4x LP E-core"),
+                         ["P-core", "LP E-core"])
+        self.assertEqual(srv.layout_designs("4x Cortex-A55"), [])
+        self.assertEqual(srv.layout_designs(None), [])
+        self.assertEqual(srv.layout_designs("P-core + E-core"), [])
 
     def test_alike_cores_are_one_kind(self):
         self.assertEqual(self.kinds([10000, 10400, 9800, 10200]),
@@ -3032,10 +3147,48 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual({(r["mhz"], r["mhz_src"]) for r in rows},
                          {(3700.0, "rated")})
 
+    def test_a_measured_clock_below_int_lat_gives_way_to_it(self):
+        # `scaling_cur_freq` under intel_pstate's passive mode: the 400 MHz
+        # floor while the core ran its INT-lat at 4000.
+        doc = self.rated_doc(400.0)
+        for key in ("cores", "threads"):
+            doc[key] = [dict(r, mhz_src="measured") for r in doc[key]]
+        doc["total"] = dict(doc["total"], mhz_src="measured")
+        _, rows = srv.validate(doc)
+        self.assertEqual({(r["mhz"], r["mhz_src"]) for r in rows},
+                         {(4000.0, "estimated")})
+
+    def test_a_measured_clock_meets_only_its_own_int_lat(self):
+        # An all-core clock of 3000 stands under a one-thread INT-lat of 4000
+        # on the same CPU: it is no ceiling, unlike a rated clock, and all-core
+        # turbo is rightly lower. 3700 under 4000 is within the slack.
+        doc = document("full")
+        doc["threads"] = [core("thread", c, mhz=3000.0, mhz_src="measured",
+                               int_lat_mops=3000.0) for c in (0, 1)]
+        doc["cores"] = [core(cpu=c, mhz=3700.0, mhz_src="measured") for c in (0, 1)]
+        doc["total"] = dict(doc["total"], mhz=3000.0, mhz_src="measured")
+        self.assertEqual({c[2:] for c in self.clocks(doc)},
+                         {(3700.0, "measured"), (3000.0, "measured")})
+
+    def test_stored_measured_floor_clocks_are_fixed_on_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "t.sqlite3")
+            store = srv.Store(path)
+            run, cores = srv.validate(document("full"))
+            run_id, _ = store.insert(run, cores, "{}", None, None)
+            # As a hub before 0.6.1 stored a Core Ultra 7 258V's run.
+            with store.connect() as db:
+                db.execute("UPDATE cores SET mhz = 400, mhz_src = 'measured'")
+            srv.Store(path)
+            with store.connect() as db:
+                got = db.execute("SELECT DISTINCT mhz, mhz_src FROM cores "
+                                 "WHERE run_id = ?", (run_id,)).fetchall()
+            self.assertEqual([tuple(r) for r in got], [(4000.0, "estimated")])
+
     def test_the_total_keeps_the_weakest_source_of_its_threads(self):
         doc = document("full")
         doc["threads"] = [dict(doc["threads"][0], mhz=806.0, mhz_src="rated"),
-                          dict(doc["threads"][1], mhz=3000.0, mhz_src="measured")]
+                          core("thread", 1, mhz=3000.0, int_lat_mops=3000.0)]
         doc["total"] = dict(doc["total"], mhz=1903.0, mhz_src="rated")
         _, rows = srv.validate(doc)
         total = next(r for r in rows if r["scope"] == "total")

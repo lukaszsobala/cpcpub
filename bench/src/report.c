@@ -132,6 +132,8 @@ void json_result(const result_t *r, const char *scope, const char *indent) {
     j_num("mhz", r->mhz, 1);
     j_str("mhz_src", r->mhz > 0.0 ? mhz_src_name((int)r->mhz_src)
                                   : "unknown");
+    j_num("capacity", r->capacity, 1);
+    j_num("highest_perf", r->highest_perf, 1);
     j_num("int_lat_mops", r->int_lat, 1);
     j_num("int_thr_mops", r->int_thr, 1);
     j_num("ilp", r->ilp, 1);

@@ -637,14 +637,24 @@ result_t summarize(const worker_t *w, int cpu) {
         r.mhz = g_mhz_given;
         r.mhz_src = MHZ_GIVEN;
     } else {
+        // A sampled clock is a reading at one instant, and INT-lat is an
+        // average over the whole phase that no clock can sit below: a reading
+        // under it is of the wrong thing or at the wrong moment -- a file
+        // holding the frequency last requested rather than the one running
+        // (400 MHz on a 4.7 GHz core), or a snapshot of a dip the rest of the
+        // phase outran. Dropped like a rated clock turbo outran. Only the
+        // row's own INT-lat is a floor here, not the one-thread pass's as in
+        // settle_rated(): a sampled clock is no ceiling, and an all-core one
+        // is rightly below a single core's.
         r.mhz = w->mhz_observed;
+        if (!clock_fits(r.mhz, r.int_lat)) r.mhz = 0.0;
         if (r.mhz <= 0.0) {
-            // Nothing was sampled under load, so what is left is a rated
-            // clock: cpufreq's ceiling (or the registry's on Windows, or
+            // Nothing usable was sampled under load, so what is left is a
+            // rated clock: cpufreq's ceiling (or the registry's on Windows, or
             // sysctl's on an Intel Mac), then the device tree's declaration --
             // unless INT-lat proves it a base clock that turbo outran.
             r.mhz = rated_mhz(cpu);
-            if (!rated_fits(r.mhz, r.int_lat)) r.mhz = 0.0;
+            if (!clock_fits(r.mhz, r.int_lat)) r.mhz = 0.0;
             if (r.mhz > 0.0)  r.mhz_src = MHZ_RATED;
         }
         // A CPU shared with another worker gave each a share of its time, and
@@ -658,17 +668,17 @@ result_t summarize(const worker_t *w, int cpu) {
 }
 
 // INT-lat is a floor under the clock: a chain of dependent 1-cycle adds cannot
-// finish more than one per cycle on any core. A rated clock far below it is
-// not the clock the core ran at. Windows' `~MHz` and an Intel Mac's
-// `hw.cpufrequency` are the *base* clock, which turbo leaves behind: an Intel
-// N100 is rated 806 MHz there and runs its INT-lat at 3370. The slack is for
-// clocks that are named a little under what they run -- an RK3566 whose
-// cpufreq says 1800 runs INT-lat at 1907 -- and is far short of what turbo
-// does.
-#define RATED_SLACK 1.1
+// finish more than one per cycle on any core. A clock far below it is not the
+// clock the core ran at. Windows' `~MHz` and an Intel Mac's `hw.cpufrequency`
+// are the *base* clock, which turbo leaves behind: an Intel N100 is rated
+// 806 MHz there and runs its INT-lat at 3370. A sampled clock can be as wrong
+// (see summarize()). The slack is for clocks that are named a little under
+// what they run -- an RK3566 whose cpufreq says 1800 runs INT-lat at 1907 --
+// and is far short of what turbo does.
+#define CLOCK_SLACK 1.1
 
-int rated_fits(double rated, double int_lat) {
-    return rated > 0.0 && int_lat <= rated * RATED_SLACK;
+int clock_fits(double mhz, double int_lat) {
+    return mhz > 0.0 && int_lat <= mhz * CLOCK_SLACK;
 }
 
 int settle_rated(result_t *rows, int n, const result_t *also, int n_also) {
@@ -683,7 +693,7 @@ int settle_rated(result_t *rows, int n, const result_t *also, int n_also) {
         for (int j = 0; j < n_also; ++j) {
             if (also[j].cpu == r->cpu && also[j].int_lat > floor) floor = also[j].int_lat;
         }
-        if (rated_fits(r->mhz, floor)) continue;
+        if (clock_fits(r->mhz, floor)) continue;
         // What summarize() would have said had it known: the estimate, or
         // unknown on a shared CPU.
         r->mhz     = r->shared ? 0.0 : r->int_lat;

@@ -227,6 +227,14 @@ approximated:
 | load-average warning | yes | yes | no such number exists |
 | `--clock raw` | yes | yes | no; falls back to `mono` and records `mono` |
 
+On Linux the governor node read under load is `cpuinfo_avg_freq`, the
+kernel's average from the core's own cycle counters (6.14 and later), and
+`scaling_cur_freq` where there is none. The latter can hold the frequency last
+requested rather than the one running -- intel_pstate in passive mode under
+schedutil leaves it at the floor, 400 MHz on a Core Ultra running at 4.7 GHz --
+so a reading `INT-lat` proves too low is dropped, the same test as for a rated
+clock below.
+
 Where there is no governor node, `MHz` comes from a clock the machine rates --
 the Windows registry's, an Intel Mac's `hw.cpufrequency`, or the device tree's
 declared `clock-frequency` for the CPU -- if it has one and `INT-lat` does not
