@@ -1333,6 +1333,18 @@ class CoreTypesTest(unittest.TestCase):
         self.assertEqual([(t["name"], t["cpus"]) for t in got],
                          [("P-core", [16]), ("E-core", [8])])
 
+    def test_intel_core_types_fall_back_on_cppc_where_capacity_is_alike(self):
+        # Every core at capacity 1024, the P-cores held back under the
+        # E-cores' score: CPPC's rank still says which is which.
+        recs = [{"id": c, "scope": "cpu", "cpu": c, "score": 8000.0 if c < 4 else 10400.0,
+                 "capacity": 1024.0, "highest_perf": 196.0 if c < 4 else 150.0}
+                for c in range(8)]
+        got = srv.core_types(recs, srv.design_line(
+            {"cpu_models": "Intel(R) Core(TM) Ultra 7 258V",
+             "cpu_layout": "4x P-core + 4x LP E-core"}))
+        self.assertEqual([(t["name"], t["cpus"]) for t in got],
+                         [("LP E-core", [4, 5, 6, 7]), ("P-core", [0, 1, 2, 3])])
+
     def test_layout_designs(self):
         self.assertEqual(srv.layout_designs("4x P-core + 4x LP E-core"),
                          ["P-core", "LP E-core"])

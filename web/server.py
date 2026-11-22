@@ -1402,11 +1402,16 @@ def _kinds(recs: list[dict], cpu_models: str | None,
         def first(g):
             return min((c for r in g if isinstance(c := r.get("cpu"), int) and c >= 0),
                        default=1 << 30)
-        size = next((k for k in ("capacity", "highest_perf") if _said(recs, k)), None)
-        if size and all(n in INTEL_CORE_TYPES for n in names):
+        has_cap, has_hp = _said(recs, "capacity"), _said(recs, "highest_perf")
+        if (has_cap or has_hp) and all(n in INTEL_CORE_TYPES for n in names):
+            # Largest first as the size names go: by capacity step, then by
+            # CPPC's rank within one -- a kernel can give every core the same
+            # capacity -- and by score where neither tells them apart.
+            def size(k: int) -> tuple[int, float]:
+                hp = statistics.median(r["highest_perf"] for r in groups[k]) if has_hp else 0.0
+                return part_of[k], -hp
             names = sorted(names, key=INTEL_CORE_TYPES.index)
-            order = sorted(range(len(groups)),
-                           key=lambda k: -statistics.median(r[size] for r in groups[k]))
+            order = sorted(range(len(groups)), key=size)
         else:
             order = sorted(range(len(groups)), key=lambda k: first(groups[k]))
         labels = [""] * len(groups)
