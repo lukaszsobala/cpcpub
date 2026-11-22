@@ -165,6 +165,12 @@ typedef struct {
     // core may not honour. Ordered by trust, weakest last: aggregate() keeps
     // the weakest source of any row it folds in.
     enum { MHZ_READ, MHZ_GIVEN, MHZ_RATED, MHZ_ESTIMATED } mhz_src;
+    // How large the system says this CPU is, 0 where it does not say: the
+    // scheduler's `cpu_capacity` (1024 for the largest) and the firmware's
+    // CPPC `highest_perf`. Neither moves with the clock or the power plan, so
+    // a hub can tell a P-core held back on a power-saving plan from an E-core
+    // that outscored it. Set by the front end, for a CPU the row was pinned to.
+    double capacity, highest_perf;
     double int_lat, int_thr, mul_thr, fp_lat, fp_thr;
     double fp32_lat, fp32_thr;   // single precision, outside the score
     double mem_gbps, mem_lat_ns, mem_lat8_ns;

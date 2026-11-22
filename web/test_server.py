@@ -927,6 +927,22 @@ class HubTest(unittest.TestCase):
         self.assertEqual(by_cpu[("thread", 7)], "large")
         self.assertIsNone(by_cpu[("total", None)])
 
+    def test_a_layout_names_an_intel_hybrids_core_types(self):
+        # The brand string names the chip; cpu_layout names its core types,
+        # and the P-cores are still the P-cores scoring under the E-cores.
+        doc = document("per-core")
+        doc["system"].update(cpu_models="Intel(R) Core(TM) Ultra 7 258V", cpus=8,
+                             cpu_layout="4x P-core + 4x LP E-core")
+        doc["cores"] = ([core(cpu=c, score=8250.0, capacity=1005.0) for c in range(4)]
+                        + [core(cpu=c, score=10400.0, capacity=676.0) for c in range(4, 8)])
+        out = self.upload(doc)
+        _, run = self.req(f"/api/runs/{out['id']}")
+        self.assertEqual([(t["name"], t["cpus"]) for t in run["types"]],
+                         [("P-core", [0, 1, 2, 3]), ("LP E-core", [4, 5, 6, 7])])
+        _, page = self.req(f"/api/cores?run={out['id']}&scope=cpu")
+        self.assertEqual({c["cpu"]: c["type"] for c in page["cores"]},
+                         {c: "P-core" if c < 4 else "LP E-core" for c in range(8)})
+
     def test_a_sampled_sweep_stands_for_every_cpu_of_its_kinds(self):
         # 4 large and 12 small CPUs; the sweep measured 2 of each, as
         # --per-kind 2 does, and listed every CPU of both kinds.
@@ -1237,6 +1253,55 @@ class CoreTypesTest(unittest.TestCase):
                                     "Intel(R) Core(TM) Ultra 7 155H"),
                          [("cpu", "large", [2, 3]), ("cpu", "medium", [0, 1]),
                           ("cpu", "small", [4])])
+
+    @staticmethod
+    def sized(rows, cpu_models=""):
+        """(name, cpus) per kind of per-core records given as (score, extra)."""
+        recs = [dict({"id": i, "scope": "cpu", "cpu": i, "score": s}, **extra)
+                for i, (s, extra) in enumerate(rows)]
+        return [(t["name"], t["cpus"]) for t in srv.core_types(recs, cpu_models)]
+
+    def test_capacity_keeps_a_held_back_core_large(self):
+        # A Core Ultra 7 258V on Powersave: the Lion Coves (0-3) score under
+        # the Skymonts (4-7), and the scheduler still says which is larger.
+        p, e = {"capacity": 1005.0}, {"capacity": 676.0}
+        self.assertEqual(self.sized([(8250, p)] * 4 + [(10400, e)] * 4),
+                         [("large", [0, 1, 2, 3]), ("small", [4, 5, 6, 7])])
+
+    def test_capacity_splits_kinds_the_score_brought_level(self):
+        p, e = {"capacity": 1024.0}, {"capacity": 676.0}
+        self.assertEqual(self.sized([(10000, p)] * 4 + [(10100, e)] * 4),
+                         [("large", [0, 1, 2, 3]), ("small", [4, 5, 6, 7])])
+
+    def test_capacity_a_favoured_core_steps_within_is_one_kind(self):
+        self.assertEqual(self.sized([(10300, {"capacity": 1024.0})] * 2
+                                    + [(10000, {"capacity": 1005.0})] * 2),
+                         [("all cores", [0, 1, 2, 3])])
+
+    def test_highest_perf_orders_sizes_but_splits_nothing(self):
+        p, e = {"highest_perf": 55.0}, {"highest_perf": 37.0}
+        self.assertEqual(self.sized([(8250, p)] * 4 + [(10400, e)] * 4),
+                         [("large", [0, 1, 2, 3]), ("small", [4, 5, 6, 7])])
+        # An AMD part ranks its preferred cores by it, a step wider than the
+        # gap between cores of one design: still one kind.
+        self.assertEqual(self.sized([(10000, {"highest_perf": 236.0})] * 2
+                                    + [(10000, {"highest_perf": 196.0})] * 2),
+                         [("all cores", [0, 1, 2, 3])])
+
+    def test_designs_are_not_joined_across_a_capacity_step(self):
+        # Three steps, two names: the X4 scores close to the faster A520, but
+        # the scheduler says they differ, so the two A520 steps are joined.
+        x4, a520 = {"capacity": 1024.0}, {"capacity": 400.0}
+        self.assertEqual(self.sized([(5000, x4), (4800, a520), (3000, a520)],
+                                    "Cortex-X4 + Cortex-A520"),
+                         [("Cortex-X4", [0]), ("Cortex-A520", [1, 2])])
+
+    def test_layout_designs(self):
+        self.assertEqual(srv.layout_designs("4x P-core + 4x LP E-core"),
+                         ["P-core", "LP E-core"])
+        self.assertEqual(srv.layout_designs("4x Cortex-A55"), [])
+        self.assertEqual(srv.layout_designs(None), [])
+        self.assertEqual(srv.layout_designs("P-core + E-core"), [])
 
     def test_alike_cores_are_one_kind(self):
         self.assertEqual(self.kinds([10000, 10400, 9800, 10200]),

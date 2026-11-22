@@ -229,6 +229,10 @@ CORE_FIELDS = [
     ("cpu",              "cpu",             "int"),
     ("mhz",              "mhz",             "num"),
     ("mhz_src",          "mhz_src",         "str"),
+    # How large the system says the CPU is: what core_types() splits and
+    # ranks kinds by where the score cannot tell. Not metrics.
+    ("capacity",         "capacity",        "num"),
+    ("highest_perf",     "highest_perf",    "num"),
     ("int_lat_mops",     "int_lat",         "num"),
     ("int_thr_mops",     "int_thr",         "num"),
     ("ilp",              "ilp",             "num"),
@@ -1316,24 +1320,64 @@ def _size_names(n: int) -> list[str]:
                         for i in range(1, n - 1)] + ["small"]
 
 
+def _said(recs: list[dict], key: str) -> bool:
+    """Whether every record carries `key` as a positive number."""
+    return all(isinstance(v := r.get(key), (int, float)) and v > 0 for r in recs)
+
+
+def _by_capacity(recs: list[dict]) -> list[list[dict]]:
+    """Records split where the system's `capacity` for them steps by more
+    than CORE_TYPE_GAP, largest first; one part where any record lacks it."""
+    if not _said(recs, "capacity"):
+        return [recs]
+    parts: list[list[dict]] = []
+    for r in sorted(recs, key=lambda r: -r["capacity"]):
+        if parts and parts[-1][-1]["capacity"] / r["capacity"] <= CORE_TYPE_GAP:
+            parts[-1].append(r)
+        else:
+            parts.append([r])
+    return parts
+
+
 def _kinds(recs: list[dict], cpu_models: str | None,
            alike: str) -> tuple[list[str], list[list[dict]]]:
-    """Records grouped into kinds of core by score, fastest first, and a name
-    for each: a design the CPU line names, a size, or `alike` for one kind."""
+    """Records grouped into kinds of core, and a name for each: a design the
+    CPU line names, a size, or `alike` for one kind. Largest first: by the
+    system's capacity where every record carries it, then by score.
+
+    The score alone groups and orders them only while every core runs as fast
+    as it can. A power-saving plan can hold a P-core under an E-core -- a Core
+    Ultra 7 258V on Powersave ran its Lion Coves at 2.05 GHz and its Skymonts
+    at 3.2 -- and by score the E-cores were then "large", or with the scores
+    brought level, one kind with the P-cores. What the system says of each
+    CPU does not move with the plan: `capacity` (the scheduler's) splits the
+    records first, at the same gap, and each part is grouped by score; where
+    there is none, size names follow CPPC's `highest_perf` instead of the
+    score. That one only orders: on an AMD part it ranks preferred cores, and
+    its steps between cores of one design can be wider than the gap.
+    """
     groups: list[list[dict]] = []
-    for r in sorted(recs, key=lambda r: -r["score"]):
-        if groups and groups[-1][-1]["score"] / r["score"] <= CORE_TYPE_GAP:
-            groups[-1].append(r)
-        else:
-            groups.append([r])
+    part_of: list[int] = []
+    for p, part in enumerate(_by_capacity(recs)):
+        start = len(groups)
+        for r in sorted(part, key=lambda r: -r["score"]):
+            if len(groups) > start and groups[-1][-1]["score"] / r["score"] <= CORE_TYPE_GAP:
+                groups[-1].append(r)
+            else:
+                groups.append([r])
+                part_of.append(p)
     names = named_designs(cpu_models)
     # Fewer designs named than steps found: two of the groups are one design at
     # two clocks, as a phone's prime core and the rest of its big cluster are.
-    # The closest pair is joined until the counts agree.
+    # The closest pair of a capacity part is joined until the counts agree;
+    # groups the system gave different capacities are never one design.
     while names and len(groups) > len(names):
-        i = min(range(len(groups) - 1),
-                key=lambda k: groups[k][-1]["score"] / groups[k + 1][0]["score"])
+        pairs = [k for k in range(len(groups) - 1) if part_of[k] == part_of[k + 1]]
+        if not pairs:
+            break
+        i = min(pairs, key=lambda k: groups[k][-1]["score"] / groups[k + 1][0]["score"])
         groups[i:i + 2] = [groups[i] + groups[i + 1]]
+        del part_of[i + 1]
     if len(groups) == 1:
         return [alike], groups
     if names and len(names) == len(groups):
@@ -1347,6 +1391,9 @@ def _kinds(recs: list[dict], cpu_models: str | None,
                                          key=lambda k: first(groups[k]))):
             labels[k] = name
         return labels, groups
+    if not _said(recs, "capacity") and _said(recs, "highest_perf"):
+        # Stable, so groups CPPC ranks alike keep their score order.
+        groups.sort(key=lambda g: -statistics.median(r["highest_perf"] for r in g))
     return _size_names(len(groups)), groups
 
 
@@ -1628,11 +1675,29 @@ def classify(cpu_models: str | None, cpus: int | None, cpus_offline: int | None,
     return cpu_family(cpu_models, machine), layout
 
 
+def layout_designs(layout: str | None) -> list[str]:
+    """The core designs a cpu_layout names, when it names more than one:
+    ["P-core", "LP E-core"] for "4x P-core + 4x LP E-core"."""
+    names = []
+    for part in (layout or "").split(" + "):
+        m = re.match(r"\s*\d+x\s+(.+?)\s*$", part)
+        if not m:
+            return []
+        names.append(m.group(1))
+    return names if len(names) > 1 else []
+
+
 def design_line(run: dict) -> str | None:
     """The line to name a run's kinds of core from: its own where that names
-    designs, or else the CPU the merge list says it is."""
+    designs; else its layout's designs where that names some, as an Intel
+    hybrid's names its core types and its brand string does not; or else the
+    CPU the merge list says it is."""
     own = run.get("cpu_models")
-    return own if named_designs(own) or not run.get("cpu_key") else run["cpu_key"]
+    if named_designs(own):
+        return own
+    if designs := layout_designs(run.get("cpu_layout")):
+        return " + ".join(designs)
+    return own if not run.get("cpu_key") else run["cpu_key"]
 
 
 def comparable(row: dict) -> bool:
@@ -1688,7 +1753,8 @@ class Store:
     # IF NOT EXISTS leaves an existing table as it was, so without this a new
     # metric's column never reaches an old database and every upload after it
     # fails on the INSERT.
-    ADDED_CORE_COLUMNS = (("fp32_lat", "REAL"), ("fp32_thr", "REAL"))
+    ADDED_CORE_COLUMNS = (("fp32_lat", "REAL"), ("fp32_thr", "REAL"),
+                          ("capacity", "REAL"), ("highest_perf", "REAL"))
 
     def __init__(self, path: str, aliases_path: Path | None = ALIASES_PATH):
         self.path = path
@@ -2121,12 +2187,13 @@ class Store:
     def types_of_run(self, run_id: int) -> list[dict]:
         """core_types() for one stored run, whatever a listing narrowed it to."""
         with self.connect() as db:
-            run = db.execute("SELECT cpu_models, cpu_key, cpu_kinds FROM runs WHERE id = ?",
+            run = db.execute(f"SELECT r.cpu_models, r.cpu_key, r.cpu_kinds, "
+                             f"{LAYOUT_SQL} AS cpu_layout FROM runs r WHERE r.id = ?",
                              (run_id,)).fetchone()
             if run is None:
                 return []
-            rows = db.execute("SELECT id, scope, cpu, score FROM cores "
-                              "WHERE run_id = ?", (run_id,)).fetchall()
+            rows = db.execute("SELECT id, scope, cpu, score, capacity, highest_perf "
+                              "FROM cores WHERE run_id = ?", (run_id,)).fetchall()
         return core_types([dict(r) for r in rows], design_line(dict(run)),
                           stored_kinds(run["cpu_kinds"]))
 
