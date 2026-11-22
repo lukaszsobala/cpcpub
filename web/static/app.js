@@ -428,7 +428,7 @@ const TARGETS = [
   ["s390x", "IBM Z"],
 ];
 
-// Fill the Arch picker: the list above, then anything this hub actually holds
+// Fill the Architecture picker: the list above, then anything this hub actually holds
 // that is not on it -- a build newer than this page, or the "unknown" a target
 // nobody taught the benchmark reports. Counts arrive with /api/stats, so an
 // entry that would find nothing says so before it is picked rather than after.
@@ -495,7 +495,7 @@ function osName(row, unknown = "—") {
 }
 
 // Fill the OS picker from what this hub holds. There is no list to draw it
-// from the way Arch has one: uname reports whatever the machine it ran on
+// from the way Architecture has one: uname reports whatever the machine it ran on
 // says, so an OS nobody has uploaded from is an option worth not offering.
 // Empty until /api/stats answers, which is why the current choice is put back.
 function fillSystems(counts) {
@@ -512,7 +512,7 @@ function fillSystems(counts) {
     sel.append(o);
   }
   sel.value = chosen;
-  // Same as Arch: a choice this hub has nothing for falls back to "any" rather
+  // Same as Architecture: a choice this hub has nothing for falls back to "any" rather
   // than leaving the picker blank while still narrowing the board.
   if (sel.value !== chosen) sel.value = "";
 }
@@ -3811,7 +3811,7 @@ async function boot() {
     b.addEventListener("click", () => copyButton(b));
   }
   renderCommands();
-  // Arch gets its full list at once, so the picker is usable before any
+  // Architecture gets its full list at once, so the picker is usable before any
   // request finishes; OS has no list to draw until /api/stats says what this
   // hub holds, so it starts as "any" alone. Both are filled again with the
   // counts when they arrive.
@@ -3826,7 +3826,7 @@ async function boot() {
 
   // Which release this hub verifies against, and how many results it holds
   // per architecture and per operating system. Not fatal if it fails: the
-  // board is readable without it, and the Arch and OS pickers have already
+  // board is readable without it, and the Architecture and OS pickers have already
   // been drawn once with what little that leaves them -- for OS, just "any",
   // which is what they default to anyway.
   api("/api/stats").then((s) => {

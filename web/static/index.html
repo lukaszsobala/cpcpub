@@ -34,7 +34,7 @@
 
 <section id="board" class="tab active">
   <form class="filters" id="filters">
-    <label>Rank by
+    <label class="f-scope">Rank by
       <select name="scope">
         <option value="total">whole machine</option>
         <option value="cpu">best core</option>
@@ -43,41 +43,41 @@
     </label>
     <!-- Options filled by the page: every architecture the benchmark can
          report, plus anything else this hub happens to hold. -->
-    <label title="the instruction set the result was measured on">Arch
+    <label class="f-arch" title="the instruction set the result was measured on">Architecture
       <select name="target"></select>
     </label>
     <!-- Options filled by the page: uname says whatever the machine it ran on
          says, so the list is whatever this hub happens to hold. -->
-    <label title="the operating system the result was measured on">OS
+    <label class="f-os" title="the operating system the result was measured on">OS
       <select name="os"></select>
     </label>
     <!-- Both default to "off" rather than "any": a board mixing build switches
          is a board of numbers that cannot be compared, and the scalar,
          no-FMA build is the one every machine can produce. -->
-    <label title="a build switch: one instruction works on several numbers at once">Vectorize
+    <label class="f-vec" title="a build switch: one instruction works on several numbers at once">Vectorize
       <select name="vectorize"><option value="">any</option><option value="0" selected>off</option><option value="1">on</option></select>
     </label>
-    <label title="a build switch: multiply and add done as one instruction">FMA
+    <label class="f-fma" title="a build switch: multiply and add done as one instruction">FMA
       <select name="fma"><option value="">any</option><option value="0" selected>off</option><option value="1">on</option></select>
     </label>
-    <label>Values
+    <label class="f-norm">Values
       <select name="norm">
         <option value="abs">absolute</option>
         <option value="ghz">per GHz</option>
       </select>
     </label>
-    <label class="check" title="show every metric, not just the headline ones">
+    <label class="check f-det" title="show every metric, not just the headline ones">
       <input type="checkbox" name="detailed"> Detailed
     </label>
-    <label class="check" title="one row per processor: the median of its runs, unfolding to each run">
+    <label class="check f-cpu" title="one row per processor: the median of its runs, unfolding to each run">
       <input type="checkbox" name="bycpu" checked> Group by CPU
     </label>
     <!-- Options filled by the page, from the one list that also holds the cap
          the server clamps to. -->
-    <label title="how many results this page asks for at once">Show
+    <label class="f-limit" title="how many results this page asks for at once">Show
       <select name="limit"></select>
     </label>
-    <label title="show only results that name a binary we published, which is what makes two of them comparable">Build
+    <label class="f-build" title="show only results that name a binary we published, which is what makes two of them comparable">Build
       <select name="verified">
         <option value="">any</option>
         <option value="release">from a published binary</option>
@@ -87,11 +87,11 @@
          how many of each core it has, once. Picking one narrows the board to
          that CPU; any other text is searched for as typed. -->
     <!-- The box and its button as one item, so they wrap together. -->
-    <div class="search-row grow">
-    <label>Search
+    <div class="search-row grow f-q">
+    <label>
       <span class="search-box">
         <input type="search" name="q" list="cpu-list" autocomplete="off"
-               placeholder="CPU, model, label or machine">
+               aria-label="Search" placeholder="CPU, model, label or machine">
         <button type="button" class="clear" id="search-clear"
                 title="clear the search" aria-label="Clear the search" hidden>×</button>
       </span>

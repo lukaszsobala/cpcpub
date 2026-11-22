@@ -94,12 +94,16 @@ pre {
    wider as it is asked for more metrics. */
 main > section { max-width: 1100px; margin: 0 auto; }
 main > section#board { max-width: none; }
+/* ...though its controls and notes above the table line up with the header. */
+#board > .filters, #board > #board-chip, #board > p.note:not(.legend) {
+  max-width: 1100px; margin-left: auto; margin-right: auto;
+}
+#board > .filters { box-sizing: border-box; }
 .tab { display: none; padding-top: 1.25rem; }
 .tab.active { display: block; }
 
 /* filters ---------------------------------------------------------------- */
 .filters {
-  display: flex; flex-wrap: wrap; gap: 0.6rem 0.9rem; align-items: flex-end;
   background: var(--panel); border: 1px solid var(--line);
   border-radius: 10px; padding: 0.9rem 1rem;
 }
@@ -114,7 +118,7 @@ main > section#board { max-width: none; }
 /* The tick that puts a run into the comparison, big enough to hit. */
 input.row-pick { width: 1.15rem; height: 1.15rem; cursor: pointer; }
 .filters .grow { flex: 1 1 18rem; }
-.search-row { display: flex; gap: 0.6rem; align-items: flex-end; }
+.search-row { display: flex; gap: 0.6rem; align-items: center; }
 .search-row label { flex: 1; min-width: 0; }
 /* The search box's own clear button, the same in every browser: Firefox draws
    none, and the one WebKit draws is hidden so there are not two. */
@@ -128,8 +132,50 @@ input.row-pick { width: 1.15rem; height: 1.15rem; cursor: pointer; }
 }
 .search-box .clear:hover { color: var(--ink); }
 .filters .check {
-  flex-direction: row; align-items: center; gap: 0.4rem; padding-bottom: 0.4rem;
-  cursor: pointer; white-space: nowrap;
+  flex-direction: row; align-items: center; gap: 0.45rem;
+  cursor: pointer; white-space: nowrap; font-size: 0.85rem; color: var(--ink);
+}
+/* As big as the ticks on the board. */
+.filters .check input { width: 1.15rem; height: 1.15rem; margin: 0; cursor: pointer; }
+/* One height for every control in the panel, so a row of them lines up: the
+   dropdowns, the search box and its button. */
+.filters select, .filters input[type="search"], .filters button[type="submit"] {
+  height: 2.15rem; box-sizing: border-box;
+}
+.filters button[type="submit"] { padding-top: 0; padding-bottom: 0; }
+
+/* Two groups side by side: how the board is ranked, and which runs are on it.
+   Each under a caption, drawn by the panel's ::before and ::after, which are
+   grid items like the controls. The checkboxes sit on the search box's row,
+   centred on it as the controls above are on theirs. */
+.filters {
+  display: grid; gap: 0.55rem 0.9rem; align-items: end;
+  grid-template-columns: auto auto auto 0.6rem minmax(8rem, 1.2fr) minmax(7rem, 1fr) auto auto minmax(8rem, 1.2fr);
+  grid-template-areas:
+    "cap-rank cap-rank cap-rank . cap-runs cap-runs cap-runs cap-runs cap-runs"
+    "scope    norm     limit    . arch     os       vec      fma      build"
+    "det      cpu      .        . q        q        q        q        q";
+}
+.filters::before, .filters::after {
+  font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--ink); padding-bottom: 0.25rem; border-bottom: 1px solid var(--line);
+}
+.filters::before { content: "Ranking"; grid-area: cap-rank; }
+.filters::after { content: "Runs shown"; grid-area: cap-runs; }
+.f-scope { grid-area: scope; } .f-norm { grid-area: norm; } .f-limit { grid-area: limit; }
+.f-arch { grid-area: arch; } .f-os { grid-area: os; } .f-vec { grid-area: vec; }
+.f-fma { grid-area: fma; } .f-build { grid-area: build; }
+.f-det { grid-area: det; } .f-cpu { grid-area: cpu; } .f-q { grid-area: q; }
+.filters select { width: 100%; }
+.filters .check, .filters .f-q { align-self: center; }
+/* Too narrow for two groups side by side: the controls wrap as they come,
+   and the captions, which would then head nothing in particular, go. */
+@media (max-width: 900px) {
+  .filters { display: flex; flex-wrap: wrap; align-items: flex-end; }
+  .filters::before, .filters::after { content: none; }
+  .filters select { width: auto; }
+  .filters .check { align-self: auto; padding-bottom: 0.45rem; }
+  .filters .f-q { flex-basis: 100%; }
 }
 select, input, textarea, button[type="submit"] {
   font: inherit; color: var(--ink); background: var(--bg);
